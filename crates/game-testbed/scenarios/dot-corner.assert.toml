@@ -1,0 +1,31 @@
+# PROTECTED ORACLE: semantic assertions for dot-corner. Only the owner
+# approves changes (AGENTS.md, "Protected paths").
+version = 1
+
+[[assert]]
+id = "reaches-east-wall"
+by_tick = 300
+pointer = "/entities/0/components/kit_fps.MoveState/pos/x"
+op = "=="
+value = 7.75
+
+[[assert]]
+id = "reaches-north-wall"
+by_tick = 300
+pointer = "/entities/0/components/kit_fps.MoveState/pos/y"
+op = "=="
+value = 5.75
+
+[[assert]]
+id = "wall-bump-reported"
+by_tick = 300
+pointer = "/events/testbed.WallBump/0/entity/index"
+op = "=="
+value = 0
+
+[[assert]]
+id = "stopped-in-the-corner"
+at_tick = 300
+pointer = "/entities/0/components/kit_fps.MoveState/vel/x"
+op = "=="
+value = 0.0

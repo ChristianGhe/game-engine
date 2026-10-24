@@ -1,0 +1,8 @@
+/target/
+.codescout/private-memories/
+.claude/settings.local.json
+.claude/guard-unlock
+.claude/.cc-writes/
+.claude/scheduled_tasks.lock
+# The superseded commercial plan stays local (owner decided 2026-10-24).
+docs/superpowers/specs/*-v2.md

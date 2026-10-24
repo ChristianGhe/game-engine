@@ -1,0 +1,45 @@
+# PROTECTED ORACLE: semantic assertions for dot-square. Only the owner
+# approves changes (AGENTS.md, "Protected paths").
+version = 1
+
+[[assert]]
+id = "inside-west-wall"
+always = true
+pointer = "/entities/0/components/kit_fps.MoveState/pos/x"
+op = ">="
+value = 0.25
+
+[[assert]]
+id = "inside-east-wall"
+always = true
+pointer = "/entities/0/components/kit_fps.MoveState/pos/x"
+op = "<="
+value = 7.75
+
+[[assert]]
+id = "inside-south-wall"
+always = true
+pointer = "/entities/0/components/kit_fps.MoveState/pos/y"
+op = ">="
+value = 0.25
+
+[[assert]]
+id = "inside-north-wall"
+always = true
+pointer = "/entities/0/components/kit_fps.MoveState/pos/y"
+op = "<="
+value = 5.75
+
+[[assert]]
+id = "moving-east-after-half-a-second"
+at_tick = 30
+pointer = "/entities/0/components/kit_fps.MoveState/vel/x"
+op = ">"
+value = 1.5
+
+[[assert]]
+id = "moving-north-in-second-leg"
+at_tick = 90
+pointer = "/entities/0/components/kit_fps.MoveState/vel/y"
+op = ">"
+value = 1.5

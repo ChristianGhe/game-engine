@@ -1,0 +1,10 @@
+# typos (spec 8.2). PROTECTED: an allow-list entry can hide a real typo.
+[files]
+extend-exclude = ["target/", "LICENSE-APACHE", "Cargo.lock", "crates/game-testbed/hashes/"]
+
+[default.extend-words]
+# Proper nouns and plurals in the spec.
+Obscur = "Obscur"
+
+[default.extend-identifiers]
+PNGs = "PNGs"

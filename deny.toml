@@ -1,0 +1,100 @@
+# cargo-deny (spec 4, 6.2): licences, bans, sources, advisories.
+# PROTECTED: the owner approves changes, in batches (AGENTS.md).
+
+[graph]
+all-features = false
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+# The exact SPDX allow-list for anything in the binaries we build. Never GPL
+# or AGPL. MPL-2.0 is allowed only for unmodified crates, through a per-crate
+# exception; CDLA-Permissive-2.0 only if rustls is ever used.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "CC0-1.0",
+  "BSL-1.0",
+]
+confidence-threshold = 0.93
+exceptions = []
+
+[licenses.private]
+# Our own crates are unpublished; their licence is the workspace's.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+# Our own crates; the allow-list below is for third-party crates.
+allow-workspace = true
+# Each floor crate is wrapped by exactly one engine crate (spec 6.2 rule 2).
+deny = [
+  { crate = "wgpu", wrappers = ["eng-gpu"] },
+  { crate = "winit", wrappers = ["eng-platform-winit"] },
+  { crate = "gilrs", wrappers = ["eng-platform-winit"] },
+  { crate = "cpal", wrappers = ["eng-audio-cpal"] },
+  # Unmaintained (spec 6.8).
+  { crate = "laminar" },
+  { crate = "bincode" },
+]
+# The third-party allow-list: only these crates may appear in Cargo.lock.
+# Batch 1, proposed 2026-10-24 for rung 1a (awaiting the owner's approval):
+# libm (core math), syn/quote/proc-macro2/unicode-ident (eng-derive),
+# serde/toml/serde_json and their dependencies (authored data, xtask),
+# proptest and its dependencies (property tests). Some appear only on
+# other targets (r-efi, getrandom) or through optional features.
+allow = [
+  "autocfg",
+  "bitflags",
+  "cfg-if",
+  "chacha20",
+  "core_detect",
+  "cpufeatures",
+  "equivalent",
+  "getrandom",
+  "hashbrown",
+  "indexmap",
+  "itoa",
+  "libc",
+  "libm",
+  "memchr",
+  "num-traits",
+  "proc-macro2",
+  "proptest",
+  "quote",
+  "r-efi",
+  "rand",
+  "rand_core",
+  "rand_xorshift",
+  "regex-syntax",
+  "serde",
+  "serde_core",
+  "serde_derive",
+  "serde_json",
+  "serde_spanned",
+  "syn",
+  "toml",
+  "toml_datetime",
+  "toml_parser",
+  "toml_writer",
+  "unarray",
+  "unicode-ident",
+  "winnow",
+  "zmij",
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -1,0 +1,23 @@
+[package]
+name = "game-testbed-sim"
+description = "The testbed game's simulation: the headless dot."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+eng-collision-api.workspace = true
+eng-core.workspace = true
+eng-ecs.workspace = true
+eng-math.workspace = true
+eng-schema-core.workspace = true
+eng-sim.workspace = true
+kit-fps.workspace = true
+
+[dev-dependencies]
+
+
+[lints]
+workspace = true

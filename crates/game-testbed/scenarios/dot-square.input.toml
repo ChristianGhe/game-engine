@@ -1,0 +1,22 @@
+# Walk a square at half speed: east, north, west, south, one second each.
+version = 1
+
+[[segment]]
+ticks = 60
+forward = 64
+yaw_deg = 0.0
+
+[[segment]]
+ticks = 60
+forward = 64
+yaw_deg = 90.0
+
+[[segment]]
+ticks = 60
+forward = 64
+yaw_deg = 180.0
+
+[[segment]]
+ticks = 60
+forward = 64
+yaw_deg = 270.0

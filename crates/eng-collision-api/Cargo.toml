@@ -1,0 +1,18 @@
+[package]
+name = "eng-collision-api"
+description = "Trace and overlap contract, hulls, and the trivial box-room implementation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+eng-math.workspace = true
+eng-schema-core.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

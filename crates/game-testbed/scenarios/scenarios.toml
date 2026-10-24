@@ -1,0 +1,19 @@
+# Scenarios CI replays on every target (`cargo xtask replay`). Each runs once
+# per seed; its hash stream is compared across architectures and against the
+# committed stream in ../hashes/ (a change detector, regenerated with
+# `cargo xtask replay --regen`). The *.assert.toml files are protected.
+version = 1
+
+[[scenario]]
+name = "dot-square"
+input = "dot-square.input.toml"
+assert = "dot-square.assert.toml"
+ticks = 240
+seeds = [1, 2, 3]
+
+[[scenario]]
+name = "dot-corner"
+input = "dot-corner.input.toml"
+assert = "dot-corner.assert.toml"
+ticks = 300
+seeds = [1, 7]

@@ -1,0 +1,33 @@
+# Protected oracles and check tooling (protected.toml). The owner reviews
+# every change to these paths. `cargo xtask docs-check` keeps this file in
+# sync with protected.toml. The root Cargo.toml's protected tables are
+# checked by `cargo xtask oracle-check` instead, since CODEOWNERS works on
+# whole files.
+/protected.toml @ChristianGhe
+/docs/rungs/*/acceptance.json @ChristianGhe
+/budgets.toml @ChristianGhe
+**/*.assert.toml @ChristianGhe
+/crates/eng-math/tests/known_answers.txt @ChristianGhe
+/crates/eng-math/tests/known_answers.rs @ChristianGhe
+/crates/game-testbed/tests/exit_codes.rs @ChristianGhe
+/crates/game-testbed/scenarios/scenarios.toml @ChristianGhe
+/crates/*/tests/golden.rs @ChristianGhe
+**/golden/ @ChristianGhe
+**/snapshots/ @ChristianGhe
+**/proptest-regressions/ @ChristianGhe
+/xtask/ @ChristianGhe
+/clippy.toml @ChristianGhe
+/.clippy.toml @ChristianGhe
+/architecture.toml @ChristianGhe
+/deny.toml @ChristianGhe
+/.deny.toml @ChristianGhe
+/rust-toolchain.toml @ChristianGhe
+/rust-toolchain @ChristianGhe
+/.cargo/ @ChristianGhe
+/.config/ @ChristianGhe
+/_typos.toml @ChristianGhe
+/typos.toml @ChristianGhe
+/.typos.toml @ChristianGhe
+/.github/CODEOWNERS @ChristianGhe
+/.github/workflows/ @ChristianGhe
+/.claude/ @ChristianGhe

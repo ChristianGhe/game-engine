@@ -1,0 +1,17 @@
+[package]
+name = "eng-net-transport"
+description = "Datagram transport contract plus the in-memory implementation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+
+[dev-dependencies]
+
+
+[lints]
+workspace = true

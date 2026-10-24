@@ -1,0 +1,52 @@
+# Protected oracles and check tooling (spec 7.3). PROTECTED.
+#
+# - The Claude Code guard hook blocks agent edits and bless commands on these
+#   paths, unless the owner lists them in .claude/guard-unlock (owner only,
+#   from their own terminal; the file is git-ignored).
+# - CI (`cargo xtask oracle-check`) rejects a PR that changes any of them
+#   unless the owner approved the PR or applied the `oracle-update` label.
+# - .github/CODEOWNERS must cover every pattern (`cargo xtask docs-check`).
+#
+# `*` matches within one path segment, `**` any number of segments.
+version = 1
+owner_github = "ChristianGhe"
+
+paths = [
+  # This list and the oracles it protects.
+  "protected.toml",
+  "docs/rungs/*/acceptance.json",
+  "budgets.toml",
+  "**/*.assert.toml",
+  "crates/eng-math/tests/known_answers.txt",
+  # Harnesses whose results acceptance relies on, and the manifest that binds
+  # scenarios to their assertions (replay fails on an unreferenced assertion).
+  "crates/eng-math/tests/known_answers.rs",
+  "crates/game-testbed/tests/exit_codes.rs",
+  "crates/game-testbed/scenarios/scenarios.toml",
+  "crates/*/tests/golden.rs",
+  "**/golden/**",
+  "**/snapshots/**",
+  "**/proptest-regressions/**",
+  # The check tooling itself.
+  "xtask/**",
+  "clippy.toml",
+  ".clippy.toml",
+  "architecture.toml",
+  "deny.toml",
+  ".deny.toml",
+  "rust-toolchain.toml",
+  "rust-toolchain",
+  # Whole directories: cargo also reads .cargo/config and .cargo/deny.toml.
+  ".cargo/**",
+  ".config/**",
+  "_typos.toml",
+  "typos.toml",
+  ".typos.toml",
+  ".github/CODEOWNERS",
+  ".github/workflows/**",
+  ".claude/**",
+]
+
+# Only these tables of the root Cargo.toml are protected; the rest of it is
+# ordinary (workspace dependencies change with every new crate).
+cargo_toml_tables = ["workspace.lints", "profile", "patch", "replace"]

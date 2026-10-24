@@ -1,0 +1,17 @@
+[package]
+name = "eng-core"
+description = "Ticks, PlayerCommand, generational ids."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+eng-schema-core.workspace = true
+
+[dev-dependencies]
+eng-schema-core.workspace = true
+
+[lints]
+workspace = true

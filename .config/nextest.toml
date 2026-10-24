@@ -1,0 +1,6 @@
+# cargo-nextest profiles. CI uses `--profile ci` for a JUnit report.
+[profile.ci]
+fail-fast = false
+
+[profile.ci.junit]
+path = "junit.xml"

@@ -1,0 +1,7 @@
+# Run north-east into the corner and keep pushing.
+version = 1
+
+[[segment]]
+ticks = 300
+forward = 127
+yaw_deg = 45.0

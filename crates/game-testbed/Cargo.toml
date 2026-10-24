@@ -1,0 +1,18 @@
+[package]
+name = "game-testbed"
+description = "The public testbed game: test content that exercises every engine feature."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+eng-cli.workspace = true
+game-testbed-sim.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+eng-input.workspace = true

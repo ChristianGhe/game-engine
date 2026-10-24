@@ -1,0 +1,75 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+# Engine crates.
+eng-core = { path = "crates/eng-core" }
+eng-math = { path = "crates/eng-math" }
+eng-schema-core = { path = "crates/eng-schema-core" }
+eng-derive = { path = "crates/eng-derive" }
+eng-ecs = { path = "crates/eng-ecs" }
+eng-sim = { path = "crates/eng-sim" }
+eng-net-transport = { path = "crates/eng-net-transport" }
+eng-collision-api = { path = "crates/eng-collision-api" }
+kit-fps = { path = "crates/kit-fps" }
+eng-schema-json = { path = "crates/eng-schema-json" }
+eng-input = { path = "crates/eng-input" }
+eng-platform-headless = { path = "crates/eng-platform-headless" }
+eng-cli = { path = "crates/eng-cli" }
+game-testbed-sim = { path = "crates/game-testbed-sim" }
+
+# Third-party crates. New entries need the owner's approval (deny.toml allow-list).
+libm = { version = "=0.2.16", default-features = false }
+proc-macro2 = "1.0.107"
+quote = "1.0.47"
+syn = "3.0.9"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+toml = "1.1.8"
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+# forbid, not deny: no #[allow] or lint group can switch them off (spec 6.4).
+disallowed_methods = "forbid"
+disallowed_types = "forbid"
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# Overflow checks stay on in release builds for the core set (spec 6.4).
+# `cargo xtask arch-check` fails if a core crate is missing here.
+[profile.release.package.eng-core]
+overflow-checks = true
+[profile.release.package.eng-math]
+overflow-checks = true
+[profile.release.package.eng-schema-core]
+overflow-checks = true
+[profile.release.package.eng-ecs]
+overflow-checks = true
+[profile.release.package.eng-sim]
+overflow-checks = true
+[profile.release.package.eng-net-transport]
+overflow-checks = true
+[profile.release.package.eng-collision-api]
+overflow-checks = true
+[profile.release.package.kit-fps]
+overflow-checks = true
+[profile.release.package.game-testbed-sim]
+overflow-checks = true

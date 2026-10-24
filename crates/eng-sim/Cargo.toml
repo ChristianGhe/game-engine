@@ -1,0 +1,20 @@
+[package]
+name = "eng-sim"
+description = "Tick driver, stages and system ordering, state hash, snapshots."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+eng-core.workspace = true
+eng-ecs.workspace = true
+eng-math.workspace = true
+eng-schema-core.workspace = true
+
+[dev-dependencies]
+
+
+[lints]
+workspace = true

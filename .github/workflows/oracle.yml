@@ -1,0 +1,41 @@
+# Protected oracles and check tooling change only with the owner (spec 7.3).
+# Passes when no protected path changed, or the owner approved the PR's head
+# commit, or the owner applied the `oracle-update` label. PROTECTED.
+#
+# Runs as pull_request_target: the workflow, the xtask that checks and the
+# protected list all come from the base branch. The PR head is fetched as
+# git objects only and never built or run, so a PR cannot weaken its own
+# check. Reviews do not trigger pull_request_target: after approving,
+# re-run this check (or apply the label). Make it a required check on main.
+# `edited` re-runs it when a PR is retargeted, with the new base's workflow.
+name: oracle
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+permissions: {}
+
+jobs:
+  oracle-check:
+    if: github.event.pull_request.base.ref == github.event.repository.default_branch
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.base.sha }}
+      - name: fetch the PR head as objects only
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: git fetch --no-tags origin "+refs/pull/${PR}/head:refs/remotes/pr/head"
+      - name: check protected paths (base code only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: cargo xtask oracle-check --base "$BASE" --head "$HEAD"

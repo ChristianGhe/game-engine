@@ -1,0 +1,13 @@
+[package]
+name = "eng-platform-headless"
+description = "The platform with no window and no devices: a virtual clock that paces fixed frames."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

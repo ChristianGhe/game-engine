@@ -1,0 +1,258 @@
+{
+  "version": 1,
+  "rung": "1a",
+  "name": "Headless dot",
+  "status": "proposed 2026-10-24; awaiting the owner's approval of these criteria and budgets (spec 2.2, touchpoint 2)",
+  "spec": "docs/superpowers/specs/2026-10-20-ai-built-engine-design.md, section 9.1",
+  "time_box": {
+    "start": "2026-10-24",
+    "calendar_days": 14
+  },
+  "ai_budget": {
+    "plan": "the owner's current Claude plan, nothing else (P1 default)",
+    "max_agent_sessions": 15,
+    "note": "Usage is logged per session in PROGRESS.md. The pivot rule (spec 7.7) compares rungs 1a-3 against twice their time-boxes."
+  },
+  "features": [
+    {
+      "id": "replay-cross-arch",
+      "done_when": 1,
+      "description": "The input-script replays produce identical per-tick hash streams on Linux x64 and arm64, and under RISC-V QEMU.",
+      "command": "cargo xtask ci --job test | riscv | summary",
+      "checks": [
+        {
+          "job": "test",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "replay"
+        },
+        {
+          "job": "test",
+          "target": "aarch64-unknown-linux-gnu",
+          "step": "replay"
+        },
+        {
+          "job": "riscv",
+          "step": "replay"
+        },
+        {
+          "job": "summary",
+          "step": "compare-hashes"
+        }
+      ]
+    },
+    {
+      "id": "math-known-answers",
+      "done_when": 2,
+      "description": "The eng-math known-answer hashes (about 1M seeded inputs per function) match everywhere.",
+      "command": "cargo test -p eng-math --test known_answers",
+      "checks": [
+        {
+          "job": "test",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "known-answers"
+        },
+        {
+          "job": "test",
+          "target": "aarch64-unknown-linux-gnu",
+          "step": "known-answers"
+        },
+        {
+          "job": "riscv",
+          "step": "known-answers"
+        }
+      ]
+    },
+    {
+      "id": "violation-float-sin",
+      "done_when": 3,
+      "description": "f32::sin, f32::min, and an #[allow(clippy::style)] escape in a core crate all fail the build.",
+      "command": "cargo xtask selftest float-sin && cargo xtask selftest float-min && cargo xtask selftest allow-escape",
+      "checks": [
+        {
+          "job": "selftest",
+          "step": "violation:float-sin"
+        },
+        {
+          "job": "selftest",
+          "step": "violation:float-min"
+        },
+        {
+          "job": "selftest",
+          "step": "violation:allow-escape"
+        }
+      ]
+    },
+    {
+      "id": "violation-core-std-dep",
+      "done_when": 3,
+      "description": "A core crate depending on a std crate, using `extern crate std`, or overriding clippy.toml fails arch-check.",
+      "command": "cargo xtask selftest core-std-dep && cargo xtask selftest extern-std && cargo xtask selftest crate-clippy-toml",
+      "checks": [
+        {
+          "job": "selftest",
+          "step": "violation:core-std-dep"
+        },
+        {
+          "job": "selftest",
+          "step": "violation:extern-std"
+        },
+        {
+          "job": "selftest",
+          "step": "violation:crate-clippy-toml"
+        }
+      ]
+    },
+    {
+      "id": "violation-no-std-removed",
+      "done_when": 3,
+      "description": "Removing #![no_std] from a core crate fails arch-check.",
+      "command": "cargo xtask selftest no-std-removed",
+      "checks": [
+        {
+          "job": "selftest",
+          "step": "violation:no-std-removed"
+        }
+      ]
+    },
+    {
+      "id": "violation-protected-edit",
+      "done_when": 3,
+      "description": "Editing a protected file without the owner's unlock is blocked by the guard, including via cd, heredocs and the unlock file itself, while ordinary edits pass.",
+      "command": "cargo xtask selftest protected-edit (and guard-cd-bypass, guard-heredoc, guard-unlock-write, guard-allows-ordinary-edits)",
+      "checks": [
+        {
+          "job": "selftest",
+          "step": "violation:protected-edit"
+        },
+        {
+          "job": "selftest",
+          "step": "violation:guard-cd-bypass"
+        },
+        {
+          "job": "selftest",
+          "step": "violation:guard-heredoc"
+        },
+        {
+          "job": "selftest",
+          "step": "violation:guard-unlock-write"
+        },
+        {
+          "job": "selftest",
+          "step": "violation:guard-allows-ordinary-edits"
+        }
+      ]
+    },
+    {
+      "id": "violation-bless",
+      "done_when": 3,
+      "description": "A bless/accept command is blocked by the guard.",
+      "command": "cargo xtask selftest bless",
+      "checks": [
+        {
+          "job": "selftest",
+          "step": "violation:bless"
+        }
+      ]
+    },
+    {
+      "id": "exit-code-self-tests",
+      "done_when": 4,
+      "description": "Every probe exit code (0, 10, 11, 12, 13, 64) has a self-test against the real binary.",
+      "command": "cargo test -p game-testbed --test exit_codes",
+      "checks": [
+        {
+          "job": "test",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "exit-codes"
+        },
+        {
+          "job": "test",
+          "target": "aarch64-unknown-linux-gnu",
+          "step": "exit-codes"
+        }
+      ]
+    },
+    {
+      "id": "pr-tier-duration",
+      "done_when": 5,
+      "description": "The PR tier's duration is measured on GitHub Actions and recorded (budget: 15 minutes, budgets.toml).",
+      "command": "cargo xtask ci --job summary",
+      "checks": [
+        {
+          "job": "summary",
+          "step": "pr-duration"
+        }
+      ]
+    },
+    {
+      "id": "agents-md-length",
+      "done_when": 6,
+      "description": "AGENTS.md is at most 150 lines.",
+      "command": "cargo xtask docs-check",
+      "checks": [
+        {
+          "job": "lint",
+          "step": "docs-check"
+        }
+      ]
+    },
+    {
+      "id": "lint-tier",
+      "done_when": null,
+      "description": "fmt, clippy -D warnings, arch-check, size-check, cargo-deny and typos pass.",
+      "command": "cargo xtask ci --job lint",
+      "checks": [
+        {
+          "job": "lint",
+          "step": "fmt"
+        },
+        {
+          "job": "lint",
+          "step": "clippy"
+        },
+        {
+          "job": "lint",
+          "step": "arch-check"
+        },
+        {
+          "job": "lint",
+          "step": "size-check"
+        },
+        {
+          "job": "lint",
+          "step": "deny"
+        },
+        {
+          "job": "lint",
+          "step": "typos"
+        }
+      ]
+    },
+    {
+      "id": "tests-and-targets",
+      "done_when": null,
+      "description": "All tests pass on Linux x64 and arm64; the core set's tests pass under RISC-V QEMU; the core set compiles for wasm32.",
+      "command": "cargo xtask ci --job test | riscv | wasm",
+      "checks": [
+        {
+          "job": "test",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "tests"
+        },
+        {
+          "job": "test",
+          "target": "aarch64-unknown-linux-gnu",
+          "step": "tests"
+        },
+        {
+          "job": "riscv",
+          "step": "core-tests"
+        },
+        {
+          "job": "wasm",
+          "step": "wasm-check"
+        }
+      ]
+    }
+  ]
+}

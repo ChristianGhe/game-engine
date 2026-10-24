@@ -1,0 +1,92 @@
+# Layering rules (spec 6.1-6.2), checked by `cargo xtask arch-check`.
+# PROTECTED: also the manifest of required crate-root attributes; changes
+# need the owner's approval (CODEOWNERS, AGENTS.md "Protected paths").
+version = 1
+
+# A crate may depend only on crates in lower layers, or on the same-layer
+# crates listed in its `same_layer`.
+layers = ["L0", "L1", "L2", "L3", "L4", "game", "tool"]
+
+# Patched crates (`[patch]` in Cargo.toml); each needs an ADR.
+allowed_patches = []
+
+# Third-party crates the core set may reach, transitively, pinned to an exact
+# version from crates.io and an exact feature set. eng-derive is a
+# proc-macro: its syn/quote/proc-macro2 dependencies are build-time only.
+[core_third_party]
+libm = { version = "0.2.16", features = [] }
+
+# Floor crates and the single engine crate allowed to depend on each.
+[floor]
+wgpu = "eng-gpu"
+winit = "eng-platform-winit"
+gilrs = "eng-platform-winit"
+cpal = "eng-audio-cpal"
+
+# Every workspace crate must be listed. `core = true` means: #![no_std] and
+# #![forbid(unsafe_code)] at the crate root, only core-set dependencies,
+# overflow checks in release, and no lint escapes.
+
+[crates.eng-derive]
+layer = "L0"
+proc_macro = true
+
+[crates.eng-schema-core]
+layer = "L0"
+core = true
+same_layer = ["eng-derive"]
+
+[crates.eng-math]
+layer = "L0"
+core = true
+same_layer = ["eng-schema-core"]
+
+[crates.eng-core]
+layer = "L0"
+core = true
+same_layer = ["eng-schema-core"]
+
+[crates.eng-ecs]
+layer = "L1"
+core = true
+
+[crates.eng-net-transport]
+layer = "L1"
+core = true
+
+[crates.eng-schema-json]
+layer = "L1"
+
+[crates.eng-input]
+layer = "L1"
+same_layer = ["eng-schema-json"]
+
+[crates.eng-platform-headless]
+layer = "L1"
+
+[crates.eng-sim]
+layer = "L2"
+core = true
+
+[crates.eng-collision-api]
+layer = "L2"
+core = true
+
+[crates.kit-fps]
+layer = "L2"
+core = true
+same_layer = ["eng-collision-api"]
+
+[crates.game-testbed-sim]
+layer = "L2"
+core = true
+same_layer = ["eng-sim", "eng-collision-api", "kit-fps"]
+
+[crates.eng-cli]
+layer = "L4"
+
+[crates.game-testbed]
+layer = "game"
+
+[crates.xtask]
+layer = "tool"

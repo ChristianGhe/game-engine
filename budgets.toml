@@ -1,0 +1,12 @@
+# Budgets (spec 6.13), reviewed at each deload. PROTECTED ORACLE: only the
+# owner approves changes.
+version = 1
+
+# Runner-independent simulation budgets, checked by `<game> run --budgets`.
+[sim]
+max_state_bytes = 4096
+max_entities = 16
+
+# Read by cargo xtask.
+[ci]
+pr_tier_minutes = 15

@@ -96,3 +96,18 @@ A second fresh-context `reviewer` pass confirmed the first round's fixes
   same false positive (test strings containing a bless flag); those edits
   went through the Edit tool instead. The new guard does not misfire there.
 
+
+## 2026-10-24, first GitHub Actions run
+
+- Repo published as `ChristianGhe/game-engine` (public). Commits go
+  straight to `main` (ADR-0014); the owner pushed the first one, `cbfa4c2`.
+- Run 40090932717: lint failed on one typo (a quote in ADR-0014, fixed in
+  the next commit); test on ubuntu-24.04 and ubuntu-24.04-arm, riscv,
+  wasm, selftest and summary passed.
+- **PR-tier duration (done-when 5): 2.6 minutes**, against a 15-minute
+  budget (measured by the summary job from the run's start).
+- CI-computed acceptance: 11 of 12 features pass, including every
+  done-when item; `lint-tier` failed only on the typo.
+- Cross-architecture equality on GitHub runners: the 5 hash streams are
+  identical on x86-64, arm64 and RISC-V (QEMU), and match the committed
+  streams from macOS arm64.

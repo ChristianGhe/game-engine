@@ -12,8 +12,9 @@ at a time after CI and a reviewer agent. Protected paths would change only
 with the owner's approval, enforced by CI's `oracle` check on each PR and
 by a separate GitHub identity for agents.
 
-When the repo was created, the owner said: "no need for pr. we are the
-only ones commiting". Until an agent identity exists, every commit carries
+When the repo was created, the owner said there is "no need for pr": the
+owner and their agents are the only ones committing. Until an agent
+identity exists, every commit carries
 the owner's GitHub account anyway, so the owner cannot approve a PR that
 agents push.
 

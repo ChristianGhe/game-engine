@@ -111,8 +111,10 @@ except one left to the owner (the hook matcher for MCP tools, owner action
 | `eng-math` known answers, 39 functions x 1M inputs | identical on all four |
 | `selftest`, 13 deliberate violations | all caught |
 
-Not yet verified: GitHub Actions itself, `cargo deny`, `typos`, the wasm32
-check on CI, and the measured PR-tier duration (done-when 5).
+On GitHub Actions (first run, 2026-10-24, commit `cbfa4c2`): every job
+passed except `lint` (one typo in ADR-0014, since fixed). CI computed 11
+of 12 acceptance features as passing, including all six done-when items;
+the PR tier took 2.6 minutes (budget 15).
 
 ## Owner actions
 

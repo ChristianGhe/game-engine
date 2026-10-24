@@ -111,3 +111,12 @@ A second fresh-context `reviewer` pass confirmed the first round's fixes
 - Cross-architecture equality on GitHub runners: the 5 hash streams are
   identical on x86-64, arm64 and RISC-V (QEMU), and match the committed
   streams from macOS arm64.
+
+## 2026-10-24, owner approvals
+
+- Second CI run (40091566700, commit `8867967`): every job green; CI
+  computed 12 of 12 acceptance features passing; the PR tier took 2.0
+  minutes.
+- The owner approved `acceptance.json` (criteria, 14-day time-box,
+  15-session AI budget) and batch 1 of the crate allow-list (37 crates).
+- Rung 1a is done. Next: rung 1b, the windowed dot.

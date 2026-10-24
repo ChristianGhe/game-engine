@@ -1,8 +1,8 @@
 # Rung 1a: Headless dot
 
-- **Status:** built locally on 2026-10-24; awaiting the owner's approval of
-  `acceptance.json` (criteria, time-box, AI budget), the GitHub setup, and
-  the first CI run.
+- **Status:** done on 2026-10-24. Public on GitHub, CI green with 12 of 12
+  acceptance features passing; the owner approved `acceptance.json`
+  (criteria, time-box, AI budget) and the crate allow-list (batch 1).
 - **Spec:** section 9.1 of `docs/superpowers/specs/2026-10-20-ai-built-engine-design.md`.
 - **Goal:** the fixed spine (spec 6.3) exists, is deterministic across CPU
   architectures, and is guarded by checks agents cannot fake. A dot in a 2D
@@ -118,9 +118,10 @@ the PR tier took 2.6 minutes (budget 15).
 
 ## Owner actions
 
-1. Approve or change `acceptance.json`: criteria, the 14-day time-box and
-   the 15-session AI budget.
-2. Approve the third-party allow-list (batch 1, 37 crates, `deny.toml`).
+1. Done 2026-10-24: approved `acceptance.json` as proposed (criteria, the
+   14-day time-box, the 15-session AI budget).
+2. Done 2026-10-24: approved the third-party allow-list (batch 1, 37
+   crates, `deny.toml`).
 3. Done 2026-10-24: public repo `ChristianGhe/game-engine`, commits
    straight to `main` without PRs (ADR-0014), commit email the GitHub
    no-reply address, v2 spec kept local. An agent GitHub identity is

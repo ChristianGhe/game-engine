@@ -49,7 +49,7 @@ deny = [
   { crate = "bincode" },
 ]
 # The third-party allow-list: only these crates may appear in Cargo.lock.
-# Batch 1, proposed 2026-10-24 for rung 1a (awaiting the owner's approval):
+# Batch 1, approved by the owner on 2026-10-24 for rung 1a:
 # libm (core math), syn/quote/proc-macro2/unicode-ident (eng-derive),
 # serde/toml/serde_json and their dependencies (authored data, xtask),
 # proptest and its dependencies (property tests). Some appear only on

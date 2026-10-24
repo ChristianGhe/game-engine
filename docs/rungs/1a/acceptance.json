@@ -2,7 +2,7 @@
   "version": 1,
   "rung": "1a",
   "name": "Headless dot",
-  "status": "proposed 2026-10-24; awaiting the owner's approval of these criteria and budgets (spec 2.2, touchpoint 2)",
+  "status": "approved by the owner on 2026-10-24: these criteria, the time-box and the AI budget (spec 2.2, touchpoint 2)",
   "spec": "docs/superpowers/specs/2026-10-20-ai-built-engine-design.md, section 9.1",
   "time_box": {
     "start": "2026-10-24",

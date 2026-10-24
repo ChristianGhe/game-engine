@@ -131,6 +131,250 @@ proposals for the owner, never made by agents.
   (about 7 minutes and 105k tokens). The main session's token use is not
   visible inside the session.
 
+## 2026-10-25, session 3: crate batch 2 scratch project (Claude Opus 5.5, open-pulsar task)
+
+**Done**
+- Recorded the repo's `Cargo.toml` and `Cargo.lock` before starting:
+  clean against `HEAD`, git blobs `36c2d08` and `7288f53`. Both end
+  unchanged, and no crate was added to the repo.
+- Created a new scratch project outside the repo with `mktemp -d`:
+  `$TMPDIR/eng-1b-batch2.obsitl`. It has its own `[workspace]` table and
+  a `rust-toolchain.toml` at 1.99.1, because this machine's default
+  toolchain outside the repo is 1.93.1.
+- Versions: the latest stable releases on crates.io today are wgpu
+  30.0.1 and winit 0.30.13, the ones the plan names. Both are pinned with
+  `=`. winit 0.31.0-beta.4 (2026-10-24) is a pre-release and is not used.
+- Features (decision 5), with `default-features = false`:
+  - wgpu: `std`, `dx12`, `metal`, `vulkan`, `wgsl`. Besides `gles` and
+    `webgpu`, this also leaves out the default `parking_lot` feature,
+    which decision 5 does not list.
+  - winit: `rwh_06`, `x11`, `wayland`, `wayland-dlopen`, which is the
+    default set without `wayland-csd-adwaita`.
+- The project depends on wgpu and winit only, not on `png`, `nv-flip`
+  or `naga`'s translation back-ends.
+- `cargo check` passes on 1.99.1 (aarch64-apple-darwin, 13.5 s cold),
+  with 236 packages locked. `cargo tree -e features` shows exactly the
+  features above.
+- Crates on the seven targets of proposal 4: Linux (x64, arm64, RISC-V)
+  101 each, Windows 78, macOS 75, and 138 in all. None is a web, Android,
+  GL or Wayland-decoration crate. 123 are not yet on `[bans] allow`:
+  proposal 4's 132, less `png`, `nv-flip` and their 7 dependencies. No
+  crate is new compared with proposal 4.
+
+**Costs and timings**
+- One open-pulsar session, about 5 minutes (01:45 to 01:50), most of
+  it the cold `cargo check`. No reviewer pass: the only repo change is
+  this entry.
+
+**Next**
+- The next queue item fills `plan.md`, "Crate batch 2", from this
+  project: licences and per-target groups. `$TMPDIR` is temporary; if the
+  directory is gone, recreate it from the versions and features above.
+
+## 2026-10-25, session 4: crate batch 2 dependencies and licences (Claude Opus 5.5, open-pulsar task)
+
+**Done**
+- In the session 3 scratch project, for `aarch64-apple-darwin`,
+  `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and
+  `x86_64-pc-windows-msvc`: `cargo tree --target <t> -e normal,build`
+  and `cargo metadata --filter-platform <t>` (versions and licences).
+  As a third view, `cargo deny check bans licenses` (0.20.2) ran in the
+  scratch project on a copy of the repo policy with a `[graph] targets`
+  line added. All commands ran with `--locked --offline`. The repo's
+  `Cargo.toml` and `Cargo.lock` and the scratch lock are unchanged.
+- Outputs are in `$TMPDIR/eng-1b-batch2-tree.DW32ue/`. `final.tsv` is
+  the list below with each crate's licence, `tree-<target>.txt` the
+  trees, and `deny-*.jsonl` cargo-deny's diagnostics.
+- Third-party crates, counted by name and version, with build
+  dependencies: macOS 80, Linux 107 on each architecture, Windows 80.
+  Of these, 65, 90 and 66 are not on `[bans] allow`, 129 across the
+  four targets. These counts differ from session 3's because they count
+  versions and include build dependencies; by name the totals agree.
+- The three views differ:
+  - cargo-deny on one target at a time sees exactly what `cargo tree`
+    sees.
+  - With all four targets in one `[graph] targets` list, cargo-deny
+    sees 6 more: 135 crates by version, 126 by name. It tests every
+    platform-gated edge against every listed target, so Windows-only
+    edges of Linux crates count too (for example `polling` on
+    `concurrent-queue`, and `windows-targets` on `windows_x86_64_gnu`,
+    whose `cfg` also matches x86-64 Linux). None of these is built, but
+    `cargo deny` fails unless they are allowed.
+  - `cargo metadata --filter-platform` sees more again: the Vulkan crates
+    and five more objc2 crates on macOS, `errno` and `jobserver` on
+    Linux, and `serde` everywhere. It merges features across platforms.
+    Neither cargo nor cargo-deny uses these, so they need no entry.
+  - The seven targets of proposal 4 add one crate,
+    `windows_aarch64_msvc 0.52.6` (MIT OR Apache-2.0): 127 names.
+    Without `[graph] targets`, as `deny.toml` is today, cargo-deny sees
+    184 names (Android, web, Redox and `tokio` crates among them).
+- Not on `[bans] allow`, grouped by the targets that build them (135
+  crates by version, 126 by name):
+  - All four (42): arrayvec 0.7.8, bit-set 0.10.0, bit-vec 0.9.1,
+    bytemuck 1.25.2, bytemuck_derive 1.12.1, cfg_aliases 0.2.2,
+    codespan-reporting 0.13.1, cursor-icon 1.2.0, document-features
+    0.2.12, dpi 0.1.2, foldhash 0.2.0, half 2.7.1, libloading 0.8.9,
+    litrs 1.0.1, lock_api 0.4.14, log 0.4.34, naga 30.0.1, naga-types
+    30.0.1, once_cell 1.21.4, parking_lot 0.12.5, parking_lot_core
+    0.9.12, pin-project-lite 0.2.17, profiling 1.0.18, raw-window-handle
+    0.6.2, rustc-hash 1.1.0, scopeguard 1.2.0, smallvec 1.16.4, smol_str
+    0.2.2, static_assertions 1.1.0, thiserror 2.0.21, thiserror-impl
+    2.0.21, tracing 0.1.44, tracing-core 0.1.36, unicode-width 0.2.2,
+    wgpu 30.0.1, wgpu-core 30.0.1, wgpu-hal 30.0.1, wgpu-naga-bridge
+    30.0.1, wgpu-types 30.0.1, winit 0.30.13, zerocopy 0.8.63,
+    zerocopy-derive 0.8.63.
+  - Linux and Windows, for Vulkan (8): allocator-api2 0.2.21, ash
+    0.38.0+1.3.281, gpu-allocator 0.28.0, ordered-float 5.5.0, presser
+    0.3.1, renderdoc-sys 1.1.0, spirv 0.4.0+sdk-1.4.341.0,
+    wgpu-core-deps-windows-linux-android 30.0.1.
+  - Linux only, for X11 and Wayland (40): ahash 0.8.12,
+    as-raw-xcb-connection 1.0.1, calloop 0.13.0, calloop-wayland-source
+    0.3.0, cc 1.10.0, dlib 0.5.3, downcast-rs 1.2.1, find-msvc-tools
+    0.1.15, gethostname 1.1.0, linux-raw-sys 0.12.1 and 0.4.15, memmap2
+    0.9.12, percent-encoding 2.3.2, pkg-config 0.3.34, polling 3.11.0,
+    quick-xml 0.41.0, rustix 0.38.44 and 1.1.5, scoped-tls 1.0.1, shlex
+    2.0.1, slab 0.4.12, smithay-client-toolkit 0.19.2, thiserror 1.0.69,
+    thiserror-impl 1.0.69, version_check 0.9.5, wayland-backend 0.3.17,
+    wayland-client 0.31.15, wayland-csd-frame 0.3.0, wayland-cursor
+    0.31.14, wayland-protocols 0.32.13, wayland-protocols-plasma 0.3.12,
+    wayland-protocols-wlr 0.3.12, wayland-scanner 0.31.11, wayland-sys
+    0.31.11, x11-dl 2.21.0, x11rb 0.13.2, x11rb-protocol 0.13.2, xcursor
+    0.3.11, xkbcommon-dl 0.4.2, xkeysym 0.2.1.
+  - Windows only (16): range-alloc 0.1.5, unicode-segmentation 1.13.3,
+    windows 0.62.2, windows-collections 0.3.2, windows-core 0.62.2,
+    windows-future 0.3.2, windows-implement 0.60.2, windows-interface
+    0.59.3, windows-link 0.2.1, windows-numerics 0.3.1, windows-result
+    0.4.1, windows-strings 0.5.1, windows-sys 0.52.0, windows-targets
+    0.52.6, windows-threading 0.2.1, windows_x86_64_msvc 0.52.6.
+  - macOS only (23): block2 0.5.1 and 0.6.2, core-foundation 0.9.4,
+    core-foundation-sys 0.8.7, core-graphics 0.23.2, core-graphics-types
+    0.1.3, dispatch 0.2.0, foreign-types 0.5.0, foreign-types-macros
+    0.2.4, foreign-types-shared 0.3.1, objc-sys 0.3.5, objc2 0.5.3 and
+    0.6.5, objc2-app-kit 0.2.2, objc2-core-foundation 0.3.2,
+    objc2-core-graphics 0.3.2, objc2-encode 4.1.0, objc2-foundation
+    0.2.2 and 0.3.2, objc2-metal 0.3.2, objc2-quartz-core 0.3.2,
+    raw-window-metal 1.1.0, wgpu-core-deps-apple 30.0.1.
+  - Only in cargo-deny's graph when several targets are listed (6):
+    concurrent-queue 2.5.0, crossbeam-utils 0.8.23, errno 0.3.14,
+    windows-sys 0.59.0 and 0.61.2, windows_x86_64_gnu 0.52.6.
+- Licences of these 135. "Either licence" counts the old `MIT/Apache-2.0`
+  form too.
+  - MIT or Apache-2.0, either licence (81): every crate not named below.
+  - MIT only (32): block2 (both), calloop, calloop-wayland-source,
+    cfg_aliases, dispatch, dlib, objc-sys, objc2 (both), objc2-app-kit,
+    objc2-encode, objc2-foundation (both), ordered-float, quick-xml,
+    slab, smithay-client-toolkit, tracing, tracing-core, the nine
+    `wayland-*` crates, x11-dl, xcursor, xkbcommon-dl.
+  - MIT, Apache-2.0 or Zlib (9): bytemuck, bytemuck_derive, cursor-icon,
+    objc2-core-foundation, objc2-core-graphics, objc2-metal,
+    objc2-quartz-core, raw-window-handle, xkeysym.
+  - Apache-2.0 only (4): codespan-reporting, gethostname, spirv, winit.
+  - Apache-2.0 WITH LLVM-exception, Apache-2.0 or MIT (4): rustix and
+    linux-raw-sys (both versions of each).
+  - BSD-2-Clause, Apache-2.0 or MIT (2): zerocopy, zerocopy-derive.
+  - Apache-2.0 AND MIT (1): dpi. Both licences apply.
+  - Zlib (1): foldhash. ISC (1): libloading.
+- **Licence flags: none.** Every licence ID in the 135 is on
+  `[licenses] allow`. Every crate has an SPDX `license` field, so none
+  relies on a licence file. cargo-deny reports no licence error with four
+  targets, with seven, or with none. No `exceptions` or `clarify` entries
+  are needed. The only ID not on the list is `Unlicense`, and it is
+  always the other choice in "Unlicense OR MIT", where MIT suffices.
+  It appears in `memchr` (allowed in batch 1), and, only without
+  `[graph] targets`, in `same-file`, `walkdir` and `winapi-util` (Android
+  only, through `jni`). Outside this project, proposal 4's `adler2` (a
+  `png` dependency) is "0BSD OR MIT OR Apache-2.0", where MIT suffices.
+- Proposal 4 against cargo-deny with its seven targets: its 132 names
+  are the 127 needed here, less the 4 below, plus `png`, `nv-flip` and
+  their 7 dependencies. With seven targets, cargo-deny also needs
+  `concurrent-queue`, `crossbeam-utils`, `errno` and
+  `windows_x86_64_gnu` (all MIT or Apache-2.0). That makes 136 names.
+  Added as amendment 12 below.
+- Duplicate versions (`multiple-versions = "warn"`, so warnings, not
+  errors): block2, objc2 and objc2-foundation on macOS (winit 0.30 uses
+  objc2 0.5, wgpu-hal uses 0.6), rustix, linux-raw-sys, thiserror and
+  thiserror-impl on Linux, and windows-sys in the multi-target graph.
+  Batch-1 crates are duplicated too: bitflags 1 and 2 (macOS),
+  hashbrown 0.16 and 0.17 (Linux, Windows) and syn 2 and 3 (all four).
+
+**Costs and timings**
+- One open-pulsar session, about 8 minutes (01:49 to 01:57). Each
+  `cargo tree`, `cargo metadata` and `cargo deny` run took under 2 s;
+  nothing was compiled. No reviewer pass: the only repo change is this
+  file.
+- The guard refuses a Python command when the script text names
+  `deny.toml` (or `_typos.toml`), even when it only reads. Copying the
+  policy into `$TMPDIR` as `policy.toml` and leaving the name out of the
+  script works. Redirections need literal paths, not `$VAR/$1`.
+
+**Next**
+- Fill `plan.md`, "Crate batch 2", from the groups above and amendment
+  12. The allow list depends on `[graph] targets`, so the plan should
+  say that the list and the targets line are one change.
+
+## 2026-10-25, session 5: crate batch 2 table in the plan (Claude Opus 5.5, open-pulsar task)
+
+**Done**
+- Filled `plan.md`, "Crate batch 2". It has one row per crate version
+  with the version, licence, targets and a flag for licence IDs not on
+  `[licenses] allow`, plus notes on the method, counts and duplicates.
+  The rest of `plan.md` is unchanged: the diff removes only the
+  placeholder line.
+- Sessions 3 and 4 had only `wgpu` and `winit`, so this session also
+  resolved `png =0.18.1` and `nv-flip =0.1.2`. It used a copy of the
+  session 3 project, `$TMPDIR/eng-1b-batch2-png.Y0U6Ur`, so session 3's
+  lock is unchanged (`66aa33cf…`). The repo's `Cargo.toml` and
+  `Cargo.lock` are unchanged too.
+- The copy's lock added 13 packages: `png`, `nv-flip`, `nv-flip-sys`,
+  `adler2`, `crc32fast`, `fdeflate`, the deflate crate, `miniz_oxide`
+  (0.8.9 and 0.9.1), `simd-adler32` and `zlib-rs`. `zlib-rs` is locked
+  but never built (see below).
+- In the copy, for all seven targets of proposal 4:
+  - `cargo tree --target <t> -e normal,build`;
+  - `cargo metadata`;
+  - `cargo deny check bans licenses` (0.20.2) with each policy copy
+    from session 4.
+- Outputs are in `$TMPDIR/eng-1b-batch2-out.LKRlli/`: `table.tsv`,
+  `table.md` and `deny-*.jsonl`. The script is
+  `$TMPDIR/eng-1b-batch2-scripts5.8GF3RA/table.py`.
+- Results:
+  - 146 crate versions, 136 names. These are exactly the names of
+    proposal 4 with amendment 12, checked by the script.
+  - cargo-deny on one target still lists exactly what `cargo tree`
+    builds there: macOS 78, Linux 100, Windows 79.
+  - Counts by target (versions): all seven 55, Linux 37, macOS 23,
+    Windows 17, Linux and Windows 8, cargo-deny graph only 6.
+  - Without `[graph] targets`, cargo-deny sees 193 names.
+- **Licence flag: one, `adler2`** ("0BSD OR MIT OR Apache-2.0"). 0BSD is
+  not on `[licenses] allow`; MIT is, so the crate passes and nothing
+  changes. Session 4 found no flag because `png` was not in its project.
+  cargo-deny reports no licence error with the seven targets.
+- **New finding: locked but never built.** The deflate crate's default
+  `runtime_detection` feature names `zlib-rs?/std`. That weak feature
+  makes cargo lock `zlib-rs 0.6.8` (Zlib). `cargo tree` (including
+  `-e features`) and cargo-deny never include it, so it needs no entry.
+  But the comment in the policy file ("only these crates may appear in
+  Cargo.lock") would then be wrong. See amendment 13.
+- **Guard workarounds:**
+  - `cargo deny` takes `--config` before `check`, not after it.
+  - The guard refused a Python command that only wrote this file,
+    because its text named the typos config. The Edit tool works.
+  - typos still flags the deflate crate's bare name (typos-cli 1.51.1),
+    so the plan writes it as a crates.io link, as proposal 4 does.
+    `typos docs/rungs/1b/` is clean.
+
+**Costs and timings**
+- One open-pulsar session, about 10 minutes (01:59 to 02:09). Resolving
+  the two new crates took 2 s. Each `cargo tree`, `cargo metadata` and
+  `cargo deny` run took under 2 s, and nothing was compiled.
+- No reviewer pass: the changes are documentation only, `plan.md` and
+  this file, with nothing applied to a protected path.
+
+**Next**
+- The queue in "This window's queue" (T1, T2, T4). Crate batch 2 waits
+  for the owner at G3, together with `[graph] targets`, the wrapper ban
+  and the typos-config entry.
+
 ## Proposals for the owner (protected paths)
 
 Nothing below is applied. Each item is what an agent would otherwise have
@@ -405,3 +649,30 @@ to change; the owner applies it, or unlocks the path.
     - Golden candidates are written under `target/golden-candidates/`,
       never into `golden/`, where the guard would restore and quarantine
       them.
+
+12. **Amendment from session 4** (to proposal 4; the text above is kept as
+    written). With proposal 4's seven `[graph] targets`, `cargo deny
+    check bans` also needs `concurrent-queue`, `crossbeam-utils`, `errno`
+    and `windows_x86_64_gnu`, all MIT or Apache-2.0. That makes 136 names.
+    cargo-deny tests each platform-gated edge against every listed
+    target, so these four count although no target builds them.
+    Checked with cargo-deny 0.20.2 on the wgpu and winit scratch
+    project; see session 4. The licence summary stands: nothing needs an
+    exception.
+
+13. **Amendment from session 5** (to proposal 4; the text above is kept as
+    written).
+    - The list to apply is now `plan.md`, "Crate batch 2": 136 names,
+      with each version, licence and target. These are the same names as
+      proposal 4 with amendment 12. `png 0.18.1` and `nv-flip 0.1.2` are
+      now resolved and checked as well.
+    - Licences: 0BSD is not on `[licenses] allow`. `adler2` ("0BSD OR MIT
+      OR Apache-2.0") passes through MIT, so no change is proposed to the
+      licence list, and no `exceptions` or `clarify` entry is needed.
+    - The comment above `allow`: use proposal 4's wording ("in the
+      dependency graph of these targets"). The deflate crate's default
+      feature makes cargo lock `zlib-rs` without building it, and
+      cargo-deny does not check it. So "only these crates may appear in
+      Cargo.lock" would no longer be true.
+    - Recompute against the real lock in T9 (`png`) and T12 (`nv-flip`)
+      too, not only in T7 and T10.

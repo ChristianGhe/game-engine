@@ -529,7 +529,235 @@ proposal to `PROGRESS.md`.
 
 ## Crate batch 2
 
-To be filled by the next queue item.
+*[proposal]* The third-party crates that G3 adds to `[bans] allow` in
+`deny.toml`: 136 names and 146 versions. They are the names of proposal 4
+with amendment 12 in `PROGRESS.md`, no more and no fewer. The owner
+applies the list from this table.
+
+- **Source.** A scratch project outside the repo, resolved on 2026-10-25
+  with toolchain 1.99.1. It holds `wgpu =30.0.1` and `winit =0.30.13`
+  with the features of decision 5, `png =0.18.1` and `nv-flip =0.1.2`.
+  The repo's `Cargo.toml` and `Cargo.lock` are unchanged. T7, T9, T10
+  and T12 add these crates to the repo; each recomputes the list against
+  the real lock and reports any difference to the owner as an amendment.
+- **Method.**
+  - `cargo tree --target <t> -e normal,build` for each of proposal 4's
+    seven targets.
+  - `cargo metadata` for the licences.
+  - `cargo deny check bans licenses` (0.20.2) on a copy of the policy
+    with proposal 4's `[graph] targets`. Run on one target at a time,
+    cargo-deny lists exactly the crates that `cargo tree` builds there.
+- **One change.** The list is complete only together with the
+  `[graph] targets` line and the `_typos.toml` entry (proposal 4).
+  Without `targets`, as `deny.toml` is today, cargo-deny sees 193 names,
+  among them Android, web, Redox and `tokio` crates.
+- **Columns.**
+  - **Version:** as resolved today. `[bans] allow` takes names, as batch
+    1 does, so a crate with two versions needs one entry.
+  - **Licence:** the crate's `license` field as published. `/` is the old
+    way of writing OR.
+  - **Targets:** where cargo builds the crate.
+    - "all seven" means macOS (arm64, x64), Linux (x64, arm64, RISC-V)
+      and Windows (x64, arm64). A family named without an architecture
+      means all of its architectures.
+    - "cargo-deny graph only" means no target builds the crate, but
+      `cargo deny check` still fails unless it is allowed. cargo-deny
+      tests each platform-specific dependency against every listed
+      target, whichever target builds the parent. For example, `polling`
+      and `rustix` are built only on Linux, but their Windows-only
+      dependencies count. `windows-targets` reaches `windows_x86_64_gnu`
+      because the `cfg` on that edge (x86-64 and `target_env = "gnu"`)
+      also matches x86-64 Linux.
+  - **Licence not on the list:** any SPDX ID in the licence that is not
+    on `[licenses] allow`.
+- **Licence flags: one, and it needs no change.**
+  - `adler2` offers 0BSD, MIT or Apache-2.0. 0BSD is not on the list,
+    but MIT is, so the crate passes.
+  - Two crates need both parts of an AND, and every part is on the list:
+    `dpi` (Apache-2.0 AND MIT) and `nv-flip-sys` (BSD-3-Clause AND one of
+    MIT, Apache-2.0 or Zlib).
+  - Every crate has an SPDX `license` field. cargo-deny reports no
+    licence error, so no `exceptions` or `clarify` entry is needed.
+- **Counts by target** (versions):
+  - all seven: 55;
+  - Linux: 37;
+  - macOS: 23;
+  - Windows: 17 (one of them x64 only and one arm64 only);
+  - Linux and Windows (Vulkan): 8;
+  - cargo-deny graph only: 6.
+- **Where the crates come from.**
+  - `wgpu` and `winit` bring 127 of the names.
+  - `png` (`eng-cli`'s `shot` and `video`, and the golden tests) brings
+    `adler2`, `crc32fast`, `fdeflate`, the deflate crate (shown in the
+    table as a link, for typos), `miniz_oxide` and `simd-adler32`.
+  - `nv-flip` (tests only) brings `nv-flip-sys`, which compiles C++
+    through `cc`. `cc`, `find-msvc-tools` and `shlex` are on Linux anyway
+    for `wayland-backend`; `nv-flip-sys` adds them to every target.
+- **Duplicate versions.** `multiple-versions = "warn"`, so these are
+  warnings, not errors.
+  - macOS: `block2`, `objc2` and `objc2-foundation` (winit 0.30 uses
+    objc2 0.5, `wgpu-hal` uses 0.6).
+  - Linux: `linux-raw-sys`, `rustix`, `thiserror` and `thiserror-impl`.
+  - Every target: `miniz_oxide` (`png` 0.18.1 uses 0.8, the deflate crate
+    0.9).
+  - cargo-deny's graph: three versions of `windows-sys`.
+  - Batch-1 crates are duplicated too: `bitflags`, `hashbrown` and `syn`.
+- **Locked but never checked.** The deflate crate's default
+  `runtime_detection` feature names `zlib-rs?/std`, so cargo writes
+  `zlib-rs 0.6.8` (Zlib) into `Cargo.lock` without building it.
+  cargo-deny leaves it out of the graph, so it needs no entry. That makes
+  the old comment above `allow` ("only these crates may appear in
+  Cargo.lock") untrue. Proposal 4's new wording, "in the dependency graph
+  of these targets", is the accurate one.
+
+| Crate | Version | Licence | Targets | Licence not on the list |
+|---|---|---|---|---|
+| `adler2` | 2.0.1 | 0BSD OR MIT OR Apache-2.0 | all seven | **0BSD**: not listed, but an OR choice; passes on MIT or Apache-2.0 |
+| `ahash` | 0.8.12 | MIT OR Apache-2.0 | Linux | no |
+| `allocator-api2` | 0.2.21 | MIT OR Apache-2.0 | Linux, Windows | no |
+| `arrayvec` | 0.7.8 | MIT OR Apache-2.0 | all seven | no |
+| `as-raw-xcb-connection` | 1.0.1 | MIT OR Apache-2.0 | Linux | no |
+| `ash` | 0.38.0+1.3.281 | MIT OR Apache-2.0 | Linux, Windows | no |
+| `bit-set` | 0.10.0 | Apache-2.0 OR MIT | all seven | no |
+| `bit-vec` | 0.9.1 | Apache-2.0 OR MIT | all seven | no |
+| `block2` | 0.5.1 | MIT | macOS | no |
+| `block2` | 0.6.2 | MIT | macOS | no |
+| `bytemuck` | 1.25.2 | Zlib OR Apache-2.0 OR MIT | all seven | no |
+| `bytemuck_derive` | 1.12.1 | Zlib OR Apache-2.0 OR MIT | all seven | no |
+| `calloop` | 0.13.0 | MIT | Linux | no |
+| `calloop-wayland-source` | 0.3.0 | MIT | Linux | no |
+| `cc` | 1.10.0 | MIT OR Apache-2.0 | all seven | no |
+| `cfg_aliases` | 0.2.2 | MIT | all seven | no |
+| `codespan-reporting` | 0.13.1 | Apache-2.0 | all seven | no |
+| `concurrent-queue` | 2.5.0 | Apache-2.0 OR MIT | cargo-deny graph only | no |
+| `core-foundation` | 0.9.4 | MIT OR Apache-2.0 | macOS | no |
+| `core-foundation-sys` | 0.8.7 | MIT OR Apache-2.0 | macOS | no |
+| `core-graphics` | 0.23.2 | MIT OR Apache-2.0 | macOS | no |
+| `core-graphics-types` | 0.1.3 | MIT OR Apache-2.0 | macOS | no |
+| `crc32fast` | 1.5.3 | MIT OR Apache-2.0 | all seven | no |
+| `crossbeam-utils` | 0.8.23 | MIT OR Apache-2.0 | cargo-deny graph only | no |
+| `cursor-icon` | 1.2.0 | MIT OR Apache-2.0 OR Zlib | all seven | no |
+| `dispatch` | 0.2.0 | MIT | macOS | no |
+| `dlib` | 0.5.3 | MIT | Linux | no |
+| `document-features` | 0.2.12 | MIT OR Apache-2.0 | all seven | no |
+| `downcast-rs` | 1.2.1 | MIT/Apache-2.0 | Linux | no |
+| `dpi` | 0.1.2 | Apache-2.0 AND MIT | all seven | no |
+| `errno` | 0.3.14 | MIT OR Apache-2.0 | cargo-deny graph only | no |
+| `fdeflate` | 0.3.7 | MIT OR Apache-2.0 | all seven | no |
+| `find-msvc-tools` | 0.1.15 | MIT OR Apache-2.0 | all seven | no |
+| <https://crates.io/crates/flate2> | 1.1.10 | MIT OR Apache-2.0 | all seven | no |
+| `foldhash` | 0.2.0 | Zlib | all seven | no |
+| `foreign-types` | 0.5.0 | MIT/Apache-2.0 | macOS | no |
+| `foreign-types-macros` | 0.2.4 | MIT/Apache-2.0 | macOS | no |
+| `foreign-types-shared` | 0.3.1 | MIT/Apache-2.0 | macOS | no |
+| `gethostname` | 1.1.0 | Apache-2.0 | Linux | no |
+| `gpu-allocator` | 0.28.0 | MIT OR Apache-2.0 | Linux, Windows | no |
+| `half` | 2.7.1 | MIT OR Apache-2.0 | all seven | no |
+| `libloading` | 0.8.9 | ISC | all seven | no |
+| `linux-raw-sys` | 0.4.15 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | Linux | no |
+| `linux-raw-sys` | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | Linux | no |
+| `litrs` | 1.0.1 | MIT OR Apache-2.0 | all seven | no |
+| `lock_api` | 0.4.14 | MIT OR Apache-2.0 | all seven | no |
+| `log` | 0.4.34 | MIT OR Apache-2.0 | all seven | no |
+| `memmap2` | 0.9.12 | MIT OR Apache-2.0 | Linux | no |
+| `miniz_oxide` | 0.8.9 | MIT OR Zlib OR Apache-2.0 | all seven | no |
+| `miniz_oxide` | 0.9.1 | MIT OR Zlib OR Apache-2.0 | all seven | no |
+| `naga` | 30.0.1 | MIT OR Apache-2.0 | all seven | no |
+| `naga-types` | 30.0.1 | MIT OR Apache-2.0 | all seven | no |
+| `nv-flip` | 0.1.2 | MIT OR Apache-2.0 OR Zlib | all seven | no |
+| `nv-flip-sys` | 0.1.1 | (MIT OR Apache-2.0 OR Zlib) AND BSD-3-Clause | all seven | no |
+| `objc-sys` | 0.3.5 | MIT | macOS | no |
+| `objc2` | 0.5.3 | MIT | macOS | no |
+| `objc2` | 0.6.5 | MIT | macOS | no |
+| `objc2-app-kit` | 0.2.2 | MIT | macOS | no |
+| `objc2-core-foundation` | 0.3.2 | Zlib OR Apache-2.0 OR MIT | macOS | no |
+| `objc2-core-graphics` | 0.3.2 | Zlib OR Apache-2.0 OR MIT | macOS | no |
+| `objc2-encode` | 4.1.0 | MIT | macOS | no |
+| `objc2-foundation` | 0.2.2 | MIT | macOS | no |
+| `objc2-foundation` | 0.3.2 | MIT | macOS | no |
+| `objc2-metal` | 0.3.2 | Zlib OR Apache-2.0 OR MIT | macOS | no |
+| `objc2-quartz-core` | 0.3.2 | Zlib OR Apache-2.0 OR MIT | macOS | no |
+| `once_cell` | 1.21.4 | MIT OR Apache-2.0 | all seven | no |
+| `ordered-float` | 5.5.0 | MIT | Linux, Windows | no |
+| `parking_lot` | 0.12.5 | MIT OR Apache-2.0 | all seven | no |
+| `parking_lot_core` | 0.9.12 | MIT OR Apache-2.0 | all seven | no |
+| `percent-encoding` | 2.3.2 | MIT OR Apache-2.0 | Linux | no |
+| `pin-project-lite` | 0.2.17 | Apache-2.0 OR MIT | all seven | no |
+| `pkg-config` | 0.3.34 | MIT OR Apache-2.0 | Linux | no |
+| `png` | 0.18.1 | MIT OR Apache-2.0 | all seven | no |
+| `polling` | 3.11.0 | Apache-2.0 OR MIT | Linux | no |
+| `presser` | 0.3.1 | MIT OR Apache-2.0 | Linux, Windows | no |
+| `profiling` | 1.0.18 | MIT OR Apache-2.0 | all seven | no |
+| `quick-xml` | 0.41.0 | MIT | Linux | no |
+| `range-alloc` | 0.1.5 | MIT OR Apache-2.0 | Windows | no |
+| `raw-window-handle` | 0.6.2 | MIT OR Apache-2.0 OR Zlib | all seven | no |
+| `raw-window-metal` | 1.1.0 | MIT OR Apache-2.0 | macOS | no |
+| `renderdoc-sys` | 1.1.0 | MIT OR Apache-2.0 | Linux, Windows | no |
+| `rustc-hash` | 1.1.0 | Apache-2.0/MIT | all seven | no |
+| `rustix` | 0.38.44 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | Linux | no |
+| `rustix` | 1.1.5 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | Linux | no |
+| `scoped-tls` | 1.0.1 | MIT/Apache-2.0 | Linux | no |
+| `scopeguard` | 1.2.0 | MIT OR Apache-2.0 | all seven | no |
+| `shlex` | 2.0.1 | MIT OR Apache-2.0 | all seven | no |
+| `simd-adler32` | 0.3.10 | MIT | all seven | no |
+| `slab` | 0.4.12 | MIT | Linux | no |
+| `smallvec` | 1.16.4 | MIT OR Apache-2.0 | all seven | no |
+| `smithay-client-toolkit` | 0.19.2 | MIT | Linux | no |
+| `smol_str` | 0.2.2 | MIT OR Apache-2.0 | all seven | no |
+| `spirv` | 0.4.0+sdk-1.4.341.0 | Apache-2.0 | Linux, Windows | no |
+| `static_assertions` | 1.1.0 | MIT OR Apache-2.0 | all seven | no |
+| `thiserror` | 1.0.69 | MIT OR Apache-2.0 | Linux | no |
+| `thiserror` | 2.0.21 | MIT OR Apache-2.0 | all seven | no |
+| `thiserror-impl` | 1.0.69 | MIT OR Apache-2.0 | Linux | no |
+| `thiserror-impl` | 2.0.21 | MIT OR Apache-2.0 | all seven | no |
+| `tracing` | 0.1.44 | MIT | all seven | no |
+| `tracing-core` | 0.1.36 | MIT | all seven | no |
+| `unicode-segmentation` | 1.13.3 | MIT OR Apache-2.0 | Windows | no |
+| `unicode-width` | 0.2.2 | MIT OR Apache-2.0 | all seven | no |
+| `version_check` | 0.9.5 | MIT/Apache-2.0 | Linux | no |
+| `wayland-backend` | 0.3.17 | MIT | Linux | no |
+| `wayland-client` | 0.31.15 | MIT | Linux | no |
+| `wayland-csd-frame` | 0.3.0 | MIT | Linux | no |
+| `wayland-cursor` | 0.31.14 | MIT | Linux | no |
+| `wayland-protocols` | 0.32.13 | MIT | Linux | no |
+| `wayland-protocols-plasma` | 0.3.12 | MIT | Linux | no |
+| `wayland-protocols-wlr` | 0.3.12 | MIT | Linux | no |
+| `wayland-scanner` | 0.31.11 | MIT | Linux | no |
+| `wayland-sys` | 0.31.11 | MIT | Linux | no |
+| `wgpu` | 30.0.1 | MIT OR Apache-2.0 | all seven | no |
+| `wgpu-core` | 30.0.1 | MIT OR Apache-2.0 | all seven | no |
+| `wgpu-core-deps-apple` | 30.0.1 | MIT OR Apache-2.0 | macOS | no |
+| `wgpu-core-deps-windows-linux-android` | 30.0.1 | MIT OR Apache-2.0 | Linux, Windows | no |
+| `wgpu-hal` | 30.0.1 | MIT OR Apache-2.0 | all seven | no |
+| `wgpu-naga-bridge` | 30.0.1 | MIT OR Apache-2.0 | all seven | no |
+| `wgpu-types` | 30.0.1 | MIT OR Apache-2.0 | all seven | no |
+| `windows` | 0.62.2 | MIT OR Apache-2.0 | Windows | no |
+| `windows-collections` | 0.3.2 | MIT OR Apache-2.0 | Windows | no |
+| `windows-core` | 0.62.2 | MIT OR Apache-2.0 | Windows | no |
+| `windows-future` | 0.3.2 | MIT OR Apache-2.0 | Windows | no |
+| `windows-implement` | 0.60.2 | MIT OR Apache-2.0 | Windows | no |
+| `windows-interface` | 0.59.3 | MIT OR Apache-2.0 | Windows | no |
+| `windows-link` | 0.2.1 | MIT OR Apache-2.0 | Windows | no |
+| `windows-numerics` | 0.3.1 | MIT OR Apache-2.0 | Windows | no |
+| `windows-result` | 0.4.1 | MIT OR Apache-2.0 | Windows | no |
+| `windows-strings` | 0.5.1 | MIT OR Apache-2.0 | Windows | no |
+| `windows-sys` | 0.52.0 | MIT OR Apache-2.0 | Windows | no |
+| `windows-sys` | 0.59.0 | MIT OR Apache-2.0 | cargo-deny graph only | no |
+| `windows-sys` | 0.61.2 | MIT OR Apache-2.0 | cargo-deny graph only | no |
+| `windows-targets` | 0.52.6 | MIT OR Apache-2.0 | Windows | no |
+| `windows-threading` | 0.2.1 | MIT OR Apache-2.0 | Windows | no |
+| `windows_aarch64_msvc` | 0.52.6 | MIT OR Apache-2.0 | Windows arm64 | no |
+| `windows_x86_64_gnu` | 0.52.6 | MIT OR Apache-2.0 | cargo-deny graph only | no |
+| `windows_x86_64_msvc` | 0.52.6 | MIT OR Apache-2.0 | Windows x64 | no |
+| `winit` | 0.30.13 | Apache-2.0 | all seven | no |
+| `x11-dl` | 2.21.0 | MIT | Linux | no |
+| `x11rb` | 0.13.2 | MIT OR Apache-2.0 | Linux | no |
+| `x11rb-protocol` | 0.13.2 | MIT OR Apache-2.0 | Linux | no |
+| `xcursor` | 0.3.11 | MIT | Linux | no |
+| `xkbcommon-dl` | 0.4.2 | MIT | Linux | no |
+| `xkeysym` | 0.2.1 | MIT OR Apache-2.0 OR Zlib | Linux | no |
+| `zerocopy` | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT | all seven | no |
+| `zerocopy-derive` | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT | all seven | no |
 
 ## Risks and unknowns
 

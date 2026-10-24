@@ -40,13 +40,17 @@ pub(crate) fn hash(sim: &Sim) -> u64 {
         .unwrap_or_else(|bad| panic!("[E-NAN] {bad} at {}", sim.tick()))
 }
 
+/// Builds the sim at tick 0 and tells the panic hook its seed and tick.
 pub(crate) fn build_sim(game: &GameDef, players: u8, seed: u64) -> Sim {
+    exit::note_seed(seed);
     let config = SimConfig {
         tick_rate: game.tick_rate,
         players,
         seed,
     };
-    (game.build)(config).unwrap_or_else(|e| panic!("[E-SCHEDULE] {e}"))
+    let sim = (game.build)(config).unwrap_or_else(|e| panic!("[E-SCHEDULE] {e}"));
+    exit::note_tick(sim.tick());
+    sim
 }
 
 pub(crate) fn dump(sim: &Sim) -> JsonValue {
@@ -160,6 +164,7 @@ pub(crate) fn run(game: &GameDef, a: &RunArgs) -> Exit {
     let mut platform = HeadlessPlatform::new(game.tick_rate, a.ticks);
     while within_budget && platform.next_frame().is_some() {
         let tick = sim.tick().next();
+        exit::note_tick(tick);
         if a.panic_at_tick == Some(tick.0) {
             panic!("deliberate panic at {tick} (--panic-at-tick)");
         }

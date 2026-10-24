@@ -161,6 +161,7 @@ dependencies = [
  "eng-cli",
  "eng-input",
  "game-testbed-sim",
+ "serde_json",
 ]
 
 [[package]]

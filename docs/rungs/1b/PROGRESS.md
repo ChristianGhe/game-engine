@@ -375,6 +375,223 @@ proposals for the owner, never made by agents.
   for the owner at G3, together with `[graph] targets`, the wrapper ban
   and the typos-config entry.
 
+## 2026-10-25, session 6: `crash.json` from the panic hook (T2) (Claude Opus 5.5, open-pulsar task)
+
+**Done**
+- `crates/eng-cli/src/exit.rs`: on any panic the hook prints
+  `[E-PANIC]` as before, then writes `crash-<game>-<pid>.json` beside the
+  agent log (`$ENG_AGENT_LOG_DIR`, else `target/agent-logs/`). It prints
+  `crash: <path>` and `log: <path>` and exits 12. This follows the
+  plan's `crash.json` item (spec 6.13 + proposal). The fields are:
+  - `crash_version` (1) and `game`;
+  - `version`: the build stamp that reports already carry
+    (`game_version`, `engine_sha`, `game_sha`, `rustc`, `target`,
+    `profile`), because T1's full `version.json` stamp does not exist
+    yet;
+  - `args` (the command line) and `seed`, or `null` before a sim is
+    built;
+  - `tick`: 0 for the initial state, N while the commands for tick N
+    are applied, `null` before a sim exists;
+  - `thread` (`name`, `id`);
+  - `panic` (`message`, `location`);
+  - `backtrace`: one string per line, forced on whatever
+    `RUST_BACKTRACE` says, and cut at 400 lines;
+  - `last_log_lines`: the last 50 log records, oldest first, ending with
+    the `[E-PANIC]` line;
+  - `log_file`.
+- The hook must not panic or hang, because a panic inside a panic hook
+  aborts instead of exiting 12. So it writes to stderr with `writeln!`
+  and ignores errors (`eprintln!` panics when stderr is closed), and
+  never unwraps. It takes the log and context locks with `try_lock` and
+  gives up after about 100 ms (`lock_on_panic`). A thread that panics
+  while holding the log lock therefore still exits 12. If the crash
+  file cannot be written, it prints `[E-CRASH-JSON] <reason>` and still
+  exits 12. Only the first panic writes the file (a static
+  `CRASHING` flag). A panic on another thread meanwhile prints its
+  `[E-PANIC]` line and waits for the exit, so two threads never
+  truncate each other's file. The one known way the hook can still
+  abort is `std::thread::current()` for a panic in a thread-local
+  destructor. Stable Rust has no safe alternative, and the doc comment
+  says so.
+- `log.rs` keeps the last 50 records in memory beside the file, even when
+  the log file could not be opened. `run_args` logs a first line,
+  `start: <game> <args>`, so the tail always shows the command.
+  `build_sim` (used by `run`, `dump-world` and `replay verify`) records
+  the seed and tick 0, and the `run` and `replay verify` loops record
+  each tick.
+- New harness `crates/game-testbed/tests/crash_json.rs` (T2's "done
+  when"). It runs the binary with `run --seed 7 --panic-at-tick 3` and
+  parses the file, checking that it exits 12 and every field's value or
+  type. It also checks that the console names the file, that the log
+  tail matches the log file, and that the panic still exits 12 with
+  `[E-CRASH-JSON]` when the log directory cannot be created. It parses
+  with `serde_json`, added as a dev-dependency of `game-testbed` only.
+  The crate is already on `deny.toml`'s allow-list and in `Cargo.lock`
+  (xtask), so the lock gains one dependency line and no package.
+- Unit tests: the 50-line tail, the backtrace cut, and `lock_on_panic`
+  giving up on a held lock and using a poisoned one.
+- `AGENTS.md` (133 lines) and `docs/ARCHITECTURE.md` say where crash
+  files go.
+- Kept, as "This window's queue" requires: the protected `exit_codes.rs`
+  passes unchanged. No sim code changed, so the hash streams are
+  unchanged and `replay` is green.
+
+**Checks**
+- `cargo xtask quick` green (8 s); `cargo xtask ci --job lint` green,
+  including cargo-deny and typos (2 s).
+- Release build by hand: the backtrace has function names
+  (`eng_cli::run::run`) but no line numbers. The whole hook took about
+  0.5 s, mostly symbolizing.
+- Two threads panicking at once, with a throwaway game binary outside
+  the repo (`$TMPDIR/eng-crash-race.*`, deleted afterwards). Its build
+  function makes two named threads panic on a barrier. Over 8 runs:
+  exit 12 every time, both `[E-PANIC]` lines printed, exactly one valid
+  crash file naming the thread `worker-1`. It also showed `seed` set
+  and `tick` `null` for a panic during the build.
+- `reviewer` subagent: approve, nothing blocking. Its own `quick` run
+  was green, and `crash_json` passed 3 runs in a row. Exit 12 and the
+  crash file held with stderr closed and with a broken pipe. Findings
+  and what happened to each:
+  1. `version` is 1a's build info, not T1's stamp (medium): recorded
+     below and in amendment 14.
+  2. Two threads panicking at once could leave a half-written file:
+     fixed (`CRASHING`), tested by hand as above.
+  3. `thread::current()` can still panic in a thread-local destructor:
+     documented on the hook; no stable alternative.
+  4. If the log lock stays busy for 100 ms, `log_file` is `null` too:
+     left as it is. The lock is held only inside `State::push`, which
+     has no reachable panic, and other threads hold it for
+     microseconds, which the retries cover.
+  5. No test of `replay verify`'s seed and tick, or of `null` before
+     the sim exists: no CLI path panics in either case (the scratch
+     binary above covers the second by hand). `--panic-at-tick` exists
+     only on `run`, and the plan asks only for `run`.
+  6. About 11 frames of hook and std noise at the top of the backtrace:
+     kept. Trimming by frame name is fragile across targets and
+     inlining, and the 400-line cap leaves plenty of room.
+  7. A reused pid overwrites an older crash file: the plan names the
+     file `crash-<game>-<pid>.json`. Adding the time, as log names
+     already do, is an option for the owner at G1.
+  - Nit: the tick doc now says "the tick of the latest state".
+
+**Not done (waits for others)**
+- `play` (criterion 6's second half) waits for `eng-app` (T11).
+- The `version` object becomes T1's full stamp when T1 lands. The
+  field name stays, and `crash_version` goes to 2 if the stamp's fields
+  change meaning. T1 must also update `crash_json.rs`'s version checks,
+  before the file is protected (amendment 14).
+
+**Costs and timings**
+- One open-pulsar session, about 40 minutes (02:14 to about 02:55). The
+  `reviewer` pass took about 8 minutes and 123k subagent tokens. Builds
+  and test runs took seconds each.
+
+**Next**
+- T1 (`--version`, `--version --json`) and T4 (live input).
+
+## 2026-10-25, session 7: `crash.json` integration test (T2 follow-up) (Claude Opus 5.5, open-pulsar task)
+
+The task: an integration test that panics through `--panic-at-tick` and
+checks `crash.json` and exit 12, and an ARCHITECTURE.md update if it
+describes the probe.
+
+**Done**
+- Session 6 had already written the test,
+  `crates/game-testbed/tests/crash_json.rs`. Its first case runs
+  `run --headless --ticks 5 --seed 7 --panic-at-tick 3` and checks exit
+  12, every field, the console's `crash:` line, and that the log tail
+  matches the log file. Its second case checks exit 12 and
+  `[E-CRASH-JSON]` when the log directory cannot be created. No new code
+  was needed.
+- Checked: `crash_json` passes 2/2, and the protected `exit_codes` passes
+  7/7. The crash file's `tick` (3) matches `note_tick`'s documented
+  meaning: N from the moment tick N's commands start being applied.
+- Mutation check by hand, with the sources restored byte-for-byte
+  afterwards. With the hook exiting 13 instead of 12, both cases fail.
+  With the seed recorded as `seed ^ 1`, the field case fails on `seed`
+  (6 != 7).
+- `docs/ARCHITECTURE.md` (Agent tooling, the probe): lists the crash
+  file's contents and names the two tests that pin the probe's exit
+  codes and crash file.
+
+**Not done**
+- The same as session 6: the `play` case waits for T11. Protecting the
+  test and adding the `crash-json` CI step wait for the owner
+  (amendment 14).
+
+**Costs and timings**
+- One short open-pulsar session (about 10 minutes); no subagents.
+
+## 2026-10-25, session 8: `crash.json` test and `quick` re-run (T2 follow-up) (Claude Opus 5.5, open-pulsar task)
+
+The task: run the new test and `cargo xtask quick`, both green, and
+record the results and open questions. No code or docs other than this
+entry changed. `docs/rungs/current.txt` stays at `1a`, and nothing was
+pushed.
+
+**Results** (aarch64-apple-darwin, Rust 1.99.1, `cargo test` because
+cargo-nextest is not installed here)
+- `cargo test -p game-testbed --test crash_json`: 2/2 ok in 0.24 s.
+  `run_panic_writes_crash_json_with_every_field` and
+  `panic_exits_12_when_crash_json_cannot_be_written` both pass.
+- `cargo xtask quick`: all 7 steps ok in 8 s (fmt, clippy, arch-check,
+  size-check, docs-check, tests 6.9 s, replay 0.3 s). The tests step ran
+  `cargo test --workspace`. Its log (`target/agent-logs/xtask-tests.log`)
+  shows that `crash_json` ran and passed.
+- `cargo xtask ci --job test`: all 4 steps ok in 9 s (tests,
+  known-answers, exit-codes, replay). The protected `exit_codes` passes
+  7/7.
+- Is it stable?
+  - 20 runs in a row: 20 passed, 0 failed.
+  - It also passes with `RUST_BACKTRACE` and `RUST_LIB_BACKTRACE` set to
+    `0`, `1` and `full`, so the backtrace check does not depend on the
+    environment.
+  - It passes with `--test-threads=1`.
+  - It passes on the release profile (`cargo test --release`, 0.44 s).
+    So the `eng_cli::run::run` frame check survives opt-level 3 here.
+- Hash streams unchanged (replay ok), no protected path touched, and
+  `jj st` was clean before this entry.
+
+**Open questions**
+1. **Linux and nextest are not checked yet.** CI's test job runs on
+   `ubuntu-24.04` and `ubuntu-24.04-arm` with cargo-nextest 0.9.148,
+   where each test runs in its own process. This Mac has neither. The
+   two cases use separate scratch directories
+   (`$CARGO_TARGET_TMPDIR/crash-json/{run,unwritable}`), so
+   per-process runs should not clash. The first CI run after the owner
+   pushes is the real check, and the backtrace frame check is the part
+   most likely to differ on Linux.
+2. **A named CI step (amendment 14, item 2).** `crash_json` already runs
+   in CI inside the workspace `tests` step. A separate `crash-json` step
+   after `exit-codes` would only give the failure its own label in the
+   report, as `exit-codes` has. Is that label worth a second run of
+   0.3 s? I think it is, because `exit_codes` already sets the pattern.
+   The owner decides, since `xtask/` is protected.
+3. **Two `cargo test` runs at once.** `scratch()` deletes and recreates
+   its directory, as `exit_codes.rs` does. Two cargo runs of the same
+   test at the same moment (say, `quick` in two terminals) could delete
+   each other's files. CI never does this, and the loop runs one task at
+   a time. A per-pid subdirectory would fix it if it ever matters, but
+   the test should not change before it is protected.
+4. **When to protect `crash_json.rs` (amendment 14, item 1).** T1 will
+   change the `version` checks. Protecting the file now means the owner
+   unlocks it for T1; protecting it after T1 leaves it open to agents
+   until then. My suggestion is still after T1.
+5. **The `play` half of criterion 6** waits for `eng-app` (T11). The
+   test's panic case will need a twin that runs `play`.
+6. **Pid reuse** (session 6, item 7): a reused pid overwrites an older
+   `crash-<game>-<pid>.json`. The test checks for exactly one crash file
+   per fresh scratch directory, so it does not see this. That stays for
+   the owner to decide at G1.
+
+**Costs and timings**
+- One short open-pulsar session (about 10 minutes); no subagents. Every
+  build was already cached except the release one (2.3 s to build).
+
+**Next**
+- T1 (`--version`, `--version --json`, plus `crash_json.rs`'s version
+  checks), then T4 (live input).
+
 ## Proposals for the owner (protected paths)
 
 Nothing below is applied. Each item is what an agent would otherwise have
@@ -676,3 +893,35 @@ to change; the owner applies it, or unlocks the path.
       Cargo.lock" would no longer be true.
     - Recompute against the real lock in T9 (`png`) and T12 (`nv-flip`)
       too, not only in T7 and T10.
+
+14. **Amendment from session 6** (to proposals 7 and 8; the text above is
+    kept as written). T2 is built, so two of those items can be applied
+    now, without waiting for T11:
+    - Proposal 8: `crates/game-testbed/tests/crash_json.rs` exists at
+      that path. Add it to `protected.toml` beside `exit_codes.rs`, with
+      the matching `.github/CODEOWNERS` line. Until then, deleting it or
+      weakening it would leave criterion 6 unchecked. Best applied after
+      T1: T1 swaps `version` for the full stamp and updates the
+      harness's version checks. If it is protected first, that update
+      needs the owner too.
+    - Proposal 7, X7: the `crash-json` step in `cargo xtask ci --job
+      test`. In `xtask/src/ci.rs`, `fn test`, after the `exit-codes`
+      step:
+
+      ```rust
+      steps.run("crash-json", || {
+          tests(root, Some(("game-testbed", "crash_json")))
+      });
+      ```
+
+      Until then the harness runs only inside the `tests` step, so a
+      failure shows up as `tests` and not as `crash-json`. Keep the step
+      on the dev profile: the harness looks for the `eng_cli::run::run`
+      frame, and a release build without debug info can inline it away.
+    - `deny.toml` (G3, optional): the allow-list comment gives
+      `serde_json`'s uses as "authored data, xtask". It is now also a
+      dev-dependency of `game-testbed`, for parsing `crash.json` in a
+      test, so the comment could add "tests". The crate list is
+      unchanged.
+    - When T11 adds `play`, the harness gains a `play` case. It is
+      protected by then, so that change also needs the owner.

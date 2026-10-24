@@ -12,7 +12,9 @@
 //!
 //! The console gets a summary of at most about 20 lines; the full log goes
 //! to `target/agent-logs/` (or `$ENG_AGENT_LOG_DIR`) as JSON lines with
-//! greppable tags such as `[E-DESYNC]`. Exit codes are listed on [`Exit`].
+//! greppable tags such as `[E-DESYNC]`. A panic also writes
+//! `crash-<game>-<pid>.json` there (version, thread, backtrace, last log
+//! lines, seed, tick) and exits 12. Exit codes are listed on [`Exit`].
 #![forbid(unsafe_code)]
 
 mod args;
@@ -60,12 +62,14 @@ pub fn main(game: &GameDef) -> ExitCode {
 
 /// Runs the probe with explicit arguments (without the program name).
 pub fn run_args(game: &GameDef, args: &[String]) -> Exit {
-    exit::install_panic_hook(game.name);
+    exit::install_panic_hook(game);
+    exit::begin(args);
     let command = match args::parse(args) {
         Ok(command) => command,
         Err(message) => return exit::usage(game.name, &message),
     };
     log::open(game.name, command.name());
+    log::line("info", &format!("start: {} {}", game.name, args.join(" ")));
     match command {
         args::Command::Help => {
             println!("{}", args::USAGE.replace("<game>", game.name));

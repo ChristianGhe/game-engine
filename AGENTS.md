@@ -24,7 +24,9 @@ cargo run -p game-testbed -- replay verify rec.rec
 
 Probe exit codes: 0 ok, 10 assertion failed, 11 desync, 12 panic,
 13 budget exceeded, 64 usage. Full logs: `target/agent-logs/*.jsonl`; grep
-for tags such as `[E-DESYNC]`, `[E-ASSERT]`, `[E-NAN]`, `[E-ARCH-*]`.
+for tags such as `[E-DESYNC]`, `[E-ASSERT]`, `[E-NAN]`, `[E-ARCH-*]`. A
+panic also writes `target/agent-logs/crash-<game>-<pid>.json` (backtrace,
+seed, tick, last log lines).
 
 ## Conventions that differ from usual Rust
 

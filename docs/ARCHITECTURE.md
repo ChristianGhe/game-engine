@@ -90,7 +90,16 @@ input script (TOML) ──eng-input──▶ PlayerCommand per player, per tick
 - `cargo xtask` is the only entry point; CI only calls it.
 - The probe (`eng-cli`, linked by every game) runs headless with scripted
   input, writes reports, events, hash streams and recordings, and verifies
-  replays. Exit codes are listed in `AGENTS.md`.
+  replays. Exit codes are listed in `AGENTS.md`. Its panic hook (in
+  `exit.rs`) writes `crash-<game>-<pid>.json` beside the agent log and
+  exits 12. The file holds the version, the command line, seed, tick,
+  thread, the panic's message and location, the backtrace, and the log
+  file's path and last 50 lines. Only the
+  first panic writes the file. Nothing in the hook may panic or wait on a
+  lock for long, because a panic inside the hook aborts the process
+  instead. `crates/game-testbed/tests/exit_codes.rs` runs the real binary
+  for each exit code, and `crash_json.rs` uses `run --panic-at-tick` to
+  check every field of the crash file.
 - Claude Code hooks (`.claude/settings.json`) run a copy of xtask built
   from `main` into `<git dir>/eng-hooks/`: the guard (protected paths, bless
   commands), rustfmt after edits, `quick` at the end of a turn. Before the

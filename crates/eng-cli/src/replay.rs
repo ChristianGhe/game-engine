@@ -72,6 +72,7 @@ pub(crate) fn verify(game: &GameDef, path: &Path, report_path: Option<&Path>) ->
     let mut divergence = None;
     for t in 0..=recording.ticks() {
         let tick = Tick(t);
+        exit::note_tick(tick);
         if t > 0 {
             sim.step(recording.commands_at(tick))
                 .unwrap_or_else(|e| panic!("[E-STEP] {e}"));

@@ -11,16 +11,11 @@
       "Bash(git commit:*)",
       "Bash(git branch:*)",
       "Bash(git switch:*)",
-      "Bash(git worktree:*)",
-      "Bash(git push:*)",
-      "Bash(gh pr:*)"
+      "Bash(git worktree:*)"
     ],
     "deny": [
-      "Bash(git push origin main:*)",
-      "Bash(git push origin HEAD:main:*)",
-      "Bash(git push --force:*)",
-      "Bash(git push -f:*)",
-      "Bash(git push --force-with-lease:*)",
+      "Bash(git push:*)",
+      "Bash(jj git push:*)",
       "Read(./.env)",
       "Read(./.env.*)",
       "Read(~/.ssh/**)",
@@ -45,7 +40,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|mcp__.*",
         "hooks": [
           {
             "type": "command",
@@ -61,6 +56,28 @@
           {
             "type": "command",
             "command": "\"$(git -C \"$CLAUDE_PROJECT_DIR\" rev-parse --path-format=absolute --git-common-dir)/eng-hooks/xtask\" hook fmt || true"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$(git -C \"$CLAUDE_PROJECT_DIR\" rev-parse --path-format=absolute --git-common-dir)/eng-hooks/xtask\" hook verify",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$(git -C \"$CLAUDE_PROJECT_DIR\" rev-parse --path-format=absolute --git-common-dir)/eng-hooks/xtask\" hook verify",
+            "timeout": 120
           }
         ]
       }

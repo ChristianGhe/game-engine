@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 use crate::arch;
 use crate::util::{self, Steps};
 
-pub const CASES: [&str; 13] = [
+pub const CASES: [&str; 17] = [
     "float-sin",
     "float-min",
     "allow-escape",
@@ -21,7 +21,11 @@ pub const CASES: [&str; 13] = [
     "protected-edit",
     "guard-cd-bypass",
     "guard-heredoc",
+    "guard-herestring",
+    "guard-quoted-substitution",
     "guard-unlock-write",
+    "guard-push",
+    "guard-jj",
     "bless",
     "guard-allows-ordinary-edits",
 ];
@@ -100,11 +104,35 @@ fn run_case(root: &Path, case: &str) -> Result<String, String> {
             "Bash",
             serde_json::json!({ "command": "python3 - <<'EOF'\nopen('deny.toml', 'a').write('x')\nEOF" }),
         ),
+        "guard-herestring" => guard_blocks(
+            root,
+            case,
+            "Bash",
+            serde_json::json!({ "command": "cat <<<x\necho x >> deny.toml\nx" }),
+        ),
+        "guard-quoted-substitution" => guard_blocks(
+            root,
+            case,
+            "Bash",
+            serde_json::json!({ "command": "echo \"it's $(echo x >> deny.toml)\"" }),
+        ),
         "guard-unlock-write" => guard_blocks(
             root,
             case,
             "Bash",
             serde_json::json!({ "command": "cd .claude && printf '*' > guard-unlock" }),
+        ),
+        "guard-push" => guard_blocks(
+            root,
+            case,
+            "Bash",
+            serde_json::json!({ "command": "git -C . push origin HEAD:main" }),
+        ),
+        "guard-jj" => guard_blocks(
+            root,
+            case,
+            "Bash",
+            serde_json::json!({ "command": "jj restore --from 'root()' deny.toml" }),
         ),
         "core-std-dep" => arch_rejects(root, case, "[E-ARCH-CORE-DEP]", |ws| {
             edit(

@@ -1,10 +1,14 @@
 //! The guard's checks for programs with their own rules: git, patch, find
-//! and xargs.
+//! and xargs. History and git settings are in `guard_vcs` and
+//! `guard_settings`; pushes, jj and gh in `guard_owner`; shells,
+//! interpreters, downloads and archives in `guard_code`.
 
 use std::path::PathBuf;
 
 use crate::guard::{Decision, normalize};
 use crate::guard_bash::{Check, writer};
+use crate::guard_owner::OWNER_ONLY;
+use crate::guard_settings::setting;
 use crate::shell::Word;
 
 impl Check<'_> {
@@ -19,10 +23,36 @@ impl Check<'_> {
                         .map(|(c, d)| normalize(&c.join(&d.text)));
                     i += 2;
                 }
-                "-c" => i += 2,
-                t if t.starts_with("--work-tree=") => {
-                    cwd = cwd.map(|c| normalize(&c.join(&t["--work-tree=".len()..])));
-                    i += 1;
+                "-c" => {
+                    let set = args.get(i + 1).map_or("", |w| w.text.as_str());
+                    let (key, val) = set
+                        .split_once('=')
+                        .map_or((set, None), |(k, v)| (k, Some(v)));
+                    if let Some(block) = setting(key, val) {
+                        return Some(block);
+                    }
+                    i += 2;
+                }
+                t if t.starts_with("--config-env") => {
+                    // The value comes from the environment, unseen.
+                    let set = t
+                        .strip_prefix("--config-env=")
+                        .or_else(|| args.get(i + 1).map(|w| w.text.as_str()))
+                        .unwrap_or("");
+                    if let Some(block) = setting(set.split('=').next().unwrap_or(""), None) {
+                        return Some(block);
+                    }
+                    i += if t.contains('=') { 1 } else { 2 };
+                }
+                "--namespace" => i += 2,
+                t if matches!(t, "--git-dir" | "--work-tree")
+                    || ["--git-dir=", "--work-tree=", "--exec-path="]
+                        .iter()
+                        .any(|o| t.starts_with(o)) =>
+                {
+                    return Some(Decision::Block(format!(
+                        "git {t} points git at another repository, work tree or program; use -C"
+                    )));
                 }
                 _ => i += 1,
             }
@@ -40,15 +70,32 @@ impl Check<'_> {
             )))
         };
         match sub {
-            "rm" | "mv" => rest
-                .iter()
-                .filter(|w| !w.text.starts_with('-'))
-                .find_map(guarded)
-                .and_then(blocked),
+            "rm" | "mv" => {
+                let paths: Vec<&&Word> = rest.iter().filter(|w| !w.text.starts_with('-')).collect();
+                if let Some(what) = paths.iter().copied().find_map(guarded) {
+                    return blocked(what);
+                }
+                // A directory takes what is under it; `git mv` moves its sources.
+                let taken = match sub {
+                    "mv" => &paths[..paths.len().saturating_sub(1)],
+                    _ => &paths[..],
+                };
+                taken.iter().find_map(|w| here.directory(w)).and_then(blocked)
+            }
             "checkout" | "restore" => {
                 let (source, paths, worktree) = checkout_parts(sub, rest, &cwd);
                 if !worktree {
                     return None;
+                }
+                if sub == "checkout" && paths.is_empty() {
+                    // Switching commits: whatever the target's tree changes.
+                    let target = source.or_else(|| {
+                        rest.iter()
+                            .any(|w| w.text == "-")
+                            .then(|| "@{-1}".to_string())
+                    });
+                    return target
+                        .and_then(|t| here.tree_change(sub, &["HEAD", &t], &[], Some(&t)));
                 }
                 if let Some(what) = paths.iter().find_map(guarded) {
                     return blocked(what);
@@ -95,7 +142,39 @@ impl Check<'_> {
             "read-tree" if rest.iter().any(|w| w.text == "-u") => Some(Decision::Block(
                 "git read-tree -u rewrites the working tree".into(),
             )),
-            "branch" | "update-ref" | "push"
+            "push" | "send-pack" | "http-push" => {
+                Some(Decision::Block(format!("git {sub}: {OWNER_ONLY}")))
+            }
+            "revert" | "cherry-pick" => here.picks(sub, rest),
+            "reset" | "switch" | "merge" | "rebase" | "pull" | "stash" => here.moves(sub, rest),
+            "config" => here.config(rest),
+            "fetch"
+                if rest.iter().any(|w| {
+                    let to = w.text.rsplit(':').next().unwrap_or("");
+                    w.text.contains(':') && matches!(to, "main" | "refs/heads/main")
+                }) =>
+            {
+                Some(Decision::Block(
+                    "git fetch into main would move the local main branch, which only the owner moves"
+                        .into(),
+                ))
+            }
+            // Commands that run a command of the agent's.
+            "bisect" if rest.first().is_some_and(|w| w.text == "run") => {
+                here.nested(&quoted(&rest[1..]))
+            }
+            "submodule" => rest.iter().position(|w| w.text == "foreach").and_then(|at| {
+                let command: Vec<&str> = rest[at + 1..]
+                    .iter()
+                    .map(|w| w.text.as_str())
+                    .filter(|t| !matches!(*t, "--recursive" | "-q" | "--quiet"))
+                    .collect();
+                here.nested(&command.join(" "))
+            }),
+            "difftool" | "mergetool" | "filter-branch" | "filter-repo" => Some(Decision::Block(
+                format!("git {sub} runs other programs over the tree; the owner runs it"),
+            )),
+            "branch" | "update-ref"
                 if rest.iter().any(|w| {
                     w.text == "main"
                         || w.text.ends_with(":main")
@@ -106,8 +185,7 @@ impl Check<'_> {
                             w.text.as_str(),
                             "-f" | "--force" | "-D" | "-M" | "-m" | "-C" | "-c"
                         )
-                    }))
-                    && (sub != "push" || rest.iter().any(|w| w.text == ".")) =>
+                    })) =>
             {
                 Some(Decision::Block(format!(
                     "git {sub} would rewrite the local main branch, which agent hooks are built from"
@@ -154,6 +232,9 @@ impl Check<'_> {
     }
 
     pub(crate) fn find(&self, args: &[&Word]) -> Option<Decision> {
+        if self.lenient {
+            return None;
+        }
         let starts: Vec<&str> = args
             .iter()
             .map(|w| w.text.as_str())
@@ -177,6 +258,9 @@ impl Check<'_> {
     }
 
     pub(crate) fn xargs(&self, args: &[&Word]) -> Option<Decision> {
+        if self.lenient {
+            return None;
+        }
         let with_value = ["-n", "-I", "-L", "-P", "-d", "-E", "-s", "-a", "-i"];
         let mut i = 0;
         while i < args.len() && args[i].text.starts_with('-') {
@@ -195,7 +279,24 @@ impl Check<'_> {
         })
     }
 }
-
+/// The words as one command line, each quoted when it needs it.
+fn quoted(words: &[&Word]) -> String {
+    words
+        .iter()
+        .map(|w| {
+            let plain = w
+                .text
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_./=:,@%+".contains(c));
+            if plain && !w.text.is_empty() {
+                w.text.clone()
+            } else {
+                format!("'{}'", w.text.replace('\'', "'\\''"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 /// `(source revision, paths, touches the working tree)` for checkout/restore.
 fn checkout_parts<'a>(
     sub: &str,

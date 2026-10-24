@@ -152,7 +152,8 @@ pub fn session_start() -> Result<String, String> {
         ));
     }
     lines.push(
-        "Before pushing: `cargo xtask quick`. Protected paths need the owner (AGENTS.md).".into(),
+        "Before committing: `cargo xtask quick`. Protected paths need the owner (AGENTS.md)."
+            .into(),
     );
     Ok(lines.join("\n"))
 }

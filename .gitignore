@@ -6,3 +6,5 @@
 .claude/scheduled_tasks.lock
 # The superseded commercial plan stays local (owner decided 2026-10-24).
 docs/superpowers/specs/*-v2.md
+# open-pulsar run state and logs (ADR-0015).
+.agent-loop/

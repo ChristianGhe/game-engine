@@ -2,7 +2,7 @@
 
 How the engine fits together as of rung 1a. The plan and its reasons are in
 `docs/superpowers/specs/2026-10-20-ai-built-engine-design.md`; decisions in
-`docs/adr/`. Keep this file short and true: update it in the PR that changes
+`docs/adr/`. Keep this file short and true: update it in the commit that changes
 what it describes.
 
 ## Layers

@@ -3,12 +3,17 @@
 //! - Blocks Edit/Write/MultiEdit/NotebookEdit on protected paths, and edits
 //!   that change the protected tables of the root `Cargo.toml`.
 //! - Refuses Bash commands that write to protected paths or "bless"
-//!   snapshots and expected output (`guard_bash.rs`).
+//!   snapshots and expected output (`guard_bash.rs`, `guard_tools.rs`,
+//!   `guard_code.rs`), that bring a protected file back from another commit
+//!   (`guard_vcs.rs`), that set git up to run other programs
+//!   (`guard_settings.rs`), or that only the owner runs: pushes, GitHub
+//!   writes, jj history (`guard_owner.rs`).
 //! - Fails closed: any error exits with 2, which blocks the tool call.
 //!
-//! This is defense in depth. It runs as the agent's own OS user, so a
-//! determined agent can defeat it; CI's `oracle-check`, which runs only
-//! base-branch code, is the gate. It catches accidents and the common forms.
+//! With commits straight to `main` (ADR-0014, ADR-0015) this is the only
+//! local gate; CI's `oracle-check` applies to pull requests alone. It runs as
+//! the agent's own OS user, so a determined agent can defeat it: it catches
+//! accidents and the common forms.
 
 use std::fs;
 use std::io::Read;
@@ -18,21 +23,82 @@ use std::process::ExitCode;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::{glob, util};
+use crate::guard_vcs::git_out;
+use crate::{glob, guard_snapshot, util};
 
 pub const PROTECTED_TOML: &str = include_str!("../../protected.toml");
 pub const UNLOCK_FILE: &str = ".claude/guard-unlock";
 
 /// Paths the guard protects for its own sake: its binary, the sources it is
-/// built from, and the owner's unlock file.
-const GUARD_PATHS: [&str; 5] = [
+/// built from, the owner's unlock file, and git's settings and hooks, which
+/// make git run other programs.
+const GUARD_PATHS: [&str; 10] = [
     ".git/eng-hooks/**",
     "target/hooks-src/**",
     "target/hooks-build/**",
     // Cargo reads config from every parent of the hook build.
     "target/.cargo/**",
     ".claude/guard-unlock",
+    ".git/hooks/**",
+    ".git/config",
+    ".git/config.worktree",
+    ".git/worktrees/*/config.worktree",
+    ".jj/repo/config.toml",
 ];
+
+/// How an MCP tool's name starts when it only reads: `read_file`, `list_dir`.
+const MCP_READS: [&str; 13] = [
+    "read", "get", "list", "search", "find", "query", "view", "show", "describe", "grep", "glob",
+    "stat", "inspect",
+];
+
+/// Files outside the repo through which an agent could switch the guard off
+/// or have Claude Code, git, jj or the shell run its programs: Claude Code's
+/// settings and plugins, git's and jj's user config (jj keeps each repo's
+/// config there too), and shell startup files.
+fn outside_paths() -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home.as_ref().map(|h| h.join(".config")));
+    let claude = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .into_iter()
+        .chain(home.as_ref().map(|h| h.join(".claude")));
+    let mut out = Vec::new();
+    for dir in claude {
+        for name in [
+            "settings.json",
+            "settings.local.json",
+            "managed-settings.json",
+            ".claude.json",
+            "plugins",
+            "hooks",
+        ] {
+            out.push(dir.join(name));
+        }
+    }
+    if let Some(home) = &home {
+        for name in [
+            ".claude.json",
+            ".gitconfig",
+            ".zshenv",
+            ".zshrc",
+            ".zprofile",
+            ".zlogin",
+            ".zlogout",
+            ".bashrc",
+            ".bash_profile",
+            ".bash_login",
+            ".bash_logout",
+            ".profile",
+        ] {
+            out.push(home.join(name));
+        }
+    }
+    out.extend(config.iter().flat_map(|c| [c.join("git"), c.join("jj")]));
+    out
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -99,10 +165,24 @@ pub fn main() -> ExitCode {
             ExitCode::from(2)
         }
         Err(error) => {
-            eprintln!("[E-GUARD] guard error, failing closed: {error}");
+            eprintln!(
+                "[E-GUARD] guard error, failing closed: {error}\nIf this repeats, stop and tell \
+                 the owner: they can fix it, or pause the guard with .claude/guard-unlock."
+            );
             ExitCode::from(2)
         }
     }
+}
+
+/// Whether `tool` is an MCP tool whose name says it only reads.
+fn mcp_read(tool: &str) -> bool {
+    let Some(rest) = tool.strip_prefix("mcp__") else {
+        return false;
+    };
+    let action = rest.rsplit("__").next().unwrap_or(rest).to_lowercase();
+    MCP_READS
+        .iter()
+        .any(|v| action == *v || action.starts_with(&format!("{v}_")))
 }
 
 fn run() -> Result<Decision, String> {
@@ -129,7 +209,18 @@ fn run() -> Result<Decision, String> {
                 .collect()
         })
         .unwrap_or_default();
-    decide(&protected()?, &root, &cwd, &input, &unlocked)
+    let rules = protected()?;
+    let decision = decide(&rules, &root, &cwd, &input, &unlocked)?;
+    if decision == Decision::Allow {
+        let ctx = Ctx {
+            rules: &rules,
+            root: &root,
+            cwd: &cwd,
+            unlocked: &unlocked,
+        };
+        guard_snapshot::record(&ctx, &input)?;
+    }
+    Ok(decision)
 }
 
 pub fn decide(
@@ -152,6 +243,7 @@ pub fn decide(
         "Read" | "Grep" | "Glob" | "LS" | "WebFetch" | "WebSearch" | "TodoWrite" => {
             Ok(Decision::Allow)
         }
+        _ if mcp_read(tool) => Ok(Decision::Allow),
         _ => {
             let path = ["file_path", "notebook_path", "path"]
                 .iter()
@@ -232,14 +324,67 @@ impl Ctx<'_> {
         protected && !self.unlocked(rel)
     }
 
-    /// The guarded repo-relative path `raw` names from `cwd`, if any.
+    /// The guarded path `raw` names from `cwd`, if any: repo-relative, or
+    /// one of the files outside the repo that the guard watches.
     pub fn guarded_path(&self, cwd: &Path, raw: &str) -> Option<String> {
-        self.resolve_in(cwd, raw).filter(|rel| self.guarded(rel))
+        match self.resolve_in(cwd, raw) {
+            Some(rel) => self.guarded(&rel).then_some(rel),
+            None => self.outside_guarded(&cwd.join(expand_home(raw))),
+        }
+    }
+
+    /// The watched file outside the repo that `path` is or lies under.
+    fn outside_guarded(&self, path: &Path) -> Option<String> {
+        let real = |p: &Path| {
+            let p = normalize(p);
+            fs::canonicalize(&p)
+                .ok()
+                .or_else(|| Some(fs::canonicalize(p.parent()?).ok()?.join(p.file_name()?)))
+                .unwrap_or(p)
+        };
+        let path = real(path);
+        outside_paths()
+            .iter()
+            .map(|p| real(p))
+            .find(|p| path.starts_with(p))
+            .map(|p| p.display().to_string())
+    }
+
+    /// Whether removing or moving the directory `rel` would take guarded
+    /// files with it.
+    pub fn guards_below(&self, rel: &str) -> bool {
+        let prefix = match rel.trim_end_matches('/') {
+            "" | "." => String::new(),
+            dir => format!("{dir}/"),
+        };
+        if GUARD_PATHS
+            .iter()
+            .any(|p| p.to_lowercase().starts_with(&prefix.to_lowercase()))
+        {
+            return true;
+        }
+        let spec = if prefix.is_empty() {
+            "."
+        } else {
+            prefix.as_str()
+        };
+        match git_out(self.root, &["ls-files", "-z", "--", spec]) {
+            Some(files) => files.split('\0').any(|f| !f.is_empty() && self.guarded(f)),
+            // Without git, assume a protected file may be anywhere below.
+            None => true,
+        }
     }
 
     fn file_write(&self, tool: &str, path: &str, args: &Value) -> Result<Decision, String> {
         let Some(rel) = self.resolve_in(self.cwd, path) else {
-            return Ok(Decision::Allow);
+            return Ok(
+                match self.outside_guarded(&self.cwd.join(expand_home(path))) {
+                    Some(watched) => Decision::Block(format!(
+                        "{tool} on {watched}, which can switch the guard off or make tools run programs"
+                    )),
+                    None => Decision::Allow,
+                },
+            );
         };
         if rel.eq_ignore_ascii_case("Cargo.toml") && !self.unlocked(&rel) {
             return self.root_manifest(tool, args);
@@ -319,3 +464,7 @@ fn apply_edit(text: &str, edit: &Value) -> String {
 #[cfg(test)]
 #[path = "guard_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "guard_vcs_tests.rs"]
+mod vcs_tests;

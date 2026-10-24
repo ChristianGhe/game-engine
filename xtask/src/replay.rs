@@ -193,7 +193,7 @@ pub fn run(root: &Path, opts: &Options) -> Result<String, String> {
             fs::write(committed.join(&name), text).map_err(|e| format!("{name}: {e}"))?;
         }
         return Ok(format!(
-            "replay: {runs} runs; regenerated {COMMITTED}/. Say why in the PR; the reviewer approves."
+            "replay: {runs} runs; regenerated {COMMITTED}/. Say why in the commit; the reviewer approves."
         ));
     }
     let diffs = compare(
@@ -208,7 +208,7 @@ pub fn run(root: &Path, opts: &Options) -> Result<String, String> {
         ))
     } else {
         Err(format!(
-            "{}\nIf the simulation change is intended, run `cargo xtask replay --regen` and explain it in the PR.",
+            "{}\nIf the simulation change is intended, run `cargo xtask replay --regen` and explain it in the commit.",
             diffs.join("\n")
         ))
     }

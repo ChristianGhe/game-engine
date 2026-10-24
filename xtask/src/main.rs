@@ -13,7 +13,12 @@ mod docs;
 mod glob;
 mod guard;
 mod guard_bash;
+mod guard_code;
+mod guard_owner;
+mod guard_settings;
+mod guard_snapshot;
 mod guard_tools;
+mod guard_vcs;
 mod guard_words;
 mod hooks;
 mod oracle;
@@ -38,7 +43,7 @@ cargo xtask selftest [CASE]            deliberate violations must fail
 cargo xtask acceptance DIR             compute acceptance `passes` from CI job reports
 cargo xtask oracle-check --base REV --head REV
                                        CI: protected changes need the owner
-cargo xtask hook <guard|fmt|stop|session-start>
+cargo xtask hook <guard|verify|fmt|stop|session-start>
                                        Claude Code hooks (run the prebuilt copy)
 cargo xtask install-hooks [--if-stale] build the hook binary from main";
 
@@ -46,6 +51,9 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     // The guard must fail closed: any error, even a bad command line, blocks.
+    if let ["hook", "verify", ..] = args.as_slice() {
+        return guard_snapshot::verify();
+    }
     if let ["hook", "guard", ..] = args.as_slice() {
         return guard::main();
     }

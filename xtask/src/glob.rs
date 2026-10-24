@@ -1,6 +1,10 @@
 //! Path globs for protected paths: `*` matches within one segment, `**`
 //! matches any number of segments (including none). Paths are
-//! repo-relative with forward slashes.
+//! repo-relative with forward slashes. Also the shell's own expansion of
+//! globs and braces, as the guard follows it.
+
+use std::fs;
+use std::path::{Path, PathBuf};
 
 pub fn matches(pattern: &str, path: &str) -> bool {
     let pat: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
@@ -31,6 +35,52 @@ fn match_segment(p: &[u8], s: &[u8]) -> bool {
         (Some(a), Some(b)) => a == b && match_segment(&p[1..], &s[1..]),
         _ => false,
     }
+}
+
+/// Paths under `base` matching a `*`/`?` glob, at most a few thousand.
+pub fn expand_paths(base: &Path, pattern: &str) -> Vec<PathBuf> {
+    let mut found = vec![PathBuf::new()];
+    for segment in pattern.split('/').filter(|s| !s.is_empty() && *s != ".") {
+        let mut next = Vec::new();
+        for prefix in &found {
+            if !segment.contains(['*', '?']) {
+                next.push(prefix.join(segment));
+                continue;
+            }
+            let Ok(entries) = fs::read_dir(base.join(prefix)) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if matches(segment, &name) {
+                    next.push(prefix.join(name));
+                }
+            }
+        }
+        next.truncate(4096);
+        found = next;
+    }
+    found
+        .into_iter()
+        .filter(|p| base.join(p).exists())
+        .collect()
+}
+
+/// `x{1,2}.toml` as `x1.toml` and `x2.toml`; `None` without a comma list.
+pub fn braces(text: &str) -> Option<Vec<String>> {
+    let open = text.find('{')?;
+    let close = open + text[open..].find('}')?;
+    let inner = &text[open + 1..close];
+    if !inner.contains(',') || inner.contains('{') {
+        return None;
+    }
+    let (before, after) = (&text[..open], &text[close + 1..]);
+    Some(
+        inner
+            .split(',')
+            .map(|alt| format!("{before}{alt}{after}"))
+            .collect(),
+    )
 }
 
 #[cfg(test)]

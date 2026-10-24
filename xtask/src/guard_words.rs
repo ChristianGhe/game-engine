@@ -66,19 +66,29 @@ pub(crate) fn unwrap<'a>(words: &[&'a Word]) -> (Vec<&'a Word>, Option<String>, 
     let mut i = 0;
     while i < words.len() {
         let w = words[i];
-        if !w.quoted && is_assignment(&w.text).is_some() {
+        // `X="a b" cmd` assigns too: quotes in the value do not matter.
+        if is_assignment(&w.text).is_some() {
             assigns.push(w);
             i += 1;
             continue;
         }
-        let name = w.text.rsplit('/').next().unwrap_or(&w.text);
+        // zsh's `=cmd` runs `cmd`.
+        let text = w
+            .text
+            .strip_prefix('=')
+            .filter(|t| !t.is_empty())
+            .unwrap_or(&w.text);
+        let name = text.rsplit('/').next().unwrap_or(text);
         let takes_value: &[&str] = match name {
             "sudo" => &["-u", "-g", "-C"],
             "env" => &["-u", "-C", "-S"],
             "nice" => &["-n"],
             "ionice" => &["-c", "-n"],
             "timeout" => &["-s", "-k"],
-            "stdbuf" | "command" | "exec" | "nohup" | "time" | "builtin" => &[],
+            "exec" => &["-a"],
+            "stdbuf" | "command" | "nohup" | "time" | "builtin" => &[],
+            // zsh's precommand modifiers.
+            "noglob" | "nocorrect" | "-" | "repeat" => &[],
             _ => return (assigns, Some(name.to_string()), words[i + 1..].to_vec()),
         };
         i += 1;
@@ -89,8 +99,8 @@ pub(crate) fn unwrap<'a>(words: &[&'a Word]) -> (Vec<&'a Word>, Option<String>, 
                 1
             };
         }
-        if name == "timeout" && i < words.len() {
-            i += 1; // the duration
+        if matches!(name, "timeout" | "repeat") && i < words.len() {
+            i += 1; // the duration, or the count
         }
     }
     (assigns, None, Vec::new())

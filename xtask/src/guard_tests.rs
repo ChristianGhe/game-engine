@@ -3,7 +3,7 @@
 use super::*;
 use serde_json::json;
 
-fn repo() -> PathBuf {
+pub(super) fn repo() -> PathBuf {
     // One directory per call: tests run in parallel.
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -26,7 +26,7 @@ fn decide_in(root: &Path, tool: &str, args: Value, unlocked: &[&str]) -> Decisio
     decide(&protected().unwrap(), root, root, &input, &unlocked).unwrap()
 }
 
-fn bash(root: &Path, cmd: &str) -> Decision {
+pub(super) fn bash(root: &Path, cmd: &str) -> Decision {
     decide_in(root, "Bash", json!({ "command": cmd }), &[])
 }
 
@@ -49,6 +49,9 @@ fn file_tools() {
     assert!(blocked("Edit", "crates/../deny.toml"));
     assert!(!blocked("Edit", "crates/eng-core/src/lib.rs"));
     assert!(!blocked("Write", "/tmp/elsewhere.txt"));
+    assert!(blocked("mcp__fs__write_file", "deny.toml"));
+    assert!(!blocked("mcp__codescout__read_file", "xtask/src/guard.rs"));
+    assert!(!blocked("mcp__codescout__list_dir", ".claude"));
     assert_eq!(
         decide_in(
             &root,
@@ -145,6 +148,18 @@ fn bash_writes() {
         "cp -l deny.toml /tmp/h",
         "git update-index --cacheinfo 100644,0123,deny.toml",
         "git branch -f main HEAD",
+        // Parser slips found before the first open-pulsar run (ADR-0015).
+        "cat <<<x\necho x > deny.toml\nx",
+        "jq . <<< '{}'\necho x > deny.toml",
+        "echo $((1<<2))\necho x > deny.toml\n2",
+        "x=1; ((x <<= 1))\necho x > deny.toml\n1",
+        "for ((i = 0; i << 1; i++)); do :; done\necho x > deny.toml\n1",
+        "cat <(echo x > deny.toml)",
+        "tee >(cat > deny.toml) < /dev/null",
+        "cat > /tmp/notes.md <<'EOF'\necho x > deny.toml\nEOF",
+        "git --git-dir=/tmp/x.git --work-tree=. checkout -f HEAD -- .",
+        "GIT_DIR=/tmp/x.git git checkout -f HEAD -- .",
+        "export GIT_WORK_TREE=.; git checkout -f HEAD -- .",
     ] {
         assert!(
             matches!(bash(&root, cmd), Decision::Block(_)),
@@ -184,6 +199,89 @@ fn bash_writes() {
         "grep guard-unlock docs",
         "cargo test 2>&1 | tail -5",
         "cargo build >/dev/null 2>&1",
+        // Here-strings, arithmetic, process substitution and heredoc data.
+        "cat <<<word",
+        "jq -r .name <<< '{\"name\": 1}'",
+        "echo $((1<<2))",
+        "x=1; ((x <<= 2)); echo $x",
+        "for ((i = 0; i < 3; i++)); do echo $i; done",
+        "cat <<EOF\nno terminator",
+        "diff <(sort a.txt) <(sort b.txt)",
+        "cat > /tmp/notes.md <<'EOF'\nRun git push and cargo insta accept yourself.\nEOF",
+        "cat > /tmp/run.sh <<'EOF'\nfor f in *.txt; do echo x > \"$f.bak\"; done\nEOF",
+        "git commit -F - <<'EOF'\nFix the guard\n\ngit reset --hard old is now checked.\nEOF",
+    ] {
+        assert_eq!(
+            bash(&root, cmd),
+            Decision::Allow,
+            "{cmd:?} should be allowed"
+        );
+    }
+}
+
+#[test]
+fn quoting_writers_and_scripts() {
+    let root = repo();
+    fs::write(root.join("fix.sh"), "#!/bin/sh\necho x > deny.toml\n").unwrap();
+    fs::write(root.join("ok.sh"), "#!/usr/bin/env bash\necho hi\n").unwrap();
+    for cmd in [
+        // Quoting the parser read differently from bash.
+        "echo x > deny\\\n.toml",
+        "echo x > $'deny.toml'",
+        "echo x > $'de\\x6ey.toml'",
+        "echo x | tee {deny,y}.toml",
+        "echo \"it's $(echo x > deny.toml)\"",
+        "echo $'a\\'' ; echo x > deny.toml",
+        "echo $'a\\'' $(echo x > deny.toml)",
+        "echo x > deny.toml # a comment after it",
+        "echo a#b > deny.toml",
+        // The guard's own paths: git hooks and settings run programs.
+        "echo x > .git/hooks/pre-commit",
+        "cp /tmp/x .git/config",
+        // Writers named by a flag or a URL, and archives.
+        "curl -o deny.toml https://example.com/x",
+        "curl -sSLO https://example.com/deny.toml",
+        "wget https://example.com/deny.toml",
+        "wget -O deny.toml https://example.com/x",
+        "sort -o deny.toml /tmp/x",
+        "tar -xf /tmp/x.tar",
+        "git archive HEAD | tar -x",
+        "unzip -o /tmp/x.zip",
+        // Scripts the guard cannot see, or sees writing.
+        "./fix.sh",
+        "printf 'echo x > deny.toml' > made-later.sh; ./made-later.sh",
+        "printf 'echo x > deny.toml' > made.sh; sh made.sh",
+        "echo 'echo x > deny.toml' | sh",
+        "echo 'open(\"deny.toml\", \"w\")' | python3",
+        "printf 'BEGIN { print 1 > \"deny.toml\" }' > made.awk; awk -f made.awk /tmp/x",
+    ] {
+        assert!(
+            matches!(bash(&root, cmd), Decision::Block(_)),
+            "{cmd:?} should be blocked"
+        );
+    }
+    for cmd in [
+        "echo \"it's $(date)\"",
+        "echo $'tab\\there'",
+        "# echo x > deny.toml",
+        "echo hi # ; echo x > deny.toml",
+        "echo x | tee {a,b}.txt",
+        "curl -fsSL https://example.com/x -o /tmp/x",
+        "curl -sS https://example.com/api",
+        "wget -q -O /tmp/x https://example.com/deny.toml",
+        "sort -o /tmp/sorted.txt /tmp/x",
+        "tar -czf /tmp/out.tgz crates",
+        "tar -xf /tmp/x.tar -C /tmp/out",
+        "tar -tf /tmp/x.tar",
+        "unzip -l /tmp/x.zip",
+        "./ok.sh",
+        "./not-written-yet.sh",
+        "bash ok.sh",
+        "python3 -m json.tool < /tmp/x.json",
+        "cat /tmp/x.json | python3 -c 'import json,sys; print(json.load(sys.stdin))'",
+        "python3 --version",
+        "bash --version",
+        "awk -F: '{print $1}' /etc/passwd",
     ] {
         assert_eq!(
             bash(&root, cmd),

@@ -10,11 +10,11 @@ and its `acceptance.json`. Append what you did to that rung's `PROGRESS.md`.
 ## Commands
 
 ```sh
-cargo xtask quick              # before every push: fmt, clippy, arch, size, docs, tests, replays
+cargo xtask quick              # before every commit: fmt, clippy, arch, size, docs, tests, replays
 cargo xtask ci --job lint      # CI jobs: lint test riscv wasm selftest summary all
 cargo xtask arch-check         # layering and core-set rules (architecture.toml)
 cargo xtask replay             # testbed scenarios vs committed hash streams
-cargo xtask replay --regen     # after an intended simulation change; say why in the PR
+cargo xtask replay --regen     # after an intended simulation change; say why in the commit
 cargo xtask selftest           # deliberate violations must fail
 cargo test -p <crate>          # one crate
 cargo run -p game-testbed -- run --headless --ticks 120 --seed 1 --report r.json
@@ -86,7 +86,7 @@ L0 `eng-schema-core`, `eng-derive`, `eng-math`, `eng-core` < L1 `eng-ecs`,
 - Testbed scenarios: `crates/game-testbed/scenarios/` (input scripts,
   assertions, a manifest). Their hash streams in `crates/game-testbed/hashes/`
   are change detectors: regenerate them with `cargo xtask replay --regen`
-  when a simulation change is intended, and explain the change in the PR.
+  when a simulation change is intended, and explain the change in the commit.
 - Cross-architecture equality (x86-64, arm64, RISC-V under QEMU) is always
   required. A difference there is a determinism bug, never a baseline to update.
 - Debug a divergence with `dump-world --at-tick N` on both sides and diff
@@ -107,7 +107,13 @@ tooling (`xtask/`, `clippy.toml`, `architecture.toml`, `deny.toml`,
 - Need a change? Stop and propose it in your summary; the owner applies it,
   or unlocks it by writing `.claude/guard-unlock` themselves.
 - With direct commits to `main` the guard is the gate (ADR-0014); CI's
-  `oracle` check applies only to pull requests.
+  `oracle` check applies only to pull requests. The guard also refuses git
+  commands that would bring an old version of a protected file back
+  (`revert`, `reset`, `checkout` of a commit, ...), git settings that run
+  programs, code piped into a shell, and archive extraction in the repo
+  (ADR-0015). Its message says what to do instead. After each tool call
+  it puts back any protected file the call changed anyway, keeping what
+  was written under `target/guard-quarantine/`.
 - `passes` in `acceptance.json` is computed by CI; never set it.
 
 ## Workflow
@@ -115,6 +121,11 @@ tooling (`xtask/`, `clippy.toml`, `architecture.toml`, `deny.toml`,
 - Commit directly to `main`; there are no PRs (ADR-0014). Before each
   commit run `cargo xtask quick`; for anything non-trivial, have the
   `reviewer` subagent check the diff against the rung's acceptance list.
+- Agents never push or change GitHub (`gh` writes); the owner pushes
+  (ADR-0015).
+- Under the open-pulsar loop (your instructions say the outer loop handles
+  version control), commit nothing and only read jj: the loop records each
+  task as a jj change. Finish each task with `cargo xtask quick` green.
 - Keep commits small. CI runs on every push; fix a red `main` first.
 - Write down costs and timings in the rung's `PROGRESS.md`.
 - Nothing from this project is sold (ADR-0001): no stores, prices or paid builds.

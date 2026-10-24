@@ -3,7 +3,9 @@
 //!
 //! It follows `cd` (and subshells), literal variables, globs, heredocs,
 //! `sh -c` code, wrappers such as `env` and `timeout`, and git's global
-//! options. What it cannot resolve inside the repo, it refuses.
+//! options. What it cannot resolve inside the repo, it refuses. Heredoc text
+//! that is data is read as commands too, for named protected paths only, so
+//! a parser slip cannot hide a command.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -20,8 +22,8 @@ const WRITE_ALL: [&str; 11] = [
 ];
 /// Programs that write their last path argument.
 const WRITE_LAST: [&str; 3] = ["cp", "install", "rsync"];
-const SHELLS: [&str; 6] = ["sh", "bash", "zsh", "dash", "ksh", "fish"];
-const SCRIPTS: [&str; 12] = [
+pub(crate) const SHELLS: [&str; 6] = ["sh", "bash", "zsh", "dash", "ksh", "fish"];
+pub(crate) const SCRIPTS: [&str; 12] = [
     "python",
     "python3",
     "node",
@@ -64,16 +66,28 @@ pub(crate) struct Check<'a> {
     pub cwd: Option<PathBuf>,
     pub vars: &'a BTreeMap<String, Var>,
     pub depth: u32,
+    /// Reading heredoc data as commands: only writes to named protected
+    /// paths count, not bless words, version control or unresolved paths.
+    pub lenient: bool,
+    /// The earlier pieces of the same command.
+    pub earlier: &'a [Earlier],
+}
+
+/// What an earlier piece of the same command said: its directory and its
+/// words, as far as the guard can expand them.
+pub(crate) struct Earlier {
+    pub cwd: Option<PathBuf>,
+    pub words: Vec<String>,
 }
 
 impl Ctx<'_> {
     pub fn bash(&self, command: &str) -> Decision {
-        self.bash_at(command, Some(self.cwd.to_path_buf()), 0)
+        self.bash_at(command, Some(self.cwd.to_path_buf()), 0, false)
     }
 
-    fn bash_at(&self, command: &str, cwd: Option<PathBuf>, depth: u32) -> Decision {
+    fn bash_at(&self, command: &str, cwd: Option<PathBuf>, depth: u32, lenient: bool) -> Decision {
         let pieces = shell::split(command);
-        if let Some(found) = bless(&pieces) {
+        if !lenient && let Some(found) = bless(&pieces) {
             if self.unlocked.iter().any(|l| l == "bless") {
                 return Decision::Allow;
             }
@@ -85,15 +99,21 @@ impl Ctx<'_> {
             return Decision::Allow;
         }
         if depth > 4 {
+            if lenient {
+                return Decision::Allow;
+            }
             return Decision::Block("the command nests too deeply to check".into());
         }
         for inner in shell::substitutions(command) {
-            if let block @ Decision::Block(_) = self.bash_at(&inner, cwd.clone(), depth + 1) {
+            if let block @ Decision::Block(_) =
+                self.bash_at(&inner, cwd.clone(), depth + 1, lenient)
+            {
                 return block;
             }
         }
         let vars = assignments(&pieces);
         let mut dirs: Vec<Option<PathBuf>> = vec![cwd];
+        let mut earlier: Vec<Earlier> = Vec::new();
         for piece in pieces {
             match piece {
                 Piece::Open => dirs.push(dirs.last().cloned().flatten()),
@@ -109,6 +129,12 @@ impl Ctx<'_> {
                         cwd: dirs.last().cloned().flatten(),
                         vars: &vars,
                         depth,
+                        lenient,
+                        earlier: &earlier,
+                    };
+                    let said = Earlier {
+                        cwd: check.cwd.clone(),
+                        words: words.iter().filter_map(|w| check.expand(w)).collect(),
                     };
                     if let Some(first) = words.first()
                         && matches!(first.text.as_str(), "cd" | "pushd" | "popd")
@@ -117,6 +143,9 @@ impl Ctx<'_> {
                             ("popd", _) => None,
                             (_, None) => std::env::var_os("HOME").map(PathBuf::from),
                             (_, Some(w)) if w.text == "-" => None,
+                            (_, Some(w)) if w.text == "$(git rev-parse --show-toplevel)" => {
+                                Some(self.root.to_path_buf())
+                            }
                             (_, Some(w)) => match (check.expand(w), &check.cwd) {
                                 (Some(dir), Some(cwd)) => Some(normalize(&cwd.join(dir))),
                                 (Some(dir), None) if Path::new(&dir).is_absolute() => {
@@ -126,11 +155,13 @@ impl Ctx<'_> {
                             },
                         };
                         *dirs.last_mut().expect("never empty") = next;
+                        earlier.push(said);
                         continue;
                     }
                     if let Some(decision) = check.command(&words, &heredoc) {
                         return decision;
                     }
+                    earlier.push(said);
                 }
             }
         }
@@ -141,8 +172,12 @@ impl Ctx<'_> {
 impl Check<'_> {
     /// The word's value with literal variables substituted; `None` if it
     /// depends on something the guard cannot know.
-    fn expand(&self, w: &Word) -> Option<String> {
+    pub(crate) fn expand(&self, w: &Word) -> Option<String> {
         let text = expand_home(&w.text);
+        if w.dynamic && text.contains('\\') {
+            // A `$'...'` escape, which the guard does not decode.
+            return None;
+        }
         if !w.dynamic || !text.contains('$') {
             return Some(text);
         }
@@ -189,6 +224,9 @@ impl Check<'_> {
 
     /// A description of the guarded path `w` may name, if any.
     pub(crate) fn target(&self, w: &Word) -> Option<String> {
+        if w.text.is_empty() {
+            return None; // such as `sed -i ''`: no path at all
+        }
         let Some(text) = self.expand(w) else {
             return self.unknown(&w.text);
         };
@@ -198,11 +236,28 @@ impl Check<'_> {
             (Some(cwd), false) => cwd.clone(),
             (None, false) => return self.unknown(&text),
         };
+        // Brace expansion names several paths: `{a,b}` is checked as each;
+        // a range such as `{1..3}` is not expanded.
+        if w.dynamic && text.contains('{') {
+            if let Some(each) = glob::braces(&text) {
+                return each.iter().find_map(|t| {
+                    self.target(&Word {
+                        text: t.clone(),
+                        quoted: false,
+                        dynamic: true,
+                        op: false,
+                    })
+                });
+            }
+            if text.contains("..") {
+                return self.unknown(&text);
+            }
+        }
         if w.dynamic && text.contains(['*', '?', '[']) {
             if text.contains('[') {
                 return self.unknown(&text);
             }
-            let matches = expand_glob(&base, &text);
+            let matches = glob::expand_paths(&base, &text);
             if let Some(hit) = matches
                 .iter()
                 .find_map(|p| self.ctx.guarded_path(&base, &p.to_string_lossy()))
@@ -216,8 +271,20 @@ impl Check<'_> {
         self.ctx.guarded_path(&base, &text)
     }
 
+    /// A directory `w` names that holds protected files, if any.
+    pub(crate) fn directory(&self, w: &Word) -> Option<String> {
+        let text = self.expand(w)?;
+        let cwd = self.cwd.as_ref()?;
+        let rel = self.ctx.resolve_in(cwd, &text)?;
+        (self.ctx.root.join(&rel).is_dir() && self.ctx.guards_below(&rel))
+            .then(|| format!("{}/ (it holds protected files)", rel.trim_end_matches('/')))
+    }
+
     /// A target the guard cannot resolve: refused if it may land in the repo.
-    fn unknown(&self, text: &str) -> Option<String> {
+    pub(crate) fn unknown(&self, text: &str) -> Option<String> {
+        if self.lenient {
+            return None;
+        }
         let literal: String = text
             .chars()
             .take_while(|c| !"$`*?[{".contains(*c))
@@ -254,15 +321,35 @@ impl Check<'_> {
                 let op = w
                     .text
                     .trim_start_matches(|c: char| c.is_ascii_digit() || c == '&');
-                matches!(op, ">" | ">>" | ">|" | "<>")
+                matches!(op, ">" | ">>" | ">|" | "<>" | ">!" | ">>!")
             };
             if write && let Some(what) = words.get(i + 1).and_then(|t| self.target(t)) {
                 return Self::block(what);
             }
         }
         let words_plain = plain(words);
-        let (_, program, args) = unwrap(&words_plain);
+        let (assigns, program, args) = unwrap(&words_plain);
+        // A heredoc for a shell or interpreter is code, checked below; for git
+        // it is a message or a patch. Any other heredoc is data.
+        let code_or_message = program
+            .as_deref()
+            .is_some_and(|p| SHELLS.contains(&p) || SCRIPTS.contains(&p) || p == "git");
+        if !heredoc.is_empty()
+            && !code_or_message
+            && let Some(block) = self.data(heredoc)
+        {
+            return Some(block);
+        }
         let program = program?;
+        let raw = words_plain[words_plain.len() - args.len() - 1];
+        if raw.text.contains('/')
+            && let Some(block) = self.run_file(raw)
+        {
+            return Some(block);
+        }
+        if let Some(block) = self.writers(&program, &args) {
+            return Some(block);
+        }
         let flag = |w: &&Word| w.text.starts_with('-') && w.text != "-";
         let paths: Vec<&Word> = args.iter().copied().filter(|w| !flag(w)).collect();
         let written: Vec<&Word> = match program.as_str() {
@@ -275,11 +362,35 @@ impl Check<'_> {
             }
             p if WRITE_LAST.contains(&p) => paths.last().copied().into_iter().collect(),
             "sed" | "gsed" | "perl" | "ruby" if args.iter().any(|a| in_place_flag(&a.text)) => {
-                paths.clone()
+                // sed's first operand is its script, unless -e or -f gives it.
+                let script = program.ends_with("sed")
+                    && !args.iter().any(|a| {
+                        matches!(a.text.as_str(), "-e" | "-f")
+                            || a.text.starts_with("--expression")
+                            || a.text.starts_with("--file")
+                    });
+                paths.iter().skip(usize::from(script)).copied().collect()
             }
             _ => Vec::new(),
         };
         if let Some(what) = written.iter().find_map(|w| self.target(w)) {
+            return Self::block(what);
+        }
+        // Removing or moving a directory takes everything under it.
+        let recursive = args.iter().any(|a| {
+            a.text == "--recursive"
+                || (a.text.starts_with('-')
+                    && !a.text.starts_with("--")
+                    && a.text.contains(['r', 'R']))
+        });
+        let taken: Vec<&Word> = match program.as_str() {
+            "rm" if recursive => paths.clone(),
+            "mv" => paths
+                .split_last()
+                .map_or(Vec::new(), |(_, from)| from.to_vec()),
+            _ => Vec::new(),
+        };
+        if let Some(what) = taken.iter().find_map(|w| self.directory(w)) {
             return Self::block(what);
         }
         if program == "dd"
@@ -298,7 +409,10 @@ impl Check<'_> {
             return Self::block(what);
         }
         match program.as_str() {
-            "git" => self.git(&args, heredoc),
+            "git" | "jj" | "gh" if self.lenient => None,
+            "git" => self.git_env(&assigns).or_else(|| self.git(&args, heredoc)),
+            "jj" => self.jj(&assigns, &args),
+            "gh" => self.gh(&args),
             "patch" => self.patch_text(&args, heredoc),
             "find" => self.find(&args),
             "xargs" => self.xargs(&args),
@@ -309,37 +423,33 @@ impl Check<'_> {
                     .collect::<Vec<_>>()
                     .join(" "),
             ),
-            "source" | "." => self.script_file(paths.first().copied()),
-            p if SHELLS.contains(&p) => {
-                if let Some(code) = inline_code(&args, 'c') {
-                    return self.nested(&code);
-                }
-                if !heredoc.is_empty() {
-                    return self.nested(heredoc);
-                }
-                self.script_file(paths.first().copied())
-            }
-            p if SCRIPTS.contains(&p) => {
-                let mut code = String::from(heredoc);
-                if p.ends_with("awk") {
-                    code.push_str(paths.first().map_or("", |w| w.text.as_str()));
-                } else if let Some(inline) =
-                    inline_code(&args, if p.starts_with("python") { 'c' } else { 'e' })
-                {
-                    code.push_str(&inline);
-                } else if let Some(file) = paths.first().and_then(|w| self.read_file(&w.text)) {
-                    code.push_str(&file);
-                }
-                self.opaque(&program, &code)
-            }
+            "source" | "." => paths.first().and_then(|w| self.script_file(w)),
+            p if SHELLS.contains(&p) || SCRIPTS.contains(&p) => self.code(p, &args, heredoc),
             _ => None,
         }
     }
 
-    fn nested(&self, code: &str) -> Option<Decision> {
-        match self.ctx.bash_at(code, self.cwd.clone(), self.depth + 1) {
+    pub(crate) fn nested(&self, code: &str) -> Option<Decision> {
+        match self
+            .ctx
+            .bash_at(code, self.cwd.clone(), self.depth + 1, self.lenient)
+        {
             Decision::Allow => None,
             block => Some(block),
+        }
+    }
+
+    /// Heredoc data read as commands too, in case the parser mistook
+    /// commands for heredoc text.
+    fn data(&self, text: &str) -> Option<Decision> {
+        match self
+            .ctx
+            .bash_at(text, self.cwd.clone(), self.depth + 1, true)
+        {
+            Decision::Allow => None,
+            Decision::Block(why) => Some(Decision::Block(format!(
+                "heredoc text reads as a command: {why}; if it is data, write it with the Write tool"
+            ))),
         }
     }
 
@@ -348,14 +458,9 @@ impl Check<'_> {
         fs::read_to_string(path).ok()
     }
 
-    fn script_file(&self, word: Option<&Word>) -> Option<Decision> {
-        let text = self.read_file(&word?.text)?;
-        self.nested(&text)
-    }
-
     /// Code in another language: refused when it both names a protected path
     /// and looks like it writes files.
-    fn opaque(&self, program: &str, code: &str) -> Option<Decision> {
+    pub(crate) fn opaque(&self, program: &str, code: &str) -> Option<Decision> {
         let code = code.to_lowercase();
         let fragment = self
             .ctx
@@ -383,45 +488,8 @@ pub(crate) fn writer(program: &str, args: &[&Word]) -> bool {
             && args.iter().any(|a| in_place_flag(&a.text)))
 }
 
-/// The code after a short-flag cluster containing `letter` (`-c`, `-ec`, `-Ic`).
-fn inline_code(args: &[&Word], letter: char) -> Option<String> {
-    let at = args.iter().position(|w| {
-        w.text.starts_with('-') && !w.text.starts_with("--") && w.text[1..].contains(letter)
-    })?;
-    args.get(at + 1).map(|w| w.text.clone())
-}
-
 /// `-i`, `-pi`, `-i.bak` or `--in-place`.
 fn in_place_flag(arg: &str) -> bool {
     arg.starts_with("--in-place")
         || (arg.starts_with('-') && !arg.starts_with("--") && arg.contains('i'))
-}
-
-/// Paths under `base` matching a `*`/`?` glob, at most a few thousand.
-fn expand_glob(base: &Path, pattern: &str) -> Vec<PathBuf> {
-    let mut found = vec![PathBuf::new()];
-    for segment in pattern.split('/').filter(|s| !s.is_empty() && *s != ".") {
-        let mut next = Vec::new();
-        for prefix in &found {
-            if !segment.contains(['*', '?']) {
-                next.push(prefix.join(segment));
-                continue;
-            }
-            let Ok(entries) = fs::read_dir(base.join(prefix)) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if glob::matches(segment, &name) {
-                    next.push(prefix.join(name));
-                }
-            }
-        }
-        next.truncate(4096);
-        found = next;
-    }
-    found
-        .into_iter()
-        .filter(|p| base.join(p).exists())
-        .collect()
 }

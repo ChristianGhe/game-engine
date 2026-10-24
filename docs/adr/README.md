@@ -18,3 +18,4 @@ Source: `docs/superpowers/specs/2026-10-20-ai-built-engine-design.md` (draft v3,
 | [0012](0012-playable-builds.md) | Playable builds | Accepted | D16 |
 | [0013](0013-r1-player-count.md) | R1 player count | Accepted | D21 |
 | [0014](0014-direct-commits-to-main.md) | Direct commits to main | Accepted | changes 7.3, 7.6 |
+| [0015](0015-open-pulsar-runs.md) | Unattended runs through open-pulsar | Accepted | changes 7.3, 7.5 |

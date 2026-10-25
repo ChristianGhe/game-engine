@@ -1326,7 +1326,7 @@ protected path edited here; `current.txt` stays at `1a`.
   in the patch and not edited here.
 - The patch starts with a short header, which `git apply` ignores. Its
   `index` lines use full hashes (`--full-index`), because CI's `typos`
-  step flagged `ba` inside the short ones.
+  step flagged a run of hex letters inside the short ones.
 
 **How it was tested.** Scratch clone of this repo under `$TMPDIR`, with
 its `target/debug` seeded by a copy-on-write copy.
@@ -1439,6 +1439,156 @@ its `target/debug` seeded by a copy-on-write copy.
 
 **Costs and timings**
 - One open-pulsar session, from about 11:13 EET.
+
+## 2026-10-25, session 15: patch X7, named harness steps in the `test` job (Claude Opus 5.5, open-pulsar task)
+
+The task: patch X7 (G5, `xtask/**`) as a tested patch file, for the
+three harnesses that exist now: `crash-json`, `version` and
+`live-input`. Amendments 14 to 17 describe them. The patch applies after
+X1. It is made and tested in a scratch clone, never in this repo. No new
+crates; no protected path edited here; `current.txt` stays at `1a`.
+
+**The patch:** `docs/rungs/1b/patches/x7-test-steps.patch`, against
+`main` at a09c34f with `x1-version-stamps.patch` applied. It changes 2
+files: 75 lines added, 16 removed.
+- `cargo xtask ci --job test` runs these steps in order: `tests`,
+  `known-answers`, `exit-codes`, `crash-json`, `version`, `live-input`,
+  `replay`. `ci --job all` runs the same function. The three new steps
+  are:
+
+  | Step | Runs | Criterion |
+  |---|---|---|
+  | `crash-json` | `cargo test -p game-testbed --test crash_json` | 6 (amendment 14) |
+  | `version` | `cargo test -p game-testbed --test version` | 8's harness (amendments 15, 16) |
+  | `live-input` | `cargo test -p eng-input --test live_input` | 18 (amendment 17) |
+
+  They run on the dev profile, as amendment 14 asks for `crash_json`'s
+  frame check, and get `--locked` on CI like every other step.
+- A table, `HARNESSES` in `xtask/src/ci.rs`, lists the five named steps
+  as (step, package, test target), and `harness()` runs one. It takes the
+  place of the amendments' `tests(root, Some(..))` snippets, which no
+  longer compile: `tests(root)` now runs only the workspace's tests. Its
+  behaviour is unchanged: nextest or `cargo test`, doctests, `--profile ci`.
+- Each named step logs under its own name, as
+  `target/agent-logs/xtask-<step>.log`. Before, `known-answers` and
+  `exit-codes` logged as `tests` too. So after a test job,
+  `xtask-tests.log` held the `exit_codes` run, while a failed `tests` step
+  pointed at that file, and their own failures said "tests failed".
+  Nothing reads the old names (workflows, `.claude/`, docs and xtask
+  checked).
+- Amendment 16's extra `version-set` build is left out, as session 14
+  said. With X1, `util::cargo` sets the four values on every cargo
+  command, including this step.
+- New unit test in `ci.rs`, `every_harness_step_names_an_existing_test_file`.
+  It checks that each step's `crates/<package>/tests/<target>.rs` exists
+  and that no step name repeats. It runs in `quick`, so a renamed harness
+  fails locally and not only in CI's test job.
+- `docs/ARCHITECTURE.md`, "Agent tooling": a bullet naming the test job's
+  steps and where their results go. It becomes true only when the patch
+  lands, so it is in the patch.
+- The patch has a header like X1's. Its `index` lines use full hashes.
+- X7 also applies without X1, because X1 does not touch `ci.rs`. But its
+  comment then names a `stamp.rs` that does not exist, and `version`
+  checks only unset values. Apply X1 first.
+
+**How it was tested.** Scratch clone of this repo under `$TMPDIR` at
+a09c34f, with X1 applied and committed there as the base. Its
+`target/debug` was seeded by a copy-on-write copy.
+- Baseline with X1 only: `ci --job test` green, 4 steps, 31 s. Its
+  `tests` step took 29.8 s, rebuilding the workspace's crates in the new
+  clone with X1's values.
+- With X7:
+  - `cargo xtask ci --job test`: all 7 steps ok, 11 to 14 s. The new
+    steps take 0.1 to 0.3 s each, reusing the `tests` step's build. Their
+    logs show 2 tests for `crash_json`, 4 for `version` and 12 for
+    `live_input`. Each command carries all four values (`ENG_DIRTY="1"`,
+    the SHA, `SOURCE_DATE_EPOCH`, `ENG_CI_RUN="local"`).
+  - `CI=1 cargo xtask ci --job test`: the same, with `--locked` after
+    `test` in each harness command.
+  - `CI=1 cargo xtask ci --job lint` (clippy `-D warnings`, cargo-deny,
+    typos): green once the typos fix below was in.
+  - `cargo xtask quick` green (9 s).
+  - `cargo xtask selftest`: 17 of 17.
+  - `cargo test -p xtask`: 39 passed, 1 of them new.
+- Mutations, each reverted:
+  - A misspelt target (`crash_jsn`) fails the `crash-json` step with its
+    own log and cargo's "a target with a similar name exists". The unit
+    test fails too and names the missing path. So does the `tests` step,
+    which runs xtask's tests.
+  - A repeated row fails the unit test with
+    `step names repeat: ["exit-codes"]`.
+- The file in this repo: X1 then X7 apply with `git apply` to a fresh
+  clone, and the files they give equal the tested clone's byte for byte.
+  `typos` passes on the file.
+- This repo, with the patch file and this entry: `cargo xtask quick`
+  green (9 s), and `typos` passes.
+
+**A typos fix to session 14 in this repo.** CI's `typos` step fails at
+a09c34f. Session 14's entry quoted the two letters that typos had
+flagged in short hashes, so `typos` now flags them in `PROGRESS.md`. The
+next push would have turned the `lint` job red; `quick` does not run
+typos. That one sentence is reworded with the same meaning. It is the
+only edit to an earlier entry.
+
+**Reviewer** (fresh context, read-only): approve, nothing blocking. It
+re-ran the test job (also with `CI=1`), `quick`, selftest, xtask's tests
+and clippy `-D warnings`, and checked the apply order in a fresh clone.
+Fixed after the review:
+- The header said "amendments 14, 16 and 17". The `version` step's code
+  is in amendment 15, so it now says 14 to 17.
+- `ARCHITECTURE.md` said each step is "a line in
+  `target/ci/report.json`". A step is an entry in the report's `steps`.
+  On CI, acceptance reads the per-job copies under `target/ci/reports/`.
+- The `ci.rs` comment said acceptance criteria name every step. No
+  criterion names the test job's `version` step: criterion 8 checks X2's
+  native `version` step. It also said that a plain `cargo test` checks
+  the unset values. On CI nothing does any more (session 14).
+- The unit test's message did not say which name repeats.
+
+The table and the new log names were kept: the reviewer found the old
+log behaviour a real bug. Its two notes on the table's shape are open
+question 1.
+
+**Where this differs from amendments 14 to 17**
+- One table in place of three `steps.run` lines, with per-step logs,
+  which also renames the logs of `known-answers` and `exit-codes`.
+- No `version-set` build (amendment 16), because X1 sets all four values.
+- Not done: `shaders` and `wire-session` (amendment 11). Their harnesses
+  do not exist yet.
+
+**Open questions**
+1. **The rest of X7.** `shaders` (criterion 10, T7) and `wire-session`
+   (criterion 11, T5 and T6) wait for their crates and harnesses.
+   `wire-session` runs three test files in two crates, so it needs a list
+   of targets per row, or a `steps.run` of its own. `crash-json` must
+   stay `run`-only in the test job once T11 adds a `play` case (the job
+   has no display). The step then needs a test-name filter, which
+   depends on T11's names. Both are xtask changes. `crash_json.rs` is
+   protected, so the `play` case needs the owner too.
+2. **Criterion 8's checks.** The plan checks `version-json` only on
+   "native x5: version" (X2, X6). The test job's `version` step now runs
+   the same harness on x64 and arm64 Linux. The 1b acceptance list (G1)
+   could add "test x64, arm64: version". The feature would then be
+   computed before the native jobs exist. Without X2, though, it would
+   not check "no `unknown` in a CI build".
+3. **Each harness runs twice per test job**, inside `tests` and in its
+   own step. That costs about 1.7 s today, the sum of the five steps.
+   Leaving them out of `tests` would need a nextest filter and would
+   change what `quick` runs, so the patch keeps both.
+4. **Linux not run here.** CI runs the test job on x64 and arm64 Linux;
+   this session ran it on aarch64-apple-darwin only. The three harnesses
+   already pass inside CI's `tests` step on both, so the named steps add
+   no new environment.
+5. **Nothing more to protect for these three.** e14b533 already protects
+   `crash_json.rs`, `version.rs` and `live_input.rs` (amendments 14, 16
+   and 17).
+
+**Costs and timings**
+- One open-pulsar session, from about 11:40 to about 12:00 EET.
+- Scratch clone: copy-on-write seed of `target/debug` (2.0 GB), 7 s.
+- Test job: 31 s for the baseline build with X1's values, then 11 to
+  14 s per run with X7. The three new steps add about 0.6 s together.
+- Reviewer subagent: about 99k tokens, 41 tool calls, 6.7 min.
 
 ## Proposals for the owner (protected paths)
 

@@ -8,34 +8,9 @@ use eng_sim::Sim;
 use crate::args::RunArgs;
 use crate::assertions::{Status, Tracker};
 use crate::budgets::BudgetTracker;
-use crate::{ENGINE_SHA, Exit, GameDef, RUSTC_VERSION};
+use crate::{Exit, GameDef, version};
 
 pub(crate) const REPORT_VERSION: u64 = 1;
-
-pub(crate) fn build_info(game: &GameDef) -> JsonValue {
-    JsonValue::object([
-        ("game_version", JsonValue::str(game.version)),
-        ("engine_sha", JsonValue::str(ENGINE_SHA)),
-        ("game_sha", JsonValue::str(game.build_sha)),
-        ("rustc", JsonValue::str(RUSTC_VERSION)),
-        (
-            "target",
-            JsonValue::str(format!(
-                "{}-{}",
-                std::env::consts::ARCH,
-                std::env::consts::OS
-            )),
-        ),
-        (
-            "profile",
-            JsonValue::str(if cfg!(debug_assertions) {
-                "debug"
-            } else {
-                "release"
-            }),
-        ),
-    ])
-}
 
 /// FNV-1a-64 over every `(tick, hash)` pair, for comparing whole streams.
 pub(crate) fn stream_digest(hashes: &[TickHash]) -> u64 {
@@ -119,7 +94,7 @@ impl RunSummary<'_> {
                 }),
             ),
             ("game", JsonValue::str(self.game.name)),
-            ("build", build_info(self.game)),
+            ("build", version::build_json(self.game)),
             ("platform", JsonValue::str("headless")),
             ("seed", JsonValue::U64(self.args.seed)),
             ("players", JsonValue::U64(self.args.players.into())),

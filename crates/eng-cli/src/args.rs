@@ -8,6 +8,7 @@ pub(crate) const USAGE: &str = "\
 <game> replay verify <recording> [--report report.json]
 <game> replay dump <recording> [--out recording.json]
 <game> dump-world --at-tick N --out world.json [--seed S] [--players P] [--input script.toml]
+<game> --version [--json]
 <game> help
 
 exit codes: 0 ok, 10 assertion failed, 11 desync, 12 panic, 13 budget exceeded, 64 usage";
@@ -37,6 +38,10 @@ pub(crate) struct RunArgs {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Command {
     Help,
+    /// `--version`, or `--version --json`.
+    Version {
+        json: bool,
+    },
     Run(RunArgs),
     ReplayVerify {
         recording: PathBuf,
@@ -52,6 +57,7 @@ impl Command {
     pub fn name(&self) -> &'static str {
         match self {
             Command::Help => "help",
+            Command::Version { .. } => "version",
             Command::Run(args) if args.dump.is_some() => "dump-world",
             Command::Run(_) => "run",
             Command::ReplayVerify { .. } => "replay verify",
@@ -92,6 +98,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Command, String> {
     };
     match first.as_str() {
         "help" | "--help" | "-h" => Ok(Command::Help),
+        "--version" => parse_version(&mut flags),
         "run" => parse_run(&mut flags, false).map(Command::Run),
         "dump-world" => parse_run(&mut flags, true).map(Command::Run),
         "replay" => parse_replay(&mut flags),
@@ -150,6 +157,18 @@ fn parse_run(flags: &mut Flags<'_>, dump_world: bool) -> Result<RunArgs, String>
     Ok(a)
 }
 
+fn parse_version(flags: &mut Flags<'_>) -> Result<Command, String> {
+    let mut json = false;
+    for flag in flags.rest.by_ref() {
+        match flag.as_str() {
+            "--json" if json => return Err("--json given twice".into()),
+            "--json" => json = true,
+            other => return Err(format!("unknown flag {other:?}; use --version [--json]")),
+        }
+    }
+    Ok(Command::Version { json })
+}
+
 fn parse_replay(flags: &mut Flags<'_>) -> Result<Command, String> {
     let sub = flags.value("replay")?;
     let recording = flags.path(sub)?;
@@ -203,6 +222,18 @@ mod tests {
     }
 
     #[test]
+    fn parses_version() {
+        assert_eq!(
+            parse(&args("--version")),
+            Ok(Command::Version { json: false })
+        );
+        assert_eq!(
+            parse(&args("--version --json")),
+            Ok(Command::Version { json: true })
+        );
+    }
+
+    #[test]
     fn rejects_bad_usage() {
         for bad in [
             "",
@@ -218,6 +249,11 @@ mod tests {
             "replay",
             "replay verify",
             "replay jump r.rec",
+            "--json",
+            "--version --json --json",
+            "--version --verbose",
+            "--version run",
+            "version",
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad:?} should be refused");
         }

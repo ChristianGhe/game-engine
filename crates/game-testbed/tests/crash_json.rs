@@ -86,14 +86,19 @@ fn run_panic_writes_crash_json_with_every_field() {
     assert_eq!(crash["crash_version"], 1);
     assert_eq!(crash["game"], "game-testbed");
 
-    // Version stamp.
+    // Version stamp: the `build` object of `--version --json`.
     assert_eq!(
         str_at(&crash, "/version/game_version"),
         env!("CARGO_PKG_VERSION")
     );
-    for field in ["engine_sha", "game_sha", "rustc", "target", "profile"] {
-        assert!(!str_at(&crash, &format!("/version/{field}")).is_empty());
-    }
+    let version_dir = dir.join("version");
+    std::fs::create_dir_all(&version_dir).unwrap();
+    let out = probe(&version_dir, &version_dir, &["--version", "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let stamp: Value = serde_json::from_slice(&out.stdout).unwrap();
+    // Every key and value, so a change to the stamp's `build` shows here.
+    assert_eq!(crash["version"], stamp["build"]);
+    assert_eq!(crash["crash_version"], stamp["formats"]["crash"]);
 
     // What was running.
     assert_eq!(crash["args"], serde_json::json!(PANIC_RUN));

@@ -92,7 +92,8 @@ input script (TOML) ──eng-input──▶ PlayerCommand per player, per tick
   input, writes reports, events, hash streams and recordings, and verifies
   replays. Exit codes are listed in `AGENTS.md`. Its panic hook (in
   `exit.rs`) writes `crash-<game>-<pid>.json` beside the agent log and
-  exits 12. The file holds the version, the command line, seed, tick,
+  exits 12. The file holds the version stamp's `build` object (below) as
+  `version`, the command line, seed, tick,
   thread, the panic's message and location, the backtrace, and the log
   file's path and last 50 lines. Only the
   first panic writes the file. Nothing in the hook may panic or wait on a
@@ -100,6 +101,8 @@ input script (TOML) ──eng-input──▶ PlayerCommand per player, per tick
   instead. `crates/game-testbed/tests/exit_codes.rs` runs the real binary
   for each exit code, and `crash_json.rs` uses `run --panic-at-tick` to
   check every field of the crash file.
+- `<game> --version` and `<game> --version --json` print the version
+  stamp (below).
 - Claude Code hooks (`.claude/settings.json`) run a copy of xtask built
   from `main` into `<git dir>/eng-hooks/`: the guard (protected paths, bless
   commands), rustfmt after edits, `quick` at the end of a turn. Before the
@@ -109,6 +112,83 @@ input script (TOML) ──eng-input──▶ PlayerCommand per player, per tick
   the obvious forms but runs as the agent's own OS user. CI runs every
   check on every push. If pull requests return, CI's `oracle` workflow
   (base-branch code only, owner approval or label) becomes the gate.
+
+## The version stamp
+
+`<game> --version` prints the stamp on one line, and `<game> --version
+--json` prints all of it (spec 6.13). Both exit 0; any other argument
+after `--version` exits 64. The code is `crates/eng-cli/src/version.rs`.
+`crates/game-testbed/tests/version.rs` pins the format: the keys, their
+order, their types and the build values, for both forms.
+`version_testbed.rs` pins what changes with the testbed's sim (its
+systems and schemas). It also checks that `dump-world`, reports and
+recordings agree with the stamp.
+
+```text
+game-testbed 0.1.0 (engine 0.1.0 0123456789ab, dirty) aarch64-apple-darwin release, rustc 1.99.1, sim protocol 0x69fd4996880a6508
+```
+
+The line holds the game and its version; the engine's version and commit
+(12 characters), then `game <commit>` if the game's commit differs, then
+`dirty` (`dirty unknown` when not known, nothing when clean); then the
+target, profile, compiler version and protocol version.
+
+The JSON object, `stamp_version` 1:
+
+| Key | Type | Value |
+|---|---|---|
+| `stamp_version` | integer | the format version, 1 |
+| `game` | string | the game's name |
+| `build` | object | the build (below). Reports carry the same object as `build`, and `crash.json` as `version` |
+| `sim` | object | the simulation (below) |
+| `formats` | object | the version of each file the probe reads or writes, as integers: `report`, `crash`, `recording`, `hash_stream`, `input_script`, `assertions`, `budgets` |
+
+`build` has the fields of spec 6.13's `version.json`. Facts about the
+compilation come from `crates/eng-cli/build.rs`. Facts about the source
+tree come from four environment variables read at build time. CI's
+workflow already sets `ENG_ENGINE_SHA`, and `cargo xtask` is to set all
+four (patch X1, `docs/rungs/1b/PROGRESS.md`). Without them a value reads
+`unknown` (strings) or `null`. Any of the four set to an empty string
+counts as unset. A malformed `ENG_DIRTY` or `SOURCE_DATE_EPOCH` fails the
+build with `[E-VERSION]`.
+
+| Key | Type | From |
+|---|---|---|
+| `game_version` | string | the game's crate version (the spec's "semver") |
+| `engine_version` | string | the `eng-cli` crate's version |
+| `engine_sha` | string | `ENG_ENGINE_SHA`, else `unknown` |
+| `game_sha` | string | the game's `GameDef::build_sha`, else `unknown`; the testbed passes the engine's |
+| `dirty` | bool or null | `ENG_DIRTY`, `0` or `1`: the source tree had uncommitted changes |
+| `source_date_epoch` | integer or null | `SOURCE_DATE_EPOCH`: the commit time in Unix seconds |
+| `ci_run` | string | `ENG_CI_RUN`, else `unknown` |
+| `target` | string | the target triple (Cargo's `TARGET`) |
+| `rustc` | string | `rustc -V` of the compiler that built it |
+| `profile` | string | `debug` or `release`: the Cargo profile the build's profile inherits from (Cargo's `PROFILE`) |
+| `debug_assertions` | bool | whether debug checks such as `[E-NAN]` are compiled in |
+
+`sim` comes from a simulation built with 1 player and seed 0; the
+protocol version depends on neither.
+
+| Key | Type | Value |
+|---|---|---|
+| `tick_rate` | integer | ticks per second |
+| `protocol` | string | the simulation protocol version, `0x` and 16 hex digits, as in hash streams and recordings |
+| `systems` | array of strings | the resolved system order, each `<Stage> <system>` |
+| `schemas` | array of objects | every named type the world encodes, sorted by name, then version: `name`, `version` and `kind` (`component`, `resource`, `event`, or `nested` for a type used only inside others) |
+
+Stability:
+- While `stamp_version` stays the same, no key is renamed or removed and
+  none changes its type or meaning. Keys may be added; readers look keys
+  up by name and ignore ones they do not know. Any other change bumps
+  `stamp_version`, and a change to `build` also bumps `report_version`
+  and `crash_version`.
+- One exception came before these rules. Version 1 reports and crash
+  files written before rung 1b's T1 had a smaller `build` (or
+  `version`) object, with `target` as `<arch>-<os>` (such as
+  `aarch64-macos`) and `rustc` usually `unknown`.
+- One binary always prints the same bytes: every value is fixed when it
+  is built or comes from the simulation's registrations, never from the
+  clock, the environment at run time or a path.
 
 ## Adding a crate
 

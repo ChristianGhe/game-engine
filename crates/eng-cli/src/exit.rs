@@ -131,7 +131,7 @@ static CRASHING: AtomicBool = AtomicBool::new(false);
 /// unstable API.
 pub(crate) fn install_panic_hook(game: &GameDef) {
     let name = game.name;
-    let version = crate::report::build_info(game);
+    let version = crate::version::build_json(game);
     std::panic::set_hook(Box::new(move |info| on_panic(name, &version, info)));
 }
 

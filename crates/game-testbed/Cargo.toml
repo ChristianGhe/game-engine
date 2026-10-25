@@ -16,4 +16,5 @@ workspace = true
 
 [dev-dependencies]
 eng-input.workspace = true
+serde.workspace = true
 serde_json.workspace = true

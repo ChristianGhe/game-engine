@@ -592,6 +592,394 @@ cargo-nextest is not installed here)
 - T1 (`--version`, `--version --json`, plus `crash_json.rs`'s version
   checks), then T4 (live input).
 
+## 2026-10-25, session 9: `--version` and `--version --json` (T1) (Claude Opus 5.5, open-pulsar task)
+
+The task: `--version` (for people) and `--version --json` on the probe,
+with spec 6.13's fields plus the crate, protocol and schema versions, the
+target triple and the build profile. The JSON must stay stable and be
+documented. No new crates and no protected paths.
+
+**Done**
+- `crates/eng-cli/src/version.rs` builds the stamp, and `args.rs` parses
+  `--version [--json]`. Anything else after `--version`, and a bare
+  `--json` or `version`, exits 64 with `[E-USAGE]`. `help` lists it. The
+  command opens its log file as every other command does.
+- The JSON (`stamp_version` 1) has four parts. They are documented key by
+  key in `docs/ARCHITECTURE.md`, "The version stamp":
+  - `build`: spec 6.13's `version.json` fields. They are
+    `game_version` (the spec's "semver"), `engine_version`, `engine_sha`,
+    `game_sha`, `dirty`, `source_date_epoch`, `ci_run`, `target`,
+    `rustc`, `profile` and `debug_assertions`.
+  - `sim`: `tick_rate`, `protocol`, the resolved `systems` order, and
+    `schemas`. `schemas` lists every named type the world encodes, both
+    registered and nested, with its version and kind, sorted.
+  - `formats`: the versions of the report, crash file, recording, hash
+    stream, input script, assertions and budgets files.
+  - The line for people, for example: `game-testbed 0.1.0 (engine 0.1.0
+    unknown, dirty unknown) aarch64-apple-darwin debug, rustc 1.99.1,
+    sim protocol 0x69fd4996880a6508`.
+- Where the values come from:
+  - New `crates/eng-cli/build.rs`: the target triple (Cargo's `TARGET`),
+    the profile (Cargo's `PROFILE`, `debug` or `release`) and
+    `rustc -V`. eng-cli is L4 and not core, so `arch-check` allows a
+    build script (`[E-ARCH-BUILD]` is for core crates).
+  - The source tree, at compile time, through `option_env!`:
+    `ENG_ENGINE_SHA`, `ENG_DIRTY` (`0` or `1`), `SOURCE_DATE_EPOCH` and
+    `ENG_CI_RUN`. An empty variable counts as unset. A malformed
+    `ENG_DIRTY` or `SOURCE_DATE_EPOCH` fails the build with
+    `[E-VERSION]`, through const evaluation. CI's workflow already sets
+    `ENG_ENGINE_SHA` (`.github/workflows/ci.yml`, top-level `env`), so CI
+    builds carry the engine and game SHAs. Nothing sets the other three
+    yet (patch X1, amendment 15). Without them, strings read `unknown`
+    and `dirty` and `source_date_epoch` read `null`.
+  - `ENG_RUSTC_VERSION` is no longer read, because `build.rs` measures
+    the compiler.
+- The same `build` object is now reports' `build` and `crash.json`'s
+  `version`, replacing 1a's `build_info`. It keeps that object's six
+  keys and their types, so `report_version` and `crash_version` stay 1.
+  Two values change:
+  - `target` is now the triple (`aarch64-apple-darwin`, the name CI
+    reports already use) instead of `aarch64-macos`.
+  - `rustc` is now the real version instead of `unknown`. Recording
+    headers therefore carry it too, so `replay verify` refuses a
+    recording from another compiler, as the header check intends.
+- The hash stream's `v1` header line now comes from a constant
+  (`HASH_STREAM_VERSION`), so `formats` cannot drift from it. The bytes
+  are unchanged.
+- Tests:
+  - New `crates/game-testbed/tests/version.rs` runs the binary. It pins
+    every key, their order and their types. For the order it reads the
+    JSON in document order with a small serde visitor, because
+    `serde_json::Value` sorts keys without `preserve_order`. It checks
+    that `sim.protocol` equals the committed hash streams' `sim_protocol`,
+    that the line matches the JSON, that a report's `build` equals the
+    stamp's, and the usage errors.
+  - `crash_json.rs`: `version` must now equal `--version --json`'s
+    `build`, which replaces the old non-empty checks on five keys.
+  - Unit tests: the seconds parser (valid, text, overflow), the short
+    SHA, empty-as-unknown, and that `build.rs` facts arrived.
+  - `game-testbed` gains `serde` as a dev-dependency. It was already in
+    the workspace and on the allow-list, so `Cargo.lock` gains one line
+    and no package.
+- By hand, with the four variables set (release build):
+  `engine 0.1.0 0123456789ab, dirty`, `"dirty": true`,
+  `"source_date_epoch": 1761350400`, `"ci_run": "github-18999/1"` and
+  `"profile": "release"`. Changing a variable rebuilt eng-cli, because
+  rustc tracks `option_env!`. `ENG_DIRTY=yes` and
+  `SOURCE_DATE_EPOCH=2026-10-25` each failed to compile with their
+  `[E-VERSION]` message.
+- Docs: `docs/ARCHITECTURE.md` has the new section, and the probe
+  paragraph says what `crash.json`'s `version` is. `AGENTS.md` gains the
+  command (134 lines).
+
+**Where this differs from the spec and the plan**
+- Spec 6.13 says `cargo xtask` computes `version.json`. Here the build
+  itself supplies what it knows best (target, profile, rustc), and xtask
+  only has to supply the four source-tree values. X1 can then write
+  `version.json` by running `<game> --version --json` (amendment 15), so
+  there is one source for it.
+- The plan's example line had no engine version, rustc or protocol. The
+  line now has them, and it says `unknown` explicitly.
+- `profile` is Cargo's base profile, `debug` or `release`. A custom
+  profile such as `ci` reports its base. Cargo has no documented way for
+  a build script to learn the custom name.
+
+**Checks**
+- `cargo xtask quick` green (10 s). `cargo xtask ci --job lint` green,
+  including cargo-deny and typos (2 s). `ci --job test` green (9 s),
+  with the protected `exit_codes` unchanged at 7/7. `ci --job wasm`
+  green. After the review fixes: `quick` green again (12 s), and the
+  `lint` and `test` jobs green.
+- `replay` green: the hash streams are unchanged. No sim code changed.
+- RISC-V under QEMU was not run here. Cargo sets `TARGET` to
+  `riscv64gc-unknown-linux-gnu` for that cross build, and the build
+  script runs on the host. The reviewer confirmed the same mechanism with
+  `--target wasm32-unknown-unknown`.
+- `reviewer` subagent: "changes needed (small)", and approve once
+  finding 1 is fixed. Its own `quick` run was green. It checked that
+  `exit_codes.rs`, `hashes/`, `xtask/`, `protected.toml` and
+  `architecture.toml` are byte-identical, and that setting and unsetting
+  the variables rebuilds both ways. Findings and what happened to each:
+  1. The docs said an empty variable counts as unset, but an empty
+     `ENG_DIRTY` or `SOURCE_DATE_EPOCH` failed the build (medium). A
+     GitHub `env:` entry with an empty expression would hit this. Fixed:
+     empty now means unset for all four. Checked by hand: all four empty
+     give `unknown` and `null`.
+  2. "Nothing sets these four" was wrong, since CI's workflow sets
+     `ENG_ENGINE_SHA` (low). Fixed here, in `ARCHITECTURE.md` and in
+     `version.rs`. Amendment 15 now says which value wins.
+  3. The `target` and `profile` sources changed without a version bump
+     (low). Kept at 1, because nothing reads `build` (xtask only writes
+     reports). `ARCHITECTURE.md` now records the pre-T1 form of version
+     1.
+  4. An undocumented `registered` fallback kind (low). Fixed: the list
+     is now built from the world's components, resources and events, so
+     only documented kinds can appear.
+  5. Recordings and `replay verify` used the raw `build_sha`, but the
+     stamp turned `""` into `unknown` (low). Fixed: all three use
+     `version::game_sha`. The testbed is unaffected.
+  6. Protecting `tests/version.rs` also freezes additive keys, and the
+     test's header contradicted the docs (low). Fixed: the header now
+     matches, and amendment 15 says what protection implies.
+  7. The plan puts protected changes in `docs/rungs/1b/patches/`, but X1
+     is prose only (low). Recorded under "Not done".
+  8. Nits:
+     - "as git abbreviates them" was wrong: fixed.
+     - A repeated `--json` said "unknown flag": it now says
+       `--json given twice`.
+     - `--version` opens a log file and builds the sim, so a broken
+       game build exits 12: kept, and noted in amendment 15 for X1.
+
+**Not done (waits for others)**
+- X1 as a tested patch file in `docs/rungs/1b/patches/`, as the plan's
+  task table describes. It is in prose only (amendment 15), because this
+  task asked for proposals in this file. The owner can ask for the patch.
+- Criterion 8's "no `unknown` in a CI build" needs X1 and the native
+  `version` step (X2, X6).
+
+**Costs and timings**
+- One open-pulsar session, about 03:00 to 04:10. The `reviewer` pass
+  took about 9 minutes and 145k subagent tokens. Builds and test runs
+  took seconds each.
+
+## 2026-10-25, session 10: tests for both `--version` forms (T1 follow-up) (Claude Opus 5.5, open-pulsar task)
+
+The task: tests for both forms, plain and `--json`, including the JSON's
+keys and values. Update `crash_json.rs`'s version checks if the shape
+changed, but only if that file is not protected. It is not protected
+yet, so it was updated.
+
+**Done**
+- `crates/eng-cli/src/version.rs`: the build facts are now one `Build`
+  struct, and both the JSON `build` object and the line render from it.
+  So the two forms cannot disagree, and tests can render builds that
+  one environment cannot produce. Output is unchanged: the old
+  integration checks passed before the rewrite, and `replay` is green.
+- New unit tests (16 in eng-cli, 3 new), now in
+  `crates/eng-cli/src/version/tests.rs`. They moved there because
+  `version.rs` reached 495 lines; it is 339 now, and the tests still see
+  the private `Build`. They check:
+  - the exact compact JSON for an xtask-style build (every value known)
+    and for a plain build (`unknown` and `null`);
+  - the exact line when clean, dirty, dirty unknown, with a game commit
+    that differs from the engine's, with an unknown rustc, and with a
+    small protocol (zero-padded to 16 hex digits).
+- The integration tests are now two files, both under the 500-line
+  warning:
+  - `crates/game-testbed/tests/version.rs` (4 tests, 446 lines) is the
+    format contract, the file to protect later.
+  - `version_testbed.rs` (3 tests, 157 lines) holds what changes with
+    the testbed's sim.
+- `version.rs` checks:
+  - `build` equals an expected object built from the same compile-time
+    variables the binary saw. The test is compiled in the same cargo run,
+    and rustc tracks `option_env!` in both crates.
+  - `rustc` equals `rustc -V` of `$RUSTC` if that was set, else of the
+    `rustc` beside `env!("CARGO")` (rustup's layout, as on CI), else of
+    the `rustc` on `PATH`.
+  - `target` must match the running machine's architecture, OS and
+    `target_env` (variants such as `gnueabihf` included, and `x86` as
+    `i686` or `i586`), with 3 or 4 parts. It cannot be compared with the
+    host, because an x86_64 macOS build may run under Rosetta.
+  - `sim`: `tick_rate` equals `game_testbed_sim::TICK_RATE`, and
+    `protocol` equals the committed hash streams'. The systems and
+    schemas are checked for their form: `<Stage> <name>`; sorted by name,
+    then version; each schema with `name`, `version` and `kind` in that
+    order, and a documented kind.
+  - `formats` is pinned exactly, and `hash_stream` is cross-checked
+    against the committed `# eng hash stream v1` line.
+  - The line equals the one the JSON implies, as documented.
+  - Both forms exit 0, write nothing to stderr, and end in exactly one
+    newline.
+  - Both forms print byte-identical stdout in two runs. The first has
+    `ENG_ENGINE_SHA`, `ENG_DIRTY`, `SOURCE_DATE_EPOCH`, `ENG_CI_RUN` and
+    `RUST_BACKTRACE` removed. The second has them set at run time, in
+    another directory. This checks the docs' "never from the environment
+    at run time".
+  - The five usage errors each give their exact `[E-USAGE]` message and
+    print nothing on stdout.
+- `version_testbed.rs` checks:
+  - the exact systems and the exact list of 17 schemas;
+  - that `dump-world` agrees: the same resources and event channels,
+    and every component on an entity at tick 0 is a stamp component;
+  - that reports agree: `build`, `sim_protocol` and `report_version`;
+  - that a recording agrees. Its container version is read from the
+    file's bytes 8..12, and its header's game, SHAs, rustc, tick rate
+    and protocol are compared.
+- Dropped from the draft: a `<=` check of the `version` lines in the
+  committed authored files (input scripts, assertions, budgets). It said
+  little.
+- `crash_json.rs`: the version shape did not change in this task, and
+  `version` already had to equal the stamp's `build`, which compares
+  every key and value. It now also checks that `crash_version` equals the
+  stamp's `formats.crash`.
+- `docs/ARCHITECTURE.md` says what each of the two test files pins.
+
+**Checks**
+- `cargo xtask quick` green (11 s), and the `lint` and `test` jobs green.
+  The protected `exit_codes` is unchanged and passes.
+- The new tests also pass in three other modes:
+  - with all four variables set at build time (`dirty` true, an epoch,
+    a CI run; `crash_json` too);
+  - with `ENG_DIRTY=0` and an empty `ENG_ENGINE_SHA` (clean and
+    unknown);
+  - with `--release`.
+- Mutation check by hand, with `version.rs` restored byte-for-byte
+  afterwards (`cmp`). Each mutation failed a test:
+  - `dirty unknown` changed to `dirty?` fails the line unit test;
+  - `profile` hard-coded to `release` fails `version_json_keys_and_values`;
+  - no nested schemas failed `version_json_keys_and_values` before the
+    split. Re-run after it, it fails `testbed_systems_and_schemas`, while
+    the contract file passes. That file checks only the list's form, and
+    the protocol does not change with the stamp.
+- CI's toolchain comes from rustup with `rust-toolchain.toml`. Its bin
+  directory holds `cargo` and `rustc` side by side, so the rustc check
+  finds the right compiler. RISC-V runs only core-crate tests, so these
+  tests never run under QEMU.
+- After the review fixes: `quick` green (10 s), and the `lint` and
+  `test` jobs green. The three build modes above pass again: all four
+  variables set, clean with an empty SHA, and `--release`.
+- `reviewer` subagent: approve, nothing blocking. Its own `quick` run was
+  green. It built the parent change and this one and compared both forms
+  byte for byte under five build setups: identical, so the refactor
+  changes no output. It also confirmed that the variables trigger
+  rebuilds both ways. Findings and what happened to each:
+  1. CI checks `ENG_DIRTY`, `SOURCE_DATE_EPOCH` and `ENG_CI_RUN` only as
+     unset, since its workflow sets only `ENG_ENGINE_SHA`. A misspelt
+     `option_env!` name for one of them would pass CI (medium). Needs
+     xtask: amendment 16 asks the proposed X7 `version` step to build
+     with all four set. Checked correct by hand today (above).
+  2. The pinned schema list would need the owner for every testbed
+     schema change once the file is protected (medium). Fixed by the
+     split: the pins live in `version_testbed.rs`, and amendment 16 says
+     to protect `version.rs` only.
+  3. The `dump-world` component check would fail for a component no
+     entity has at tick 0 (medium). Fixed: components are checked as a
+     subset; resources and events stay exact, because the dump lists
+     all of them.
+  4. The quiet run inherited the shell's variables (low). Fixed: it
+     removes them.
+  5. The `RECORDING_VERSION` check compared the constant with itself
+     (low). Fixed: the version is read from a real recording's bytes,
+     and the header's build fields are compared too.
+  6. `check_target` failed on `gnueabihf`-style variants and on i686
+     (low). Fixed, with a comment on what it covers.
+  7. The rustc check assumed rustup's layout, and `nth(1).unwrap()`
+     could panic (low). Fixed: it falls back to `rustc` on `PATH`, and an
+     unknown rustc renders as `unknown`.
+  8. `version.rs` was at 495 lines, and `ARCHITECTURE.md` still said the
+     test pins only keys, order and types (low). Fixed: the unit tests
+     moved to `version/tests.rs`, and the docs now say what each test
+     file pins.
+
+**Costs and timings**
+- One open-pulsar session, about 02:55 to 03:25 EET. Summer time ended
+  at 04:00 EEST tonight, so these times are an hour behind the clock
+  session 9 used. Correction to session 9: it ended at about 03:55 EEST
+  (02:55 EET), not 04:10; that end time was an estimate.
+- The `reviewer` pass took about 8 minutes and 100k subagent tokens.
+  Builds and test runs took seconds each.
+
+## 2026-10-25, session 11: `--version` tests and `quick` re-run (T1 follow-up) (Claude Opus 5.5, open-pulsar task)
+
+The task: run the new tests and `cargo xtask quick`, both green, and
+record the results and open questions. No code or docs other than this
+entry changed. `docs/rungs/current.txt` stays at `1a`, and nothing was
+pushed.
+
+**Results** (aarch64-apple-darwin, Rust 1.99.1, `cargo test` because
+cargo-nextest is not installed here)
+- `cargo test -p eng-cli`: 16/16 ok in 0.15 s. That includes the 9
+  `version::tests` and `args::tests::parses_version`.
+- `cargo test -p game-testbed --test version --test version_testbed
+  --test crash_json`: 9/9 ok.
+  - `version` (the format contract): 4/4 in 0.02 s.
+  - `version_testbed`: 3/3 in 0.01 s.
+  - `crash_json`: 2/2 in 0.26 s.
+- `cargo xtask quick`: all 7 steps ok in 9 s (fmt, clippy, arch-check,
+  size-check, docs-check, tests 8.3 s, replay 0.3 s). Its tests step ran
+  all three files. A separate `cargo test --workspace` run gives 132
+  passed, 0 failed and 1 ignored over 34 test binaries. The ignored one
+  is an `ignore` doc example in `eng-derive`, as before.
+- The other CI jobs that run on this Mac:
+  - `cargo xtask ci --job lint`: all 7 steps ok in 2 s, deny and typos
+    included.
+  - `ci --job test`: all 4 steps ok in 9 s (tests, known-answers,
+    exit-codes, replay).
+  - `ci --job wasm`: ok.
+- Is it stable?
+  - The three files ran 20 times in a row: 20 passed, 0 failed, in 6 s
+    in all.
+  - They pass with `--test-threads=1`.
+  - On the release profile, the eng-cli unit tests and the three files
+    pass (16 + 9).
+- They also pass in two other build setups. Each was built in a scratch
+  target directory (`target/version-modes`, deleted afterwards), so the
+  main target kept its cache:
+  - All four variables set: `ENG_ENGINE_SHA` from `git rev-parse HEAD`,
+    `ENG_DIRTY=1`, `SOURCE_DATE_EPOCH=1792886400` and
+    `ENG_CI_RUN=local-session11`. 16 + 9 ok. The line was
+    `game-testbed 0.1.0 (engine 0.1.0 aed83cb78f69, dirty)
+    aarch64-apple-darwin debug, rustc 1.99.1, sim protocol
+    0x69fd4996880a6508`.
+  - Clean with no SHA: `ENG_DIRTY=0`, the other three empty. 16 + 9 ok.
+    The line read `engine 0.1.0 unknown`, with no dirty part.
+- A plain `cargo run` build prints `engine 0.1.0 unknown, dirty
+  unknown`. Its JSON has `unknown` or `null` for the four values that
+  come from the source tree. That is expected until X1.
+- Hash streams unchanged (replay ok; protocol `0x69fd4996880a6508`). No
+  protected path touched, and `jj st` was clean before this entry.
+
+**Open questions**
+1. **Linux and nextest are not checked yet.** CI's test job runs on
+   `ubuntu-24.04` and `ubuntu-24.04-arm` under nextest, which runs each
+   test in its own process. This Mac has neither. Each test uses its
+   own scratch directory (`$CARGO_TARGET_TMPDIR/version/<name>` and
+   `.../version-testbed/<name>`), so those processes do not clash. Two
+   parts could still behave differently on Linux:
+   - `check_target` on the `*-unknown-linux-gnu` triples;
+   - finding `rustc` beside `env!("CARGO")`. CI uses rustup's layout,
+     where they sit side by side.
+
+   The first CI run after the owner pushes is the real check.
+2. **Under jj, X1's `git rev-parse HEAD` names the parent change.** Here
+   it gave `aed83cb7`, the commit of `@-`, not of the working copy `@`.
+   In a colocated repo git's `HEAD` is `@-`, and `git status
+   --porcelain` lists `@`'s edits against it. So, with amendment 15's
+   recipe, a build inside the loop is stamped with `@-` and `dirty`
+   true whenever `@` has changes. That is accurate: the build is `@-`
+   plus edits not yet recorded. But the stamp cannot name the jj change
+   being worked on. If the owner wants that name, X1 could set
+   `ENG_CI_RUN` to something like `local-jj-<change id>` on local runs.
+   eng-cli would not need to change. This is the owner's call when
+   writing X1.
+3. **Two `cargo test` runs at once** (as in session 8, item 3).
+   `scratch()` deletes and recreates its directory, so two runs at the
+   same moment could delete each other's files. CI and the loop never
+   do this.
+4. **Criterion 8 (`version-json`) cannot pass yet.** It needs X1 for the
+   values and the CI `version` step (X2, X6) to check them. Until then CI
+   checks `ENG_DIRTY`, `SOURCE_DATE_EPOCH` and `ENG_CI_RUN` only as
+   unset (amendment 16). Today's run with all four set was by hand.
+5. **Both harness files are still unprotected.** Amendments 14 to 16
+   ask to protect `crash_json.rs` and `version.rs` (not
+   `version_testbed.rs`). Until then an agent can weaken them. The
+   agent side of T1 is done (feature, tests and a green run), and no
+   further T1 work needs to change either file. So now is a good time
+   to protect them.
+6. **`current.txt` still says `1a`** while 1b tasks run (proposal 10,
+   G1). The SessionStart hook still points agents at 1a's files. Loop
+   tasks name 1b explicitly, so this has caused no harm so far.
+
+**Costs and timings**
+- One short open-pulsar session, about 03:22 to 03:30 EET; no subagents.
+  Most builds were cached. The scratch build with all four variables
+  took 11 s (52 s of CPU), and the release test build took 3.4 s.
+
+**Next**
+- What is left of T1 needs the owner: amendments 15 and 16 (X1, the
+  `version` step in X2 and X7, and protection). Then T4 (live input).
+
 ## Proposals for the owner (protected paths)
 
 Nothing below is applied. Each item is what an agent would otherwise have
@@ -925,3 +1313,98 @@ to change; the owner applies it, or unlocks the path.
       unchanged.
     - When T11 adds `play`, the harness gains a `play` case. It is
       protected by then, so that change also needs the owner.
+
+15. **Amendment from session 9** (to proposals 7 and 8, and amendment 14;
+    the text above is kept as written). T1 is built, so these can be
+    applied:
+    - Proposal 7, X1 (`xtask/**`), now concrete. Every cargo command that
+      xtask runs sets four variables, read by
+      `crates/eng-cli/src/version.rs`. "Every" includes the tests, the
+      replay build and the CI jobs. If only some commands set them,
+      eng-cli and every game rebuild each time a run with them follows
+      one without them.
+      - `ENG_ENGINE_SHA`: `git rev-parse HEAD`. CI's workflow already
+        sets `ENG_ENGINE_SHA: ${{ github.sha }}` at the top level, so
+        X1 should keep a value that is already set and compute one only
+        when none is. On GitHub `github.sha` is the checked-out `HEAD`, so
+        the two agree, and the workflow line can stay or go with X6.
+      - `ENG_DIRTY`: `1` if `git status --porcelain` prints anything,
+        else `0`. Any other non-empty value fails the build.
+      - `SOURCE_DATE_EPOCH`: `git log -1 --format=%ct`, in whole
+        seconds. Any other non-empty value fails the build.
+      - `ENG_CI_RUN`: on GitHub `github-$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT`,
+        locally `local`.
+
+      An empty value counts as unset for all four.
+
+      xtask does not need to pass the target, profile or rustc, because
+      `build.rs` measures them. `ENG_RUSTC_VERSION` is no longer read.
+      For spec 6.13's "`cargo xtask` computes `version.json`", the
+      simplest patch writes `target/version.json` from
+      `<game> --version --json` after the build, so the file and the
+      binary cannot disagree. A new commit changes `ENG_ENGINE_SHA`, so
+      eng-cli and the game rebuild once per commit, which takes seconds.
+      Running `--version --json` builds the game's sim and writes one
+      small log file under `$ENG_AGENT_LOG_DIR`. A game whose sim build
+      panics makes it exit 12, which is the right failure for such a
+      build.
+    - Proposal 7, X2 (`ci --job native`), the `version` step for
+      criterion 8: run `--version` and `--version --json`, and fail if a
+      `build` value is the string `unknown` or `null`.
+    - Proposal 7, X7: a named step in `ci --job test`, after
+      `exit-codes`:
+
+      ```rust
+      steps.run("version", || tests(root, Some(("game-testbed", "version"))));
+      ```
+
+    - Proposal 8 (`protected.toml` and `.github/CODEOWNERS`):
+      - Protect `crates/game-testbed/tests/version.rs`, criterion 8's
+        harness. It pins the stamp's keys, order and types, so weakening
+        it would let the JSON drift silently. Once it is protected, every
+        change to the stamp needs the owner, including a new key, which
+        does not bump `stamp_version`. That keeps the format the owner's
+        decision. If additions should stay open to agents, the test could
+        instead require only that the pinned keys come first and in
+        order.
+      - Amendment 14 asked for `crates/game-testbed/tests/crash_json.rs`
+        to be protected after T1. T1 has now made its version change
+        (`version` must equal the stamp's `build`), so it can be
+        protected now.
+    - `deny.toml` (optional, G3): `serde` is now also a dev-dependency of
+      `game-testbed`, for reading JSON keys in document order in a test.
+      Its allow-list comment could say so. The crate list is unchanged.
+
+16. **Amendment from session 10** (to amendment 15; the text above is kept
+    as written):
+    - Proposal 8: protect `crates/game-testbed/tests/version.rs` only,
+      which is the format contract. Leave `version_testbed.rs`
+      unprotected. It pins the testbed's systems and schema list, which
+      change with the sim the way hash streams do. Protecting it would
+      put every testbed schema change through the owner.
+    - Proposal 7, X7: the `version` step should also build and test
+      once with all four variables set, for example `ENG_DIRTY=1`, a
+      `SOURCE_DATE_EPOCH` and an `ENG_CI_RUN`. CI's workflow sets only
+      `ENG_ENGINE_SHA`, so today CI sees the other three only as unset,
+      and a misspelt variable name in `crates/eng-cli/src/version.rs`
+      would pass. The tests compute their expected values from the same
+      compile-time variables, so they pass in both builds and fail only
+      when the binary and the variables disagree. After X1 sets all four
+      everywhere, this extra build can go.
+
+      ```rust
+      steps.run("version", || {
+          tests(root, Some(("game-testbed", "version")))?;
+          // Once more, as a dirty xtask build on CI would be.
+          cargo_step_env(
+              root,
+              "version-set",
+              &["test", "-p", "game-testbed", "--test", "version"],
+              &[("ENG_DIRTY", "1"), ("SOURCE_DATE_EPOCH", "1761350400"), ("ENG_CI_RUN", "version-step")],
+          )
+      });
+      ```
+
+      `cargo_step_env` does not exist yet. It would be `cargo_step` with
+      `Command::envs`. A separate `CARGO_TARGET_DIR` for that run would
+      avoid rebuilding the main target twice.

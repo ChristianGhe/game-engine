@@ -8,7 +8,7 @@ use eng_input::{Recording, read_recording};
 use eng_schema_json::JsonValue;
 
 use crate::run::{build_sim, hash, write_file};
-use crate::{ENGINE_SHA, Exit, GameDef, RUSTC_VERSION, exit, log, report};
+use crate::{ENGINE_SHA, Exit, GameDef, RUSTC_VERSION, exit, log, report, version};
 
 fn load(game: &GameDef, path: &Path) -> Result<Recording, Exit> {
     let bytes = fs::read(path)
@@ -42,7 +42,11 @@ pub(crate) fn verify(game: &GameDef, path: &Path, report_path: Option<&Path>) ->
             format!("{:#018x}", sim.protocol_version()),
         ),
         ("engine_sha", h.engine_sha.clone(), ENGINE_SHA.to_string()),
-        ("game_sha", h.game_sha.clone(), game.build_sha.to_string()),
+        (
+            "game_sha",
+            h.game_sha.clone(),
+            version::game_sha(game).to_string(),
+        ),
         ("rustc", h.rustc.clone(), RUSTC_VERSION.to_string()),
         (
             "tick_rate",
@@ -116,7 +120,7 @@ pub(crate) fn verify(game: &GameDef, path: &Path, report_path: Option<&Path>) ->
             ("report_version", JsonValue::U64(report::REPORT_VERSION)),
             ("command", JsonValue::str("replay verify")),
             ("game", JsonValue::str(game.name)),
-            ("build", report::build_info(game)),
+            ("build", version::build_json(game)),
             ("recording", JsonValue::str(path.display().to_string())),
             ("ticks", JsonValue::U64(recording.ticks())),
             ("hashes_checked", JsonValue::U64(checked)),

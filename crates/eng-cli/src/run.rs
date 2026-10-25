@@ -14,7 +14,7 @@ use eng_sim::{Sim, SimConfig};
 use crate::args::RunArgs;
 use crate::assertions::{self, Tracker};
 use crate::budgets::BudgetTracker;
-use crate::{ENGINE_SHA, Exit, GameDef, RUSTC_VERSION, exit, log, report};
+use crate::{ENGINE_SHA, Exit, GameDef, RUSTC_VERSION, exit, log, report, version};
 
 pub(crate) fn read_text(path: &Path) -> Result<String, String> {
     fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))
@@ -253,7 +253,7 @@ fn write_outputs(
             header: RecordingHeader {
                 game: game.name.to_string(),
                 engine_sha: ENGINE_SHA.to_string(),
-                game_sha: game.build_sha.to_string(),
+                game_sha: version::game_sha(game).to_string(),
                 rustc: RUSTC_VERSION.to_string(),
                 sim_protocol: sim.protocol_version(),
                 sim_data_hash: 0,
@@ -284,10 +284,13 @@ fn write_outputs(
     Ok(())
 }
 
+/// The hash stream's text format, in its first line.
+pub(crate) const HASH_STREAM_VERSION: u64 = 1;
+
 /// The committed text form of a hash stream: a header, then `tick hash`.
 fn hash_stream(game: &GameDef, a: &RunArgs, sim: &Sim, hashes: &[TickHash]) -> String {
     let mut out = format!(
-        "# eng hash stream v1\n# game={} seed={} players={} tick_rate={} hash_every={} sim_protocol={:#018x}\n",
+        "# eng hash stream v{HASH_STREAM_VERSION}\n# game={} seed={} players={} tick_rate={} hash_every={} sim_protocol={:#018x}\n",
         game.name,
         a.seed,
         a.players,

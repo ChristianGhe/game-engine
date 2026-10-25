@@ -8,7 +8,12 @@
 //! <game> replay verify <recording> [--report report.json]
 //! <game> replay dump <recording> [--out recording.json]
 //! <game> dump-world --at-tick N --out world.json [--seed S] [--players P] [--input script.toml]
+//! <game> --version [--json]
 //! ```
+//!
+//! `--version` prints the version stamp (spec 6.13) on one line and
+//! `--version --json` prints all of it; see the `version` module and
+//! `docs/ARCHITECTURE.md`, "The version stamp".
 //!
 //! The console gets a summary of at most about 20 lines; the full log goes
 //! to `target/agent-logs/` (or `$ENG_AGENT_LOG_DIR`) as JSON lines with
@@ -25,34 +30,24 @@ mod log;
 mod replay;
 mod report;
 mod run;
+mod version;
 
 use std::process::ExitCode;
 
 use eng_sim::{ScheduleError, Sim, SimConfig};
 
 pub use exit::Exit;
+pub use version::{ENGINE_SHA, ENGINE_VERSION, PROFILE, RUSTC_VERSION, TARGET, UNKNOWN};
 
 /// What a game binary tells the probe about itself.
 pub struct GameDef {
     pub name: &'static str,
     pub version: &'static str,
-    /// The game's source commit, or `"unknown"` outside `cargo xtask` builds.
+    /// The game's source commit, or [`UNKNOWN`] outside `cargo xtask` builds.
     pub build_sha: &'static str,
     pub tick_rate: u32,
     pub build: fn(SimConfig) -> Result<Sim, ScheduleError>,
 }
-
-/// The engine's source commit, set by `cargo xtask` builds.
-pub const ENGINE_SHA: &str = match option_env!("ENG_ENGINE_SHA") {
-    Some(sha) => sha,
-    None => "unknown",
-};
-
-/// The compiler version, set by `cargo xtask` builds.
-pub const RUSTC_VERSION: &str = match option_env!("ENG_RUSTC_VERSION") {
-    Some(v) => v,
-    None => "unknown",
-};
 
 /// Runs the probe with the process arguments.
 pub fn main(game: &GameDef) -> ExitCode {
@@ -71,6 +66,7 @@ pub fn run_args(game: &GameDef, args: &[String]) -> Exit {
     log::open(game.name, command.name());
     log::line("info", &format!("start: {} {}", game.name, args.join(" ")));
     match command {
+        args::Command::Version { json } => version::print(game, json),
         args::Command::Help => {
             println!("{}", args::USAGE.replace("<game>", game.name));
             Exit::Ok

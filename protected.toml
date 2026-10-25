@@ -22,11 +22,16 @@ paths = [
   # scenarios to their assertions (replay fails on an unreferenced assertion).
   "crates/eng-math/tests/known_answers.rs",
   "crates/game-testbed/tests/exit_codes.rs",
+  "crates/game-testbed/tests/crash_json.rs",
+  "crates/game-testbed/tests/version.rs",
+  "crates/eng-input/tests/live_input.rs",
   "crates/game-testbed/scenarios/scenarios.toml",
   "crates/*/tests/golden.rs",
   "**/golden/**",
   "**/snapshots/**",
+  # proptest writes `<test>.proptest-regressions` beside a test in tests/.
   "**/proptest-regressions/**",
+  "**/*.proptest-regressions",
   # The check tooling itself.
   "xtask/**",
   "clippy.toml",

@@ -10,11 +10,15 @@
 /crates/eng-math/tests/known_answers.txt @ChristianGhe
 /crates/eng-math/tests/known_answers.rs @ChristianGhe
 /crates/game-testbed/tests/exit_codes.rs @ChristianGhe
+/crates/game-testbed/tests/crash_json.rs @ChristianGhe
+/crates/game-testbed/tests/version.rs @ChristianGhe
+/crates/eng-input/tests/live_input.rs @ChristianGhe
 /crates/game-testbed/scenarios/scenarios.toml @ChristianGhe
 /crates/*/tests/golden.rs @ChristianGhe
 **/golden/ @ChristianGhe
 **/snapshots/ @ChristianGhe
 **/proptest-regressions/ @ChristianGhe
+**/*.proptest-regressions @ChristianGhe
 /xtask/ @ChristianGhe
 /clippy.toml @ChristianGhe
 /.clippy.toml @ChristianGhe

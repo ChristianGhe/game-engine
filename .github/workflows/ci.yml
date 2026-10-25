@@ -142,10 +142,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The cache first: on a partial key match (after any Cargo.lock change)
+      # rust-cache cleans files out of target/, which would delete artifacts
+      # already downloaded to target/ci/in.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: target/ci/in
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: compare hashes and measure the PR tier
         env:
           GH_TOKEN: ${{ github.token }}

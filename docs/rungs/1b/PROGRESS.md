@@ -980,6 +980,240 @@ cargo-nextest is not installed here)
 - What is left of T1 needs the owner: amendments 15 and 16 (X1, the
   `version` step in X2 and X7, and protection). Then T4 (live input).
 
+## 2026-10-25, session 12: live input (T4) (Claude Opus 5.5, open-pulsar task)
+
+The task: in `eng-input`, plain-data `Key` and `KeyEvent`, actions,
+strict-TOML bindings (WASD, the arrows, Esc for `quit` by default) and
+quantization of a key timeline into one `PlayerCommand` per tick, with
+the caller passing the tick. The rules are criterion 18's. Script and
+recording formats and the hash streams stay unchanged; no new crates; no
+protected paths.
+
+**Done**
+- `crates/eng-input/src/key.rs`:
+  - `Key` is a closed enum of 110 physical keys, named by their W3C UI
+    Events `code`. They are the writing-system, functional, control-pad,
+    arrow, numpad and function-section keys of 104-key, 105-key and
+    Japanese layouts. It has `ALL`, `COUNT`, `index`, `name`, an exact
+    `from_name` and `Display`.
+  - `KeyEvent` is `Down(Key)`, `Up(Key)` or `FocusLost`.
+  - The module uses only `core` and derives only std traits (no
+    `Schema`: it is not simulation data). T3 can move it into
+    `eng-platform-api` by cut and paste.
+- `src/bindings.rs`:
+  - `Action`: `move_forward`, `move_back`, `move_left`, `move_right` and
+    `quit`. `is_app()` is true for `quit` only. `ActionSet` is a small
+    bit set.
+  - `Bindings` maps each key to at most one action, in an array indexed
+    by key. It has `bind`, `unbind`, `action` and `keys`.
+  - The format is `version = 1` plus `[actions] name = ["Code", ...]`,
+    loaded through `eng_schema_json::load_toml`, so it is strict, ignores
+    `x_` keys and has a version with migrations. An action the file
+    leaves out is unbound: a file replaces the defaults.
+  - The defaults are `src/default.bindings.toml`, compiled in as
+    `DEFAULT_BINDINGS`. `Bindings::default()` parses that text.
+  - Every error is `BindingsError`, shown as
+    `[E-BINDINGS] origin:line: message`.
+    - These carry their line: an unknown action or key name, an action
+      whose value is not a list of names, an unknown top-level key, and
+      a key bound twice. The first problem in the file is the one
+      reported, not the first by name. To make that hold, serde accepts
+      any action value and any extra top-level key (an untagged enum
+      over `IgnoredAny`, and a flattened map), and `parse` rejects them
+      with their lines.
+    - An unknown key gets a hint: `w` gives "did you mean `KeyW`?", and
+      so do `1`, `up`, `escape` and `Esc` for their keys. The message
+      gives examples of real names.
+    - Names from the file are escaped (`escape_debug`), so every message
+      with a line is one line.
+    - Only three problems have no `:line`, and they keep `load_toml`'s
+      message: a TOML syntax error (whose message names its line), a
+      missing or newer `version`, and an `actions` that is not a table.
+- `src/live.rs`:
+  - `LiveInput` has `handle(KeyEvent)`, `sample(Tick) -> TickInput`,
+    `set_view(yaw, pitch)`, `bindings_mut` and `is_held`.
+  - `TickInput` is `{ command, actions }`, and `quit()` reads `quit` from
+    `actions`.
+  - `quantize(&Bindings, &[(Tick, KeyEvent)], ticks)` is the same for a
+    whole timeline. Each event carries the tick whose sample first sees
+    it.
+  - The rules:
+    - A key counts for a tick if it is held at the sample, or if it went
+      from up to down since the previous sample (a latch). So a tap
+      shorter than a tick counts once, however many taps there were.
+    - A `Down` for a key already held (OS key repeat) changes nothing,
+      so releasing a held key never adds a tick.
+    - `FocusLost` releases every key.
+    - Opposite actions cancel, and movement is full speed (±127).
+    - `quit` is reported in `actions` and never changes the command.
+    - No clock and no floats.
+  - `sample` must get increasing ticks; sampling a tick twice would lose
+    its taps. Debug builds panic with `[E-INPUT]` if a tick does not
+    increase.
+- `eng-schema-json`: new `TomlSpans` and `PathStep` (`src/spans.rs`).
+  They parse the text again with toml's span-keeping `DeTable` and
+  answer "on which line is this key or array element". No toml type is
+  in the public API. They belong in the authored-TOML crate, so
+  `eng-input` needs no direct `toml` dependency.
+- Tests:
+  - `crates/eng-input/tests/live_input.rs` holds criterion 18's own
+    checks, 12 tests (467 lines):
+    - the default bindings load from the TOML, and a file replaces them;
+    - `[E-BINDINGS]` with the line for tables, inline tables, dotted
+      keys, `[actions.<name>]` headers and multi-line arrays, for an
+      unknown action whatever its value, in file order, and for a key
+      bound twice;
+    - held keys (OS key repeat included), taps, focus loss and `quit`;
+    - a known answer: a fixed 2,000-event timeline (made with an integer
+      LCG) over 1,014 ticks. It pins an FNV-1a fingerprint of every
+      field (`0x4d12_793a_10d0_b98f`) and six counts, so another target
+      that differs fails. RISC-V does not run it, since `eng-input` is
+      not core;
+    - four proptests:
+      - `quantize` against a model of the rules written out
+        independently, under random rebinding;
+      - same timeline, same commands, including streaming and a clone
+        taken part-way;
+      - removing the events of every key bound to `quit` leaves the
+        commands unchanged;
+      - everything is idle after a focus loss.
+  - `tests/bindings.rs` (7 tests): key and action names round-trip, the
+    hints, the other errors with their lines (or none) and escaping,
+    `x_` keys, bind and unbind.
+  - `tests/quantize.rs` (4 tests, beyond the criterion): cancelling,
+    keys sharing an action, the held view and rebinding, a timeline out
+    of order, and a tick sampled twice (debug builds).
+  - `crates/eng-schema-json/tests/spans.rs` (2 tests).
+- Docs: `docs/ARCHITECTURE.md` gains "Live input". The `eng-input` crate
+  docs and its `Cargo.toml` description now cover live input.
+- `eng-input` gains `proptest` as a dev-dependency. It was already in
+  `Cargo.lock` (1.12.0, a dev-dependency of five crates), so the lock
+  gains one line and no package, and no table-only fallback was needed.
+
+**Decisions** (Claude's calls; the owner can overrule any)
+1. `FocusLost` acts as an `Up` for every key. A key that went down since
+   the last sample still counts once, as with any release. The other
+   choice would be to drop pending taps as well.
+2. A key triggers one action, so a key given twice in a file is an
+   error. An action may have any number of keys.
+3. An action left out of a file is unbound, and `quit = []` unbinds
+   Escape. The window's close button still quits.
+4. Diagonals send `forward` and `side` at 127 each. kit-fps clamps the
+   wish length to 1, so a diagonal is not faster.
+5. The view angles are values the caller holds with `set_view`, 0 by
+   default, so `move_forward` goes along +X. For the top-down view, T11
+   should probably hold yaw `0x4000` (90°, +Y), so that W moves the dot
+   up the screen and D to the right.
+6. Five actions only, and `buttons` and `select` stay 0. Game-defined
+   actions (fire, use, jump) arrive when a game has buttons (rung 2).
+7. `quantize` panics if the timeline's ticks decrease. Events for tick 0
+   land in tick 1, and events after `ticks` are dropped.
+8. Not in the key set: IME keys (`Lang1`-`Lang5`, `Convert`, `KanaMode`,
+   `NonConvert`), media and browser keys, `F13` and up, and `Fn`. A
+   platform drops keys that `Key` cannot name. winit calls `MetaLeft`
+   `SuperLeft`, so T10 maps between them.
+
+**Checks**
+- After the review fixes: `cargo xtask quick` all 7 steps ok in 13 s.
+  `ci --job lint` (deny and typos included): 7/7 ok in 2 s. `ci --job
+  test`: 4/4 ok in 8 s, the protected `exit_codes` included. `ci --job
+  wasm`: ok. All of them were green before the review too.
+- `cargo test --workspace`: 157 passed, 0 failed, 1 ignored (the
+  `eng-derive` doc example, as before). Session 11 had 132; the 25 new
+  ones are 12 + 7 + 4 + 2. `PROPTEST_CASES=5000` also passes.
+- Each rule bites. Four deliberate bugs were tried and reverted:
+  - `FocusLost` also drops pending taps: 3 tests fail;
+  - `quit` leaks into `buttons`: 4 fail;
+  - `Up` cancels a pending tap: 3 fail;
+  - after the review, a repeat `Down` re-arms the latch again (the bug
+    the reviewer found): 3 fail.
+
+  Each mutant had the model proptest and the known answer among the
+  failures. (The first three ran against the first version of the
+  tests.)
+- rustdoc for both crates builds with `-D warnings`.
+- Hash streams unchanged (`replay` ok). `script.rs` and `recording.rs`
+  are untouched. No protected path changed. The diff is `Cargo.lock`
+  (one line), two `Cargo.toml`/`lib.rs` pairs and `docs/ARCHITECTURE.md`,
+  plus the new files.
+
+**Found: proptest's regression files miss the protected pattern.**
+While the mutants ran, proptest wrote
+`crates/eng-input/tests/live_input.proptest-regressions`, beside the test
+file. proptest 1.12's default persistence, `SourceParallel`, looks for a
+`lib.rs` or `main.rs` in the test file's directory and then in each
+parent. Only if it finds one does it write into a
+`proptest-regressions/` directory next to that directory (for
+`src/lib.rs`, `<crate>/proptest-regressions/`). A file in `tests/` has no
+such parent here, so proptest falls back to writing
+`<file>.proptest-regressions` next to the test. Every proptest in the
+repo is in a `tests/` directory, so `**/proptest-regressions/**`
+matches none of the files they would write. Those mutant-only files
+were deleted, so none is left. Proposal: amendment 17.
+
+**Review**
+- One fresh-context `reviewer` pass. Verdict: "changes needed", for one
+  medium finding; it said criterion 18's six rules were met and tested.
+  Its own `quick` and `replay` runs were green, and so was
+  `PROPTEST_CASES=5000`. It also fuzzed the error lines from a scratch
+  crate in `/tmp`, outside the repo:
+  - 100,000 generated files: 86,831 errors carried a line and none was
+    wrong. They covered tables, inline tables, dotted and quoted keys,
+    multi-line arrays, CRLF, a BOM, comments in arrays and TOML 1.1
+    multi-line inline tables.
+  - 200,000 random token strings: no panic.
+
+  Findings and what happened to each:
+  1. **OS key repeat added a tick (medium).** `handle` set the tap latch
+     on every `Down`, including a repeat for a key already held.
+     `[(1, Down W), (30, Up W)]` gave 29 ticks of forward, but a repeat
+     `(30, Down W)` just before the `Up` gave 30. With key repeat on,
+     releasing a held key could add a tick, depending on where the
+     repeat fell. The proptest model had the same flaw, so it could not
+     catch it. Fixed: the latch is set only when the key was up, the
+     model is fixed the same way, and a repeat test was added. Reverting
+     only the fix fails 3 tests.
+
+     The known answer changed for this reason, from
+     `0x5ef3_6683_a7aa_bbb5` to `0x4d12_793a_10d0_b98f`. The fixed
+     timeline often sends `Down` for held keys. The counts went from
+     `[202, 197, 240, 199, 388, 114]` to `[202, 196, 239, 199, 388, 116]`:
+     one tick fewer each of back and right, and two more idle ticks. The
+     file is not protected yet, and the old value never left this
+     session.
+  2. **"With the line" and "first in file order" failed when serde
+     rejected the file first (low).** `fly = "KeyW"` or `[actions.fly]`
+     gave an unknown action with no line. `fly = []` on line 3 followed
+     by `quit = "Escape"` reported `quit`. Fixed as described under
+     "Done": serde now accepts any action value and any top-level key,
+     and `parse` rejects them with their lines, in file order. Tests
+     cover each scenario. The docs (rustdoc, `ARCHITECTURE.md`) list the
+     three problems that have no line.
+  3. **Names went into messages unescaped (nit).** `quit = ["Key\nW"]`
+     split an `[E-BINDINGS]` line in two. Fixed with `escape_debug`, and
+     a test checks that every message with a line is one line.
+  4. **Increasing ticks were not checked (nit).** Sampling a tick twice
+     silently lost its taps. Fixed with a `debug_assert!` and
+     `[E-INPUT]`, and a debug-only test.
+  5. **`live_input.rs` was near the 500-line warning (nit).** Fixed: the
+     three tests outside the criterion moved to `tests/quantize.rs`. It
+     is 467 lines with the new tests.
+  6. **Placeholders in this entry (nit).** Filled in here.
+
+**Not done (waits for others)**
+- Nothing calls live input yet. T11 (`eng-app`) wires `play`,
+  `--bindings` and Esc. When the probe reads bindings files, the
+  version stamp's `formats` should gain `bindings`, and
+  `crates/game-testbed/tests/version.rs` pins those keys.
+- T3 moves `Key` and `KeyEvent` into `eng-platform-api` (after G2).
+- The `live-input` CI step and protecting `live_input.rs` need the owner
+  (amendment 17).
+
+**Costs and timings**
+- One open-pulsar session, about 03:30 to 04:00 EET, including one
+  `reviewer` pass (about 8 minutes, 115k subagent tokens, 41 tool
+  calls). Builds and test runs took seconds; `quick` takes 13 s.
+
 ## Proposals for the owner (protected paths)
 
 Nothing below is applied. Each item is what an agent would otherwise have
@@ -1408,3 +1642,35 @@ to change; the owner applies it, or unlocks the path.
       `cargo_step_env` does not exist yet. It would be `cargo_step` with
       `Command::envs`. A separate `CARGO_TARGET_DIR` for that run would
       avoid rebuilding the main target twice.
+
+17. **Amendment from session 12** (to proposals 7 and 8, and amendment 11;
+    the text above is kept as written). T4 is built, so these can be
+    applied:
+    - Proposal 8: protect `crates/eng-input/tests/live_input.rs`,
+      criterion 18's harness, with the matching `.github/CODEOWNERS`
+      line. It pins a known-answer fingerprint of the commands from a
+      fixed timeline (`0x4d12_793a_10d0_b98f`). Protecting the file also
+      makes that answer the owner's, which is what keeps "the same
+      timeline gives the same commands on every target" honest. Leave
+      `crates/eng-input/tests/bindings.rs` and `tests/quantize.rs`
+      unprotected: they cover names, hints, messages and details beyond
+      the criterion.
+    - Proposal 7, X7: the `live-input` step in `cargo xtask ci --job
+      test`. In `xtask/src/ci.rs`, `fn test`, after `exit-codes`:
+
+      ```rust
+      steps.run("live-input", || {
+          tests(root, Some(("eng-input", "live_input")))
+      });
+      ```
+
+    - **The protected-paths list and `.github/CODEOWNERS`: proptest
+      regression files.** Add `"**/*.proptest-regressions"` beside
+      `"**/proptest-regressions/**"`. For a test in `tests/` (where
+      every proptest here is), proptest 1.12 finds no `lib.rs` or
+      `main.rs` above the file, so it writes
+      `<test file>.proptest-regressions` next to it. The present
+      pattern does not match that. Session 12 saw it happen. Until then a
+      failing proptest's regression file is not protected, and the guard
+      would let an agent commit or delete one. Amendment 11's plan (the
+      file reaches the owner with the fix) still applies.

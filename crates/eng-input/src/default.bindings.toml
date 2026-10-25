@@ -1,0 +1,14 @@
+# The default bindings: WASD and the arrows move, Escape quits.
+#
+# Keys are W3C `code` names, so they name positions on the keyboard, not
+# characters: these are the same four keys on AZERTY or Dvorak. Another
+# bindings file replaces this one entirely: an action it leaves out is
+# unbound, and `quit = []` unbinds Escape.
+version = 1
+
+[actions]
+move_forward = ["KeyW", "ArrowUp"]
+move_back = ["KeyS", "ArrowDown"]
+move_left = ["KeyA", "ArrowLeft"]
+move_right = ["KeyD", "ArrowRight"]
+quit = ["Escape"]

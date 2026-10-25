@@ -1,6 +1,6 @@
 [package]
 name = "eng-input"
-description = "Input scripts and recordings: everything that turns into PlayerCommands."
+description = "Input scripts, recordings and live input (keys, actions, bindings): everything that turns into PlayerCommands."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,6 +12,9 @@ eng-core.workspace = true
 eng-schema-core.workspace = true
 eng-schema-json.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
 
 [lints]
 workspace = true

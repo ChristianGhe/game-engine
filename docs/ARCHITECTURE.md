@@ -62,6 +62,36 @@ input script (TOML) ──eng-input──▶ PlayerCommand per player, per tick
 - **Randomness.** `GameplayRng` (PCG32, stream "gameplay") is a resource,
   so it is part of the state. Cosmetic randomness never enters the simulation.
 
+## Live input
+
+`eng-input` also quantizes the keyboard into one `PlayerCommand` per tick
+(spec 6.10). Nothing calls it yet; `eng-app`'s window will (rung 1b, T11).
+
+```
+KeyEvent (Down/Up of a Key, FocusLost) ──LiveInput::handle──▶ held keys + taps
+          Bindings (strict TOML) ──LiveInput::sample(tick)──▶ TickInput { command, actions }
+```
+
+- `Key` names physical keys by their W3C `code` (`KeyW`, `ArrowUp`,
+  `Escape`), so bindings do not depend on the layout. `Key` and `KeyEvent`
+  are plain data; they move to `eng-platform-api` in T3.
+- The caller passes the tick to `sample`; `eng-input` reads no clock.
+  `quantize` does the same for a whole timeline of `(tick, event)`.
+- A key counts for a tick if it is held when the tick is sampled or went
+  down since the previous sample, so a tap shorter than a tick counts once.
+  A `Down` for a key already held (OS key repeat) changes nothing.
+  `FocusLost` releases every key. Opposite actions cancel; movement is
+  full speed (127).
+- App actions (`quit`) are reported in `TickInput::actions` and never
+  change the command.
+- Bindings files are `version = 1` plus `[actions] move_forward = ["KeyW",
+  ...]`. The defaults (WASD, the arrows, Escape for `quit`) are
+  `crates/eng-input/src/default.bindings.toml`. A file replaces them; an
+  action it leaves out is unbound. Unknown action or key names, a value
+  that is not a list of names, an unknown top-level key and a key bound
+  twice fail with `[E-BINDINGS] <file>:<line>: ...`, the first in the file
+  being reported; `eng_schema_json::TomlSpans` finds the line.
+
 ## Invariants
 
 1. The simulation is a pure function of the initial state and the commands.

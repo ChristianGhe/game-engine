@@ -101,6 +101,7 @@ dependencies = [
  "eng-core",
  "eng-schema-core",
  "eng-schema-json",
+ "proptest",
  "serde",
 ]
 

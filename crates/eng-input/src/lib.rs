@@ -1,16 +1,27 @@
-//! Everything that becomes [`PlayerCommand`](eng_core::PlayerCommand)s
-//! outside a live window: authored input scripts and binary recordings.
+//! Everything that becomes [`PlayerCommand`](eng_core::PlayerCommand)s:
+//! authored input scripts, binary recordings, and live keyboard input.
 //!
-//! Quantization (degrees to binary angles) happens here, before the
-//! simulation, so a script produces identical commands on every platform.
+//! Quantization happens here, before the simulation, so the same input
+//! produces identical commands on every platform:
 //!
-//! Live input (actions, bindings, devices) arrives with the window in
-//! rung 1b.
+//! - scripts: degrees to binary angles ([`degrees_to_angle`]);
+//! - live input: [`KeyEvent`]s mapped through [`Bindings`] to
+//!   [`Action`]s, sampled once per tick ([`LiveInput`], [`quantize`]). The
+//!   caller says which tick it samples; nothing here reads a clock.
+//!
+//! [`Key`] and [`KeyEvent`] are plain data. They move to `eng-platform-api`
+//! when that crate exists (rung 1b, task T3).
 #![forbid(unsafe_code)]
 
+mod bindings;
+mod key;
+mod live;
 mod recording;
 mod script;
 
+pub use bindings::{Action, ActionSet, Bindings, BindingsError, DEFAULT_BINDINGS};
+pub use key::{Key, KeyEvent};
+pub use live::{FULL_AXIS, LiveInput, TickInput, command_for, quantize};
 pub use recording::{
     RECORDING_KIND, RECORDING_VERSION, Recording, RecordingHeader, TickHash, read_recording,
     write_recording,

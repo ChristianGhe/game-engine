@@ -1,0 +1,467 @@
+Patch X1 (rung 1b, gate G5): xtask sets the version stamp's source-tree values.
+
+Every cargo command that xtask runs gets ENG_ENGINE_SHA, ENG_DIRTY,
+SOURCE_DATE_EPOCH and ENG_CI_RUN, worked out once per run from git and
+GitHub Actions' variables; a non-empty value already set wins. A build
+made through xtask then has no `unknown` in its stamp. Amendments 15 and
+16 of docs/rungs/1b/PROGRESS.md describe it; the session entry that
+added this file says how it was tested.
+
+Base: main at 106a8f0. Apply at the repo root with `git apply`, then run
+`cargo xtask quick`, `cargo xtask selftest` and `cargo test -p xtask`.
+Text before the first `diff --git` line is ignored by `git apply`.
+
+diff --git a/crates/eng-cli/src/version.rs b/crates/eng-cli/src/version.rs
+index e34df601a78fff861a155f786c7e0a4b55ebba00..18ba01e071e986f07c2efc37e16702ea6858c9ac 100644
+--- a/crates/eng-cli/src/version.rs
++++ b/crates/eng-cli/src/version.rs
+@@ -8,10 +8,11 @@
+ //! - this compilation, through `build.rs`: target triple, profile, rustc;
+ //! - the source tree, through environment variables read at build time:
+ //!   `ENG_ENGINE_SHA`, `ENG_DIRTY` (`0` or `1`), `SOURCE_DATE_EPOCH` (the
+-//!   commit time in Unix seconds) and `ENG_CI_RUN`. CI's workflow sets the
+-//!   first today; `cargo xtask` is to set all four (patch X1). Without
+-//!   them the strings read `unknown`, and `dirty` and `source_date_epoch`
+-//!   read `null`. An empty variable counts as unset, and a malformed
++//!   commit time in Unix seconds) and `ENG_CI_RUN`. `cargo xtask` sets all
++//!   four for every cargo command it runs (`xtask/src/stamp.rs`); a plain
++//!   `cargo` build sees only what the environment sets. Without them the
++//!   strings read `unknown`, and `dirty` and `source_date_epoch` read
++//!   `null`. An empty variable counts as unset, and a malformed
+ //!   `ENG_DIRTY` or `SOURCE_DATE_EPOCH` fails the build;
+ //! - the simulation, built with 1 player and seed 0 (the protocol version
+ //!   depends on neither): tick rate, protocol version, system order and
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index fe2ee2e582db36819f991f69cc21b7ff8460b8a8..4905fb0da76e05f14b24c81ce84343b7460121b8 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -175,22 +175,24 @@ The JSON object, `stamp_version` 1:
+ 
+ `build` has the fields of spec 6.13's `version.json`. Facts about the
+ compilation come from `crates/eng-cli/build.rs`. Facts about the source
+-tree come from four environment variables read at build time. CI's
+-workflow already sets `ENG_ENGINE_SHA`, and `cargo xtask` is to set all
+-four (patch X1, `docs/rungs/1b/PROGRESS.md`). Without them a value reads
+-`unknown` (strings) or `null`. Any of the four set to an empty string
+-counts as unset. A malformed `ENG_DIRTY` or `SOURCE_DATE_EPOCH` fails the
+-build with `[E-VERSION]`.
++tree come from four environment variables read at build time.
++`cargo xtask` sets all four for every cargo command it runs
++(`xtask/src/stamp.rs`), from git and GitHub Actions' variables, once per
++run. A non-empty value the environment already has wins, such as CI's
++`ENG_ENGINE_SHA`. A plain `cargo` build sees only what the environment
++sets. Without them a value reads `unknown` (strings) or `null`. Any of
++the four set to an empty string counts as unset. A malformed `ENG_DIRTY`
++or `SOURCE_DATE_EPOCH` fails the build with `[E-VERSION]`.
+ 
+ | Key | Type | From |
+ |---|---|---|
+ | `game_version` | string | the game's crate version (the spec's "semver") |
+ | `engine_version` | string | the `eng-cli` crate's version |
+-| `engine_sha` | string | `ENG_ENGINE_SHA`, else `unknown` |
++| `engine_sha` | string | `ENG_ENGINE_SHA` (xtask: `git rev-parse HEAD`), else `unknown` |
+ | `game_sha` | string | the game's `GameDef::build_sha`, else `unknown`; the testbed passes the engine's |
+-| `dirty` | bool or null | `ENG_DIRTY`, `0` or `1`: the source tree had uncommitted changes |
+-| `source_date_epoch` | integer or null | `SOURCE_DATE_EPOCH`: the commit time in Unix seconds |
+-| `ci_run` | string | `ENG_CI_RUN`, else `unknown` |
++| `dirty` | bool or null | `ENG_DIRTY`, `0` or `1`: the source tree had uncommitted changes (xtask: `git status --porcelain` lists anything, untracked files included) |
++| `source_date_epoch` | integer or null | `SOURCE_DATE_EPOCH`: the commit time in Unix seconds (xtask: `HEAD`'s committer time) |
++| `ci_run` | string | `ENG_CI_RUN` (xtask: `github-<run id>/<attempt>` on GitHub Actions, `local` elsewhere), else `unknown` |
+ | `target` | string | the target triple (Cargo's `TARGET`) |
+ | `rustc` | string | `rustc -V` of the compiler that built it |
+ | `profile` | string | `debug` or `release`: the Cargo profile the build's profile inherits from (Cargo's `PROFILE`) |
+diff --git a/xtask/src/main.rs b/xtask/src/main.rs
+index 7fe702b3ec2b4fa26bd7b3f2e6b60f491d1bfafa..85b093d727a71ad0dd0a73118e6cdd50eb1dbf99 100644
+--- a/xtask/src/main.rs
++++ b/xtask/src/main.rs
+@@ -26,6 +26,7 @@ mod replay;
+ mod selftest;
+ mod shell;
+ mod size;
++mod stamp;
+ mod util;
+ 
+ use std::process::ExitCode;
+diff --git a/xtask/src/stamp.rs b/xtask/src/stamp.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..dc6b4ba9639b26d85c99e40440911487dc4ef03f
+--- /dev/null
++++ b/xtask/src/stamp.rs
+@@ -0,0 +1,121 @@
++//! The version stamp's source-tree values (spec 6.13, rung 1b patch X1).
++//!
++//! `crates/eng-cli/src/version.rs` reads four variables at compile time,
++//! and only xtask knows their values, so every cargo command it runs sets
++//! them ([`crate::util::cargo`]):
++//!
++//! | Variable | Value |
++//! |---|---|
++//! | `ENG_ENGINE_SHA` | `git rev-parse HEAD` |
++//! | `ENG_DIRTY` | `1` if `git status --porcelain` lists anything, untracked files included, else `0` |
++//! | `SOURCE_DATE_EPOCH` | `HEAD`'s committer time, in Unix seconds |
++//! | `ENG_CI_RUN` | `github-<GITHUB_RUN_ID>/<GITHUB_RUN_ATTEMPT>` on GitHub Actions, else `local` |
++//!
++//! - A non-empty value already in the environment wins, as it is: CI's
++//!   workflow sets `ENG_ENGINE_SHA`, and a container can pass in what git
++//!   cannot see. An empty one counts as unset, as it does for `version.rs`.
++//! - A value git cannot give (no git, no repository, no commit) stays
++//!   unset, so the stamp says `unknown` or `null` for it instead of the
++//!   build failing.
++//! - The values are worked out once per process. Every build in one xtask
++//!   run gets the same ones, so its steps do not rebuild `eng-cli` for
++//!   each other, and the binaries they leave behind agree.
++
++use std::path::Path;
++use std::process::Command;
++use std::sync::OnceLock;
++
++/// The variable names, in `version.rs`'s order.
++pub const NAMES: [&str; 4] = [
++    "ENG_ENGINE_SHA",
++    "ENG_DIRTY",
++    "SOURCE_DATE_EPOCH",
++    "ENG_CI_RUN",
++];
++
++/// The values for every cargo command this process runs. The first call
++/// reads the source tree at `root`; scratch workspaces under `target/`
++/// belong to the same tree.
++pub fn vars(root: &Path) -> &'static [(&'static str, String)] {
++    static VARS: OnceLock<Vec<(&'static str, String)>> = OnceLock::new();
++    VARS.get_or_init(|| compute(&|name| std::env::var(name).ok(), &|args| git(root, args)))
++}
++
++/// The values from `env` (a variable's value) and `git` (a git command's
++/// stdout, or `None` if it failed), in [`NAMES`] order. A variable with no
++/// value is left out.
++fn compute(
++    env: &dyn Fn(&str) -> Option<String>,
++    git: &dyn Fn(&[&str]) -> Option<String>,
++) -> Vec<(&'static str, String)> {
++    let derive = |name: &str| match name {
++        "ENG_ENGINE_SHA" => commit(git),
++        "ENG_DIRTY" => dirty(git),
++        "SOURCE_DATE_EPOCH" => commit_time(git),
++        _ => Some(ci_run(env)),
++    };
++    NAMES
++        .into_iter()
++        .filter_map(|name| {
++            let value = set(env, name).or_else(|| derive(name))?;
++            Some((name, value))
++        })
++        .collect()
++}
++
++/// `name`'s value, if it is set and not empty.
++fn set(env: &dyn Fn(&str) -> Option<String>, name: &str) -> Option<String> {
++    env(name).filter(|value| !value.is_empty())
++}
++
++/// `HEAD`'s full commit hash: SHA-1 or SHA-256, in hex.
++fn commit(git: &dyn Fn(&[&str]) -> Option<String>) -> Option<String> {
++    let out = git(&["rev-parse", "--verify", "HEAD"])?;
++    let sha = out.trim();
++    let hex = sha.bytes().all(|b| b.is_ascii_hexdigit());
++    (hex && matches!(sha.len(), 40 | 64)).then(|| sha.to_ascii_lowercase())
++}
++
++/// `0` or `1`. `--no-optional-locks` keeps a status check from taking the
++/// index lock that a git or jj command running alongside may need.
++fn dirty(git: &dyn Fn(&[&str]) -> Option<String>) -> Option<String> {
++    let out = git(&[
++        "--no-optional-locks",
++        "status",
++        "--porcelain",
++        "--untracked-files=normal",
++    ])?;
++    Some(if out.trim().is_empty() { "0" } else { "1" }.into())
++}
++
++/// `HEAD`'s commit time in whole Unix seconds. `version.rs` refuses
++/// anything but digits, so other output leaves the value unset.
++fn commit_time(git: &dyn Fn(&[&str]) -> Option<String>) -> Option<String> {
++    let out = git(&["log", "-1", "--no-show-signature", "--format=%ct", "HEAD"])?;
++    let seconds = out.trim();
++    let digits = !seconds.is_empty() && seconds.bytes().all(|b| b.is_ascii_digit());
++    (digits && seconds.parse::<u64>().is_ok()).then(|| seconds.to_string())
++}
++
++fn ci_run(env: &dyn Fn(&str) -> Option<String>) -> String {
++    match (set(env, "GITHUB_RUN_ID"), set(env, "GITHUB_RUN_ATTEMPT")) {
++        (Some(id), Some(attempt)) => format!("github-{id}/{attempt}"),
++        _ => "local".into(),
++    }
++}
++
++/// Runs git in `root` and returns its stdout if it succeeded.
++fn git(root: &Path, args: &[&str]) -> Option<String> {
++    let out = Command::new("git")
++        .current_dir(root)
++        .args(args)
++        .output()
++        .ok()?;
++    out.status
++        .success()
++        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
++}
++
++#[cfg(test)]
++#[path = "stamp_tests.rs"]
++mod tests;
+diff --git a/xtask/src/stamp_tests.rs b/xtask/src/stamp_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..b91fc3483e923da57719319cec4d84ceeb54fccb
+--- /dev/null
++++ b/xtask/src/stamp_tests.rs
+@@ -0,0 +1,232 @@
++//! Unit tests for the version stamp's source-tree values. None reads this
++//! process's own environment: `cargo xtask` sets the four variables for
++//! the tests too.
++
++use std::fs;
++use std::path::PathBuf;
++
++use super::*;
++
++const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
++
++/// An environment holding `pairs` and nothing else.
++fn env_of<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
++    move |name| {
++        pairs
++            .iter()
++            .find(|(key, _)| *key == name)
++            .map(|(_, value)| value.to_string())
++    }
++}
++
++/// A git whose `rev-parse`, `status` and `log` print these, or fail on `None`.
++fn fake_git(
++    sha: Option<&str>,
++    status: Option<&str>,
++    time: Option<&str>,
++) -> impl Fn(&[&str]) -> Option<String> + use<> {
++    let (sha, status, time) = (
++        sha.map(String::from),
++        status.map(String::from),
++        time.map(String::from),
++    );
++    move |args| match args {
++        ["rev-parse", ..] => sha.clone(),
++        [.., "status", "--porcelain", "--untracked-files=normal"] => status.clone(),
++        ["log", ..] => time.clone(),
++        other => panic!("unexpected git {other:?}"),
++    }
++}
++
++fn owned(pairs: &[(&'static str, &str)]) -> Vec<(&'static str, String)> {
++    pairs.iter().map(|(k, v)| (*k, v.to_string())).collect()
++}
++
++#[test]
++fn all_four_come_from_git_and_github() {
++    let env = env_of(&[("GITHUB_RUN_ID", "18999"), ("GITHUB_RUN_ATTEMPT", "2")]);
++    let git = fake_git(Some(&format!("{SHA}\n")), Some(""), Some("1761350400\n"));
++    assert_eq!(
++        compute(&env, &git),
++        owned(&[
++            ("ENG_ENGINE_SHA", SHA),
++            ("ENG_DIRTY", "0"),
++            ("SOURCE_DATE_EPOCH", "1761350400"),
++            ("ENG_CI_RUN", "github-18999/2"),
++        ])
++    );
++}
++
++#[test]
++fn values_already_set_win_as_they_are() {
++    let preset = [
++        ("ENG_ENGINE_SHA", "set-by-the-workflow"),
++        ("ENG_DIRTY", "1"),
++        ("SOURCE_DATE_EPOCH", "5"),
++        ("ENG_CI_RUN", "docker-lavapipe"),
++    ];
++    let mut pairs = preset.to_vec();
++    pairs.extend([("GITHUB_RUN_ID", "7"), ("GITHUB_RUN_ATTEMPT", "1")]);
++    let git = |args: &[&str]| -> Option<String> {
++        panic!("git {args:?} ran although every value was set")
++    };
++    // Kept even where `version.rs` would refuse them: the build says so.
++    assert_eq!(compute(&env_of(&pairs), &git), owned(&preset));
++    let odd = [("ENG_DIRTY", "yes")];
++    let git = fake_git(Some(SHA), None, None);
++    assert_eq!(
++        compute(&env_of(&odd), &git),
++        owned(&[
++            ("ENG_ENGINE_SHA", SHA),
++            ("ENG_DIRTY", "yes"),
++            ("ENG_CI_RUN", "local"),
++        ])
++    );
++}
++
++#[test]
++fn an_empty_value_counts_as_unset() {
++    let env = env_of(&[
++        ("ENG_ENGINE_SHA", ""),
++        ("ENG_DIRTY", ""),
++        ("SOURCE_DATE_EPOCH", ""),
++        ("ENG_CI_RUN", ""),
++        ("GITHUB_RUN_ID", ""),
++        ("GITHUB_RUN_ATTEMPT", ""),
++    ]);
++    let git = fake_git(Some(SHA), Some(" M src/lib.rs\n"), Some("1"));
++    assert_eq!(
++        compute(&env, &git),
++        owned(&[
++            ("ENG_ENGINE_SHA", SHA),
++            ("ENG_DIRTY", "1"),
++            ("SOURCE_DATE_EPOCH", "1"),
++            ("ENG_CI_RUN", "local"),
++        ])
++    );
++}
++
++#[test]
++fn without_git_only_the_ci_run_is_set() {
++    let git = |_: &[&str]| None;
++    assert_eq!(
++        compute(&env_of(&[]), &git),
++        owned(&[("ENG_CI_RUN", "local")])
++    );
++}
++
++#[test]
++fn output_that_version_rs_would_refuse_is_dropped() {
++    let (not_hex, too_long) = ("g".repeat(40), format!("{SHA}0"));
++    let overflow = "9".repeat(21);
++    for (sha, time) in [
++        ("HEAD", "-1"),
++        ("0123abc", "1761350400.5"),
++        (not_hex.as_str(), overflow.as_str()),
++        (too_long.as_str(), "17613504OO"),
++        ("", ""),
++    ] {
++        let git = fake_git(Some(sha), Some(""), Some(time));
++        assert_eq!(
++            compute(&env_of(&[]), &git),
++            owned(&[("ENG_DIRTY", "0"), ("ENG_CI_RUN", "local")]),
++            "{sha:?} {time:?}"
++        );
++    }
++    // A SHA-256 repository's commits are 64 hex digits.
++    let sha256 = "AB".repeat(32);
++    let git = fake_git(Some(&sha256), None, None);
++    assert_eq!(
++        compute(&env_of(&[]), &git)[0],
++        ("ENG_ENGINE_SHA", sha256.to_ascii_lowercase())
++    );
++}
++
++#[test]
++fn a_github_run_needs_its_id_and_attempt() {
++    for pairs in [
++        &[("GITHUB_RUN_ID", "7")][..],
++        &[("GITHUB_RUN_ATTEMPT", "1")],
++        &[("GITHUB_RUN_ID", "7"), ("GITHUB_RUN_ATTEMPT", "")],
++    ] {
++        assert_eq!(ci_run(&env_of(pairs)), "local", "{pairs:?}");
++    }
++}
++
++/// A fresh directory per call: tests run in parallel.
++fn temp(what: &str) -> PathBuf {
++    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
++    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++    let dir = std::env::temp_dir().join(format!("xtask-{what}-{}-{n}", std::process::id()));
++    let _ = fs::remove_dir_all(&dir);
++    fs::create_dir_all(&dir).unwrap();
++    fs::canonicalize(dir).unwrap()
++}
++
++fn git_ok(root: &Path, args: &[&str]) {
++    let out = Command::new("git")
++        .current_dir(root)
++        .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
++        .args(["-c", "commit.gpgsign=false"])
++        .args(args)
++        .env("GIT_AUTHOR_DATE", "1761350400 +0000")
++        .env("GIT_COMMITTER_DATE", "1761350400 +0000")
++        .output()
++        .unwrap();
++    let err = String::from_utf8_lossy(&out.stderr);
++    assert!(out.status.success(), "git {args:?}: {err}");
++}
++
++#[test]
++fn a_real_repository() {
++    let root = temp("stamp");
++    let real = |args: &[&str]| git(&root, args);
++    git_ok(&root, &["init", "-q"]);
++    // No commit yet: only the dirty flag and the CI run.
++    fs::write(root.join("a.txt"), "a\n").unwrap();
++    assert_eq!(
++        compute(&env_of(&[]), &real),
++        owned(&[("ENG_DIRTY", "1"), ("ENG_CI_RUN", "local")])
++    );
++    git_ok(&root, &["add", "-A"]);
++    git_ok(&root, &["commit", "-qm", "start"]);
++    let head = git(&root, &["rev-parse", "HEAD"]).unwrap();
++    let clean = owned(&[
++        ("ENG_ENGINE_SHA", head.trim()),
++        ("ENG_DIRTY", "0"),
++        ("SOURCE_DATE_EPOCH", "1761350400"),
++        ("ENG_CI_RUN", "local"),
++    ]);
++    assert_eq!(compute(&env_of(&[]), &real), clean);
++    let mut dirty = clean.clone();
++    dirty[1].1 = "1".into();
++    // An untracked file, then an edit to a tracked one.
++    fs::write(root.join("new.txt"), "new\n").unwrap();
++    assert_eq!(compute(&env_of(&[]), &real), dirty);
++    fs::remove_file(root.join("new.txt")).unwrap();
++    fs::write(root.join("a.txt"), "b\n").unwrap();
++    assert_eq!(compute(&env_of(&[]), &real), dirty);
++    let _ = fs::remove_dir_all(&root);
++}
++
++#[test]
++fn every_cargo_command_carries_them() {
++    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
++        .parent()
++        .expect("xtask sits in the workspace root");
++    let cmd = crate::util::cargo(root);
++    let envs: Vec<(String, String)> = cmd
++        .get_envs()
++        .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
++        .collect();
++    let values = vars(root);
++    // The CI run always has a value.
++    assert!(values.iter().any(|(name, _)| *name == "ENG_CI_RUN"));
++    for (name, value) in values {
++        assert!(NAMES.contains(name));
++        assert!(
++            envs.contains(&(name.to_string(), value.clone())),
++            "{name} is not set on cargo: {envs:?}"
++        );
++    }
++}
+diff --git a/xtask/src/util.rs b/xtask/src/util.rs
+index 0eba1f8e2824c8c18d75e916cf48904d2f492d18..23595b0c61f9c3c0c5457c6a85d000d760ed38d8 100644
+--- a/xtask/src/util.rs
++++ b/xtask/src/util.rs
+@@ -25,9 +25,13 @@ pub fn on_ci() -> bool {
+     std::env::var_os("CI").is_some()
+ }
+ 
++/// `cargo` in `root`, with the version stamp's source-tree values set
++/// (`stamp.rs`). Every cargo command xtask runs starts here, so its builds
++/// carry the same values and do not rebuild `eng-cli` for each other.
+ pub fn cargo(root: &Path) -> Command {
+     let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+     cmd.current_dir(root);
++    cmd.envs(crate::stamp::vars(root).iter().map(|(k, v)| (k, v)));
+     cmd
+ }
+ 

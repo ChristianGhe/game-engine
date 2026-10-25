@@ -1269,6 +1269,177 @@ Verdict: approve, no blockers. `docs/rungs/current.txt` stays at `1a`.
 - The runtime's own problems (a retry that reset the wrong state
   folder, false dead-run alarms, no usage cap) went to open-pulsar.
 
+## 2026-10-25, session 14: patch X1, xtask sets the version stamp's values (Claude Opus 5.5, open-pulsar task)
+
+The task: patch X1 (G5, `xtask/**`) as a tested patch file. xtask sets
+the four build-time values only it knows, so a build made through xtask
+prints no `unknown`. Amendments 15 and 16 describe them. They are made
+and tested in a scratch clone, never in this repo. No new crates; no
+protected path edited here; `current.txt` stays at `1a`.
+
+**The patch:** `docs/rungs/1b/patches/x1-version-stamps.patch`, against
+`main` at 106a8f0. It changes 6 files: 375 lines added, 14 removed.
+- New `xtask/src/stamp.rs` works out the four variables:
+
+  | Variable | Value |
+  |---|---|
+  | `ENG_ENGINE_SHA` | `git rev-parse --verify HEAD`, kept only if it is 40 or 64 hex digits |
+  | `ENG_DIRTY` | `1` if `git --no-optional-locks status --porcelain --untracked-files=normal` prints anything, else `0` |
+  | `SOURCE_DATE_EPOCH` | `git log -1 --no-show-signature --format=%ct HEAD`, kept only if it is whole seconds that fit a `u64` |
+  | `ENG_CI_RUN` | `github-$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT` when both are set, else `local` |
+
+  - A non-empty value already in the environment wins, unchanged.
+    `version.rs` still refuses a malformed one. Empty counts as unset,
+    as in `version.rs`.
+  - A value git cannot give (no git, no repository, no commit) stays
+    unset. The stamp then says `unknown` or `null`; the build does not
+    fail.
+  - The values are worked out once per process (`OnceLock`), so every
+    build in one run gets the same ones.
+- `util::cargo` sets them on every command it makes. Every cargo
+  command xtask runs is made there: `fmt`, clippy, tests and doctests,
+  the RISC-V and wasm builds, the replay build, `cargo metadata`, the
+  selftest clippy runs, the stop hook's nested `cargo xtask quick` and
+  `install-hooks`. The `cargo deny` step and the `has_tool` probes
+  compile nothing. This matches amendment 15's "every cargo command",
+  and a new step cannot forget the values.
+- New `xtask/src/stamp_tests.rs`, 8 tests:
+  - fake git and environment: all four from git and GitHub;
+  - set values win, git does not even run, and `ENG_DIRTY=yes` passes
+    through unchanged;
+  - empty counts as unset;
+  - without git, only `ENG_CI_RUN` is set;
+  - output that `version.rs` would refuse is dropped (`HEAD`, short or
+    non-hex SHAs, `-1`, fractions, overflow), and SHA-256 hashes are
+    accepted;
+  - a GitHub run needs both its id and its attempt;
+  - a real temporary repository: no commit, then clean, then an
+    untracked file, then an edit to a tracked file;
+  - `util::cargo` carries every value.
+
+  None of the tests reads the process's own environment, because
+  `cargo xtask` sets the four for the tests too.
+- Docs in the same patch: `crates/eng-cli/src/version.rs` (module
+  header) and `docs/ARCHITECTURE.md`, "The version stamp": xtask sets
+  all four, each one's source, and which value wins. Both said "is to
+  set (patch X1)", which becomes wrong when the patch lands, so they are
+  in the patch and not edited here.
+- The patch starts with a short header, which `git apply` ignores. Its
+  `index` lines use full hashes (`--full-index`), because CI's `typos`
+  step flagged `ba` inside the short ones.
+
+**How it was tested.** Scratch clone of this repo under `$TMPDIR`, with
+its `target/debug` seeded by a copy-on-write copy.
+- Baseline before the change: `quick` green, 54 s.
+- Patch applied, tree dirty:
+  - `cargo xtask quick` green (14 s);
+  - `cargo xtask selftest` 17 of 17;
+  - `cargo test -p xtask` 38 passed, 8 of them new;
+  - `cargo xtask ci --job lint` (cargo-deny, typos), `--job test` and
+    `--job wasm` green.
+
+  xtask's logs show each cargo command with all four values.
+  `quick`'s test step ran the version tests in that build:
+  `version.rs`'s 4 (protected, unchanged), `version_testbed.rs` and
+  eng-cli's unit tests.
+- The binary that build left (`target/debug/game-testbed`):
+  - `--version`: `game-testbed 0.1.0 (engine 0.1.0 bf9f2844257b, dirty) aarch64-apple-darwin debug, rustc 1.99.1, sim protocol 0x69fd4996880a6508`;
+  - `--version --json`: `engine_sha` and `game_sha` are the full
+    `bf9f2844…`, `dirty` is `true`, `source_date_epoch` is
+    `1792919095` and `ci_run` is `local`. There is no `unknown` and no
+    `null` in it.
+- The patch committed in the clone only, so the tree is clean: `quick`
+  green, and the stamp is `engine 0.1.0 d278c4a0f5fa` with
+  `"dirty": false` and that commit's time.
+- GitHub simulated (`GITHUB_RUN_ID=18999`, `GITHUB_RUN_ATTEMPT=2`, a
+  set `ENG_ENGINE_SHA`) through `cargo xtask replay`: `ci_run` is
+  `github-18999/2`, and the set SHA is kept.
+- Rebuilds:
+  - a second `quick` compiled nothing (8 s);
+  - a plain `cargo test -p game-testbed --test version`, then `quick`,
+    rebuilt eng-cli and game-testbed each time (about 2 s each). The
+    plain run passed too, checking the unset values;
+  - `git status` stays empty after `quick`, so runs do not flip `dirty`
+    for each other.
+- The file in this repo applies with `git apply` to a fresh clone, and
+  the files it gives equal the tested clone's, byte for byte. The guard
+  refuses `git apply`, even `--check`, in this repo, because the patch
+  touches `xtask/`. The owner applies it, or unlocks `xtask/**`.
+- This repo, with the patch file and this entry: `cargo xtask quick`
+  green (11 s); `typos` passes on the patch file.
+
+**Reviewer**
+- Pending.
+
+**Where this differs from amendments 15 and 16**
+- Amendment 15 keeps an already-set value for `ENG_ENGINE_SHA` only.
+  The patch keeps one for all four. It is the usual rule for
+  `SOURCE_DATE_EPOCH`. It lets a container or another CI pass in what
+  git there cannot see. And the stop hook's nested `quick` inherits the
+  same values. The cost is that a stale value left in a shell would be
+  believed.
+- Amendment 15 suggests that X1 also write `target/version.json` from
+  `<game> --version --json`. The patch does not: the task scoped X1 to
+  the four values (open question 3).
+- The task says `build.rs` reads the four variables. It reads none of
+  them: `version.rs` reads them with `option_env!`. rustc records them
+  in eng-cli's dep-info, so cargo rebuilds eng-cli when one changes (the
+  rebuild runs above show it), and `build.rs` needs no
+  `rerun-if-env-changed`.
+- Amendment 16's extra `version-set` build in X7 is no longer needed.
+  CI's builds now set all four, so the `version` step can be just
+  `tests(root, Some(("game-testbed", "version")))`. Nothing on CI
+  checks the unset path any more. eng-cli's
+  `build_json_says_unknown_and_null_for_a_plain_build` covers its
+  rendering, and any plain local `cargo test` covers the rest.
+
+**Open questions**
+1. **Keep set values for all four?** See above. If not, xtask would
+   overwrite `ENG_DIRTY` and `SOURCE_DATE_EPOCH`, and maybe
+   `ENG_CI_RUN`. That is two lines in `compute` plus a test change.
+2. **Under jj, the SHA is `@-`'s** (session 11, question 2, unchanged).
+   `dirty` is true whenever `@` has edits, and `ci_run` is `local`. Say
+   if the loop's builds should name the jj change, for example as
+   `ENG_CI_RUN=local-jj-<change id>`.
+3. **`version.json` as a file.** With X1, `--version --json` prints
+   spec 6.13's `version.json` with real values. X2's `version` step
+   runs it anyway, and could save the output as a CI artifact. That
+   would cover "computes `version.json`", and ADR-0012's archive per
+   build later. Say if X1 should write `target/version.json` itself.
+4. **`SOURCE_DATE_EPOCH` and C builds after crate batch 2.** `cc`
+   1.10.0 prints `rerun-if-env-changed=SOURCE_DATE_EPOCH`, because C
+   compilers read it. Two crates will compile C through `cc`:
+   `nv-flip-sys` (tests, every target) and `wayland-backend` (Linux).
+   Their C will recompile once per commit in xtask builds. That is
+   correct for reproducible C output, but costs time. A private name
+   such as `ENG_SOURCE_DATE_EPOCH` would avoid it. That change needs
+   the protected `crates/game-testbed/tests/version.rs` too. Measure
+   when batch 2 lands.
+5. **Mixing plain `cargo` and xtask builds** rebuilds eng-cli and
+   everything above it each time, about 2 s today (amendment 15
+   expected this). rust-analyzer's `cargo check` runs without the
+   values too, so it may alternate with xtask's clippy the same way
+   (not measured).
+6. **Containers.** Git refuses a checkout owned by another user
+   ("dubious ownership"), which is common with a mounted volume. The
+   values then stay unset and the stamp says `unknown`. For T7 and T12's
+   lavapipe runs in Docker, pass the four in with `-e` (set values win)
+   or set `safe.directory`.
+7. **The workflow's `ENG_ENGINE_SHA: ${{ github.sha }}`** can stay
+   (xtask keeps it) or go with X6. On `pull_request` both name the
+   checked-out merge commit.
+8. **Hooks.** The stop hook runs the working tree's `cargo xtask
+   quick`, so X1 applies there as soon as the patch lands. The prebuilt
+   hook binary picks the patch up at the next `install-hooks`. Until
+   then its nested call passes no values, and the inner `quick` works
+   them out itself.
+9. xtask's own job reports still take `git_sha` from `GITHUB_SHA`
+   only. They could use the stamp's SHA, which belongs with X3 (the
+   summary).
+
+**Costs and timings**
+- One open-pulsar session, from about 11:13 EET.
+
 ## Proposals for the owner (protected paths)
 
 Nothing below is applied. Each item is what an agent would otherwise have

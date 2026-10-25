@@ -118,6 +118,12 @@ KeyEvent (Down/Up of a Key, FocusLost) ──LiveInput::handle──▶ held key
 ## Agent tooling
 
 - `cargo xtask` is the only entry point; CI only calls it.
+- CI's `test` job runs the workspace's tests, then, each as a step of its
+  own, the harnesses whose results acceptance relies on: `known-answers`,
+  `exit-codes`, `crash-json`, `version` and `live-input` (`HARNESSES` in
+  `xtask/src/ci.rs`), then the replays. Each step is an entry in the job's
+  report (`target/ci/report.json`, copied to `target/ci/reports/`), which
+  `cargo xtask acceptance` reads.
 - The probe (`eng-cli`, linked by every game) runs headless with scripted
   input, writes reports, events, hash streams and recordings, and verifies
   replays. Exit codes are listed in `AGENTS.md`. Its panic hook (in

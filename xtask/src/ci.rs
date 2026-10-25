@@ -46,25 +46,47 @@ fn has_tool(root: &Path, args: &[&str]) -> bool {
     cmd.output().is_ok_and(|o| o.status.success())
 }
 
-fn tests(root: &Path, filter: Option<(&str, &str)>) -> Result<String, String> {
+fn tests(root: &Path) -> Result<String, String> {
     let nextest = has_tool(root, &["cargo", "nextest", "--version"]);
-    let mut args: Vec<&str> = match (nextest, filter) {
-        (true, None) => vec!["nextest", "run", "--workspace", "--no-fail-fast"],
-        (false, None) => vec!["test", "--workspace", "--no-fail-fast"],
-        (_, Some((package, test))) => vec!["test", "-p", package, "--test", test],
+    let mut args = if nextest {
+        vec!["nextest", "run", "--workspace", "--no-fail-fast"]
+    } else {
+        vec!["test", "--workspace", "--no-fail-fast"]
     };
-    if nextest && filter.is_none() && util::on_ci() {
+    if nextest && util::on_ci() {
         args.extend(["--profile", "ci"]);
     }
     cargo_step(root, "tests", &args)?;
-    if filter.is_none() && nextest {
+    if nextest {
         cargo_step(root, "doctests", &["test", "--workspace", "--doc"])?;
     }
-    Ok(if nextest || filter.is_some() {
+    Ok(if nextest {
         String::new()
     } else {
         "cargo-nextest not installed; ran cargo test".into()
     })
+}
+
+/// The `test` job's named harness steps, in order: the step's name, then
+/// the package and test target it runs (`crates/<package>/tests/<target>.rs`).
+/// `tests` runs them as well; a step of their own gives each its own entry
+/// in the job's report, where acceptance checks find steps by name, and its
+/// own log. They build on the dev profile: `crash_json` looks for the
+/// `eng_cli::run::run` frame, which a release build without debug info can
+/// inline away. Like every cargo command here, they get the stamp's four
+/// values from `util::cargo` (`stamp.rs`), so `version` checks a stamp with
+/// all of them set.
+const HARNESSES: [(&str, &str, &str); 5] = [
+    ("known-answers", "eng-math", "known_answers"),
+    ("exit-codes", "game-testbed", "exit_codes"),
+    ("crash-json", "game-testbed", "crash_json"),
+    ("version", "game-testbed", "version"),
+    ("live-input", "eng-input", "live_input"),
+];
+
+/// One harness from `HARNESSES`, logged under the step's name.
+fn harness(root: &Path, step: &str, package: &str, target: &str) -> Result<String, String> {
+    cargo_step(root, step, &["test", "-p", package, "--test", target])
 }
 
 fn core_crates(root: &Path) -> Result<Vec<String>, String> {
@@ -116,7 +138,7 @@ pub fn quick() -> Result<String, String> {
     steps.run("arch-check", || arch::check(&root));
     steps.run("size-check", || size::check(&root));
     steps.run("docs-check", || docs::check(&root));
-    steps.run("tests", || tests(&root, None));
+    steps.run("tests", || tests(&root));
     steps.run("replay", || replay::run(&root, &replay::Options::default()));
     finish(&root, "quick", steps, started)
 }
@@ -186,13 +208,10 @@ fn lint(root: &Path, steps: &mut Steps) {
 }
 
 fn test(root: &Path, steps: &mut Steps) {
-    steps.run("tests", || tests(root, None));
-    steps.run("known-answers", || {
-        tests(root, Some(("eng-math", "known_answers")))
-    });
-    steps.run("exit-codes", || {
-        tests(root, Some(("game-testbed", "exit_codes")))
-    });
+    steps.run("tests", || tests(root));
+    for (step, package, target) in HARNESSES {
+        steps.run(step, || harness(root, step, package, target));
+    }
     steps.run("replay", || replay::run(root, &replay::Options::default()));
 }
 
@@ -350,5 +369,39 @@ fn finish(root: &Path, job: &str, steps: Steps, started: Instant) -> Result<Stri
         ))
     } else {
         Err(format!("{job}: failed steps: {}", failed.join(", ")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::HARNESSES;
+
+    /// Every named step runs a test file that exists, under a name of its
+    /// own, so renaming a harness fails here and not only on CI.
+    #[test]
+    fn every_harness_step_names_an_existing_test_file() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits in the repo root");
+        for (step, package, target) in HARNESSES {
+            let file = root
+                .join("crates")
+                .join(package)
+                .join("tests")
+                .join(format!("{target}.rs"));
+            assert!(file.is_file(), "step {step}: no {}", file.display());
+        }
+        // With the job's other two steps.
+        let mut names: Vec<&str> = HARNESSES.iter().map(|h| h.0).collect();
+        names.extend(["tests", "replay"]);
+        names.sort_unstable();
+        let repeated: Vec<&str> = names
+            .windows(2)
+            .filter(|w| w[0] == w[1])
+            .map(|w| w[0])
+            .collect();
+        assert!(repeated.is_empty(), "step names repeat: {repeated:?}");
     }
 }

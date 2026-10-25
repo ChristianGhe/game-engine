@@ -8,10 +8,11 @@
 //! - this compilation, through `build.rs`: target triple, profile, rustc;
 //! - the source tree, through environment variables read at build time:
 //!   `ENG_ENGINE_SHA`, `ENG_DIRTY` (`0` or `1`), `SOURCE_DATE_EPOCH` (the
-//!   commit time in Unix seconds) and `ENG_CI_RUN`. CI's workflow sets the
-//!   first today; `cargo xtask` is to set all four (patch X1). Without
-//!   them the strings read `unknown`, and `dirty` and `source_date_epoch`
-//!   read `null`. An empty variable counts as unset, and a malformed
+//!   commit time in Unix seconds) and `ENG_CI_RUN`. `cargo xtask` sets all
+//!   four for every cargo command it runs (`xtask/src/stamp.rs`); a plain
+//!   `cargo` build sees only what the environment sets. Without them the
+//!   strings read `unknown`, and `dirty` and `source_date_epoch` read
+//!   `null`. An empty variable counts as unset, and a malformed
 //!   `ENG_DIRTY` or `SOURCE_DATE_EPOCH` fails the build;
 //! - the simulation, built with 1 player and seed 0 (the protocol version
 //!   depends on neither): tick rate, protocol version, system order and

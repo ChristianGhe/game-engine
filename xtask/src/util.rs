@@ -25,9 +25,13 @@ pub fn on_ci() -> bool {
     std::env::var_os("CI").is_some()
 }
 
+/// `cargo` in `root`, with the version stamp's source-tree values set
+/// (`stamp.rs`). Every cargo command xtask runs starts here, so its builds
+/// carry the same values and do not rebuild `eng-cli` for each other.
 pub fn cargo(root: &Path) -> Command {
     let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     cmd.current_dir(root);
+    cmd.envs(crate::stamp::vars(root).iter().map(|(k, v)| (k, v)));
     cmd
 }
 

@@ -26,6 +26,7 @@ mod replay;
 mod selftest;
 mod shell;
 mod size;
+mod stamp;
 mod util;
 
 use std::process::ExitCode;

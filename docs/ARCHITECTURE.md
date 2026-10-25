@@ -175,22 +175,24 @@ The JSON object, `stamp_version` 1:
 
 `build` has the fields of spec 6.13's `version.json`. Facts about the
 compilation come from `crates/eng-cli/build.rs`. Facts about the source
-tree come from four environment variables read at build time. CI's
-workflow already sets `ENG_ENGINE_SHA`, and `cargo xtask` is to set all
-four (patch X1, `docs/rungs/1b/PROGRESS.md`). Without them a value reads
-`unknown` (strings) or `null`. Any of the four set to an empty string
-counts as unset. A malformed `ENG_DIRTY` or `SOURCE_DATE_EPOCH` fails the
-build with `[E-VERSION]`.
+tree come from four environment variables read at build time.
+`cargo xtask` sets all four for every cargo command it runs
+(`xtask/src/stamp.rs`), from git and GitHub Actions' variables, once per
+run. A non-empty value the environment already has wins, such as CI's
+`ENG_ENGINE_SHA`. A plain `cargo` build sees only what the environment
+sets. Without them a value reads `unknown` (strings) or `null`. Any of
+the four set to an empty string counts as unset. A malformed `ENG_DIRTY`
+or `SOURCE_DATE_EPOCH` fails the build with `[E-VERSION]`.
 
 | Key | Type | From |
 |---|---|---|
 | `game_version` | string | the game's crate version (the spec's "semver") |
 | `engine_version` | string | the `eng-cli` crate's version |
-| `engine_sha` | string | `ENG_ENGINE_SHA`, else `unknown` |
+| `engine_sha` | string | `ENG_ENGINE_SHA` (xtask: `git rev-parse HEAD`), else `unknown` |
 | `game_sha` | string | the game's `GameDef::build_sha`, else `unknown`; the testbed passes the engine's |
-| `dirty` | bool or null | `ENG_DIRTY`, `0` or `1`: the source tree had uncommitted changes |
-| `source_date_epoch` | integer or null | `SOURCE_DATE_EPOCH`: the commit time in Unix seconds |
-| `ci_run` | string | `ENG_CI_RUN`, else `unknown` |
+| `dirty` | bool or null | `ENG_DIRTY`, `0` or `1`: the source tree had uncommitted changes (xtask: `git status --porcelain` lists anything, untracked files included) |
+| `source_date_epoch` | integer or null | `SOURCE_DATE_EPOCH`: the commit time in Unix seconds (xtask: `HEAD`'s committer time) |
+| `ci_run` | string | `ENG_CI_RUN` (xtask: `github-<run id>/<attempt>` on GitHub Actions, `local` elsewhere), else `unknown` |
 | `target` | string | the target triple (Cargo's `TARGET`) |
 | `rustc` | string | `rustc -V` of the compiler that built it |
 | `profile` | string | `debug` or `release`: the Cargo profile the build's profile inherits from (Cargo's `PROFILE`) |

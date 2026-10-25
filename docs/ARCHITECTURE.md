@@ -212,10 +212,10 @@ Stability:
   up by name and ignore ones they do not know. Any other change bumps
   `stamp_version`, and a change to `build` also bumps `report_version`
   and `crash_version`.
-- One exception came before these rules. Version 1 reports and crash
-  files written before rung 1b's T1 had a smaller `build` (or
-  `version`) object, with `target` as `<arch>-<os>` (such as
-  `aarch64-macos`) and `rustc` usually `unknown`.
+- Version 1 reports, from rung 1a, had a smaller `build` object, with
+  `target` as `<arch>-<os>` (such as `aarch64-macos`) and `rustc`
+  usually `unknown`. Version 2 reports carry the stamp's `build`.
+  `crash.json` started at version 1 with the stamp's `build`.
 - One binary always prints the same bytes: every value is fixed when it
   is built or comes from the simulation's registrations, never from the
   clock, the environment at run time or a path.

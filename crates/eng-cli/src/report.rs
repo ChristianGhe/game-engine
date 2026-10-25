@@ -10,7 +10,9 @@ use crate::assertions::{Status, Tracker};
 use crate::budgets::BudgetTracker;
 use crate::{Exit, GameDef, version};
 
-pub(crate) const REPORT_VERSION: u64 = 1;
+/// The report's format. Version 2 carries the version stamp's `build`
+/// object; version 1 (rung 1a) had a smaller one.
+pub(crate) const REPORT_VERSION: u64 = 2;
 
 /// FNV-1a-64 over every `(tick, hash)` pair, for comparing whole streams.
 pub(crate) fn stream_digest(hashes: &[TickHash]) -> u64 {

@@ -1214,6 +1214,61 @@ were deleted, so none is left. Proposal: amendment 17.
   `reviewer` pass (about 8 minutes, 115k subagent tokens, 41 tool
   calls). Builds and test runs took seconds; `quick` takes 13 s.
 
+## 2026-10-25, session 13: review of the overnight window, report version 2 (Claude Opus 5.5, with the owner)
+
+The owner had the window's work (sessions 1 to 12, queue items 1 to 5)
+reviewed before publishing it. A fresh-context `reviewer` pass checked
+T1, T2 and T4 against criteria 8, 6 and 18 and the plan's task table.
+Verdict: approve, no blockers. `docs/rungs/current.txt` stays at `1a`.
+
+**T4: the two tasks that failed**
+- Item 5's open-pulsar run had three tasks. Session 12 was the first, and
+  it wrote all the tests along with the code. The other two ("add
+  tests", "run the checks and record") each failed all 5 attempts
+  between 03:58 and 04:21 EET, after the plan's session limit was
+  reached, and left only empty jj changes. Nothing is missing from T4:
+  `live_input` 12, `bindings` 7, `quantize` 4 and `input` 4 pass, and so
+  do eng-schema-json's `spans` 2.
+- Correction to session 12: only eng-input's `Cargo.toml` changed;
+  eng-schema-json changed `lib.rs` only.
+
+**Changed here**
+- `report_version` is now 2 (`crates/eng-cli/src/report.rs`). T1 gave
+  reports the stamp's `build` object: `target` became the full target
+  triple and keys were added. `docs/ARCHITECTURE.md`'s rule (a change to
+  `build` bumps `report_version`) applies, and version 1 reports exist
+  from rung 1a. This replaces session 9's "stay 1".
+- `crash_version` stays 1: `crash.json` is first published with the
+  stamp's `build`, so no version 1 crash file with the older object
+  exists. `docs/ARCHITECTURE.md` says so in place of the exception, and
+  `crates/game-testbed/tests/version.rs` expects `"report": 2`.
+
+**Review notes not acted on**
+- `crates/game-testbed/tests/version.rs:241` works out the expected
+  `profile` from `cfg!(debug_assertions)`, while the build reads Cargo's
+  `PROFILE`. They differ only for a release profile with debug
+  assertions on, which no profile here uses.
+- `crates/eng-input/tests/live_input.rs:414` calls `quantize` twice on
+  the same input. That only catches hidden state between calls.
+  Equality across targets rests on the known answer (line 301), and the
+  RISC-V job does not run it because eng-input is not core.
+- X1 is still prose (amendments 15 and 16). The plan wants it as a
+  tested patch in `docs/rungs/1b/patches/`.
+
+**Window costs and timings** (from the open-pulsar runtime's logs)
+- The window ran from 00:49 EEST to 06:00 EET, 6 h 11 min (the clocks
+  went back at 04:00). The plan's session limit was reached twice, at
+  02:46 EEST (reset 03:20) and at 04:18 EET (reset 07:20).
+- Lost to the limit: item 4's first run (0 of 3 tasks, 02:43 to 02:52
+  EEST), item 5's last two tasks, and item 6 (the closing report), which
+  never ran. This entry stands in for it.
+- Session 12 reported $9.95 at API prices; the plan is a subscription,
+  so nothing was billed per token.
+- This session's `reviewer` pass: about 6 minutes, 184k subagent tokens,
+  36 tool calls. `quick` passes.
+- The runtime's own problems (a retry that reset the wrong state
+  folder, false dead-run alarms, no usage cap) went to open-pulsar.
+
 ## Proposals for the owner (protected paths)
 
 Nothing below is applied. Each item is what an agent would otherwise have

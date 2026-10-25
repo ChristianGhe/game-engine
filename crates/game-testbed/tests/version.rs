@@ -370,7 +370,7 @@ fn version_json_keys_and_values() {
     assert_eq!(
         formats,
         &json!({
-            "report": 1, "crash": 1, "recording": 1, "hash_stream": 1,
+            "report": 2, "crash": 1, "recording": 1, "hash_stream": 1,
             "input_script": 1, "assertions": 1, "budgets": 1,
         })
     );

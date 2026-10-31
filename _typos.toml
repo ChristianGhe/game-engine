@@ -8,3 +8,5 @@ Obscur = "Obscur"
 
 [default.extend-identifiers]
 PNGs = "PNGs"
+# A crate name in cargo-deny's allow-list, not a misspelt "flat".
+flate2 = "flate2"

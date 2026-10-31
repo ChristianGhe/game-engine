@@ -8,6 +8,17 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+eng-platform-api.workspace = true
+# The window seam (ADR-0016): the window handed to the app implements the
+# two handle traits by passing winit's through. Never re-exported.
+raw-window-handle.workspace = true
+winit.workspace = true
+
+# winit's event loop needs the main thread on macOS and exists once per
+# process, so the windowed checks are a harness of their own.
+[[test]]
+name = "conformance"
+harness = false
 
 [lints]
 workspace = true

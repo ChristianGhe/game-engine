@@ -52,6 +52,10 @@ raw-window-handle = "=0.6.2"
 # version; eng-gpu's shader test uses its WGSL front end and three back ends.
 wgpu = { version = "=30.0.1", default-features = false, features = ["std", "dx12", "metal", "vulkan", "wgsl"] }
 naga = { version = "=30.0.1", features = ["wgsl-in", "spv-out", "msl-out", "hlsl-out"] }
+# winit only in eng-platform-winit ([floor]), with plan decision 5's features:
+# raw-window-handle 0.6 for the window seam, X11 and Wayland loaded at run
+# time, and no client-side decorations on Wayland.
+winit = { version = "=0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

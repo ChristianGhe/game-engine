@@ -11,7 +11,7 @@ commit that changes what it describes.
 L0  eng-schema-core  eng-derive  eng-math  eng-core           (core set)
 L1  eng-ecs  eng-net-transport  eng-net-wire                   (core set)
     eng-schema-json  eng-input  eng-platform-headless          (std)
-    eng-platform-api  eng-platform-winit*                      (std)
+    eng-platform-api  eng-platform-winit                       (std)
 L2  eng-sim  eng-collision-api  kit-fps  game-testbed-sim      (core set)
     eng-session                                                (core set)
 L3  eng-gpu  eng-render                                        (std)
@@ -73,9 +73,9 @@ input script (TOML) ──eng-input──▶ PlayerCommand per player, per tick
 ## The platform
 
 `eng-platform-api` is the platform contract (spec 6.1, 6.10):
-`eng-platform-headless` implements it, and `eng-platform-winit` will
-(T10). The platform owns the event loop and calls the app back, as winit
-does; the crate docs list the rules.
+`eng-platform-headless` and `eng-platform-winit` implement it. The
+platform owns the event loop and calls the app back, as winit does; the
+crate docs list the rules.
 
 ```
 Platform::run(&mut app):  start ─▶ window (windowed only)
@@ -106,6 +106,17 @@ Platform::run(&mut app):  start ─▶ window (windowed only)
   `Stalled` (after 10,000 frames at one instant), instead of hanging.
   `run --headless` paces its ticks on it, one per frame
   (`crates/eng-cli/src/ticker.rs`).
+- `WinitPlatform` (the only crate that imports winit) opens one window
+  per run, hidden until `start` and `window` have run, and hands it over
+  as the seam's `Arc<dyn Window>`. winit makes its event loop once per
+  process, so the platform owns it and each run is winit's
+  `run_app_on_demand`; it must be made and run on the main thread. A
+  frame comes from winit's `about_to_wait` only when it is due, so the
+  OS events the contract leaves out and early timers never bring one
+  early. Keys are physical (W3C codes); key repeat and winit's synthetic
+  keys at focus changes are dropped. Rung 1b maps keys and window events
+  only; the mouse comes with rung 2's raw-input shim. Without a display
+  `new` is `Unavailable`.
 - The conformance suite is `conformance::check` (any platform: order, the
   clock, timed wakes including one in the past, exit, running again) and
   `conformance::check_scripted` (event delivery, exact times, every event
@@ -114,6 +125,13 @@ Platform::run(&mut app):  start ─▶ window (windowed only)
   an exit, so the suite never hangs. Headless passes both, and the
   deliberately broken platforms in its tests, at least one per rule, each
   fail on the rule they break.
+- winit passes `check` with real windows in
+  `crates/eng-platform-winit/tests/conformance.rs`, a `harness = false`
+  test (the main thread, one event loop), which adds checks of its own:
+  real window handles, a clock that restarts each run, and more timed
+  frames than a window's opening events can bring. Without a display
+  (CI's test job) it skips, unless `ENG_REQUIRE_DISPLAY=1`; a watchdog
+  fails it after a minute rather than let a run hang.
 
 ## Live input
 

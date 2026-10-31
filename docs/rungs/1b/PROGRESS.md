@@ -3197,6 +3197,332 @@ code):
   the whole workspace in 2 min 36 s cold and 45 s warm; arm64 natively in
   36 s, plus 35 s for both Windows checks.
 
+## 2026-10-31, session 17 (continued): T10, `eng-platform-winit` (Claude Opus 5.5, subagent, owner away)
+
+The task: T10, the desktop platform. Its plan row asks for
+`eng-platform-winit`, done when the conformance suite passes where a
+display exists. It implements T3's contract over winit =0.30.13 with plan
+decision 5's features (`rwh_06`, `x11`, `wayland`, `wayland-dlopen`, no
+default features, so no client-side decorations on Wayland). Built test
+first in a scratch clone of main at df96332, while another subagent built
+T8 in its own. No protected path edited, no hash stream regenerated, and
+the suite itself untouched. It is left uncommitted, as `t10.patch`, with
+`t10-oracles.patch` for the owner.
+
+**What eng-platform-winit has** (the crate docs have the rest;
+`docs/ARCHITECTURE.md`, "The platform", gains two bullets and loses the
+skeleton mark). No winit type appears in its API, nothing re-exports the
+handle traits, and it has no `unsafe`.
+
+```rust
+WinitPlatform::new(title) -> Result<WinitPlatform, PlatformError>  // winit's event loop; Unavailable without a display, or the second time
+impl Platform for WinitPlatform                                   // name() "winit"; run(&mut dyn App): one window per run
+display_required() -> bool                                        // ENG_REQUIRE_DISPLAY=1
+```
+
+A run maps winit's `ApplicationHandler` onto the contract (`src/run.rs`):
+`resumed` makes the window (hidden), then `start`, `window` and showing
+it; `window_event` becomes `event` for what the contract has
+(`src/map.rs`); `about_to_wait` calls `frame` when it is due, and the
+answer becomes `ControlFlow::WaitUntil` or `Wait` (`src/pace.rs`);
+`exiting` is `stop`. The window reaches the app as an `Arc<dyn Window>` of
+a private newtype that passes winit's two handles through
+(`src/window.rs`, ADR-0016).
+
+**Decisions** (proposals; the owner can overrule any):
+1. **One window per run**, made hidden before `start`, so that when it
+   cannot be made `run` returns `Unavailable` having called nothing (the
+   contract's wording), and shown after `window`, so an exit in `start`
+   never flashes one. The title comes from `new` (T13's xdotool finds the
+   window by it); the size is winit's default, 800 x 600 points. A size
+   option can come with T11 if `play` wants one. winit carries no window
+   state between runs, so the crate docs tell apps to drop the window, and
+   any surface made from it, by `stop` (from the review).
+2. **The platform owns winit's event loop.** winit makes one per process
+   (`EventLoopError::RecreationAttempt`), so a second `new` is
+   `Unavailable`, and each run is `run_app_on_demand`. T3's decision 6
+   holds: `check` runs it three times, and no factory is needed.
+3. **A frame only when it is due.** winit calls `about_to_wait` after
+   every batch, OS events the contract leaves out (cursor moves, redraws)
+   included, and its macOS timer can fire a hair early (winit then reports
+   `WaitCancelled`). A small state machine (`Pacer`) calls `frame` only
+   for the first frame, after an event, or once `now` has reached the time
+   asked for, and arms the timer again otherwise; so a timed wake is never
+   early and an `OnEvent` wait ends only with an event. A wake more than a
+   minute off is armed a minute at a time, so no huge timeout reaches an
+   OS timer.
+4. **The clock** is `std::time::Instant` from just before `start`, which
+   reads exactly zero, as on headless; each callback gets one reading, and
+   a reading never goes below the last (std documents hardware where its
+   clock steps back).
+5. **Exit** is a flag. After it the app gets only `stop`: winit still
+   delivers the rest of its batch, and `about_to_wait`, which are dropped.
+   `run` returns `Ok(())` after the app's exit even if winit then fails to
+   tear down (the contract), and `Failed` for a winit error without one.
+   `stop` comes from `exiting`, and once more after the loop returns in
+   case winit ended without `exiting`, guarded to happen once.
+6. **Keys and window events only.** The plan's eng-platform-api row says
+   "1b maps only keys". The first version also mapped mouse buttons, the
+   wheel and raw motion; the review pointed out that this is beyond the
+   plan, and on macOS it would break the contract's own definitions:
+   winit's macOS mouse deltas are NSEvent's accelerated ones, not the raw
+   counts `MouseMotion` promises, and the wheel's sign follows the user's
+   natural-scrolling setting, which winit cannot see. So mouse events wait
+   for rung 2 and its raw-input shim; what was learnt is under "For rung
+   2" below.
+   - Keys by physical code, through a 110-entry table in `Key::ALL`
+     order; winit's names are the W3C ones except `SuperLeft`/`SuperRight`
+     for `MetaLeft`/`MetaRight`. Keys the contract cannot name (F13, media
+     keys) are dropped.
+   - OS key repeat is dropped: the key did not go down again, and the
+     contract only says repeat *may* come. winit's synthetic presses for
+     keys already held when focus returns (X11, Windows) are dropped too,
+     as the contract says such keys are not reported until they change,
+     and so are its synthetic releases, which `FocusLost` covers.
+   - Focus, size, close requests, and occlusion where winit reports it
+     (macOS; X11 when fully covered). Nothing is made up for Windows,
+     where a minimised window reports 0 x 0, or for Wayland, which reports
+     neither. `RedrawRequested` and other windows' events are ignored.
+7. **No main-thread guard.** winit panics off the main thread with a clear
+   message. Returning `Unavailable` instead would make an ordinary
+   `#[test]` that skips on `Unavailable` pass without testing anything.
+8. **The windowed test is its own harness** (`harness = false`), not the
+   child process of the plan's risk table (that is for T11's `play`): the
+   suite needs a platform in the test's own process, on the main thread.
+   Its `main` speaks the part of libtest's command line that `cargo test`
+   and cargo-nextest use (`--list --format terse`, `--ignored`, `--exact`,
+   `--skip`, filters), so nextest runs each check in a process of its own.
+   A watchdog thread fails it after 60 s, since the suite cannot end a run
+   the platform never ends.
+9. **`ENG_REQUIRE_DISPLAY=1`.** The plan names no variable, so a machine
+   without a display skips, as asked. The variable, read by
+   `display_required()` like eng-gpu's `gpu_required()`, makes a missing
+   display fail; nothing sets it until G5's native jobs (amendment 36).
+10. **`examples/events.rs`** prints every event a real window reports, and
+    Escape or closing it quits: the tool for the checks by hand below,
+    kept for checking a machine's input.
+11. **Versions.** Resolving today picked rustix 1.1.6; `cargo update
+    --precise` put it back at the table's 1.1.5, so every batch-2 version
+    in the graph is the table's.
+
+**Tests** (15 unit tests and 6 harness checks, written before the code):
+- `src/map.rs`, 6 unit tests (winit's types stay private to the crate, so
+  in-crate, as in eng-cli): the key table, name for name; unnamed keys
+  dropped; down and up; repeats and synthetic keys dropped; the window
+  events the contract has, and four it leaves out.
+- `src/pace.rs`, 9: the first frame at once; a timed wake at its time and
+  not 1 ns before; a past wake at once; an event makes the frame due, and
+  the next answer counts again; `OnEvent` ends only with an event; a far
+  wake looked at again each minute and still not due; the clock from zero
+  in nanoseconds; never back, and saturating at the end; wakes mapped to
+  the system clock.
+- `tests/conformance.rs`, 6 checks: `conformance` (T10's done-when, the
+  suite's three runs); `window_seam` (the app gets the OS's own window and
+  display handles, AppKit, Win32 or Xlib/Xcb/Wayland, on the main thread,
+  and a size); `clock_restarts` (`start` reads zero in each run, and a
+  second run's first frame comes before the time the first run's clock
+  reached at its `stop`, a margin of one second); `timers` (20 frames 10 ms
+  apart, never early); `one_event_loop_per_process`; and on Linux and the
+  BSDs `no_display` (the harness run again without `DISPLAY` and
+  `WAYLAND_DISPLAY` skips, and with `ENG_REQUIRE_DISPLAY=1` fails with
+  `[E-NO-DISPLAY]`).
+- Red first: against stubs, 12 of the 15 unit tests failed (so did the
+  three mouse tests, since removed with the mouse code); the 3 that passed
+  check that things are dropped, which a stub that maps nothing also
+  does, and the planted bugs below show they bite. The suite rejected the
+  stub platform with "start comes first, once: the callbacks were none",
+  and `clock_restarts` failed (`start` read 42 ns) until `start` got the
+  clock's origin. The example panicked on `--seconds 99999999999999999`
+  (from the review) and now exits 64.
+- Planted bugs, each reverted exactly: 22 on the final code, all caught.
+  In the adapter: the exit flag ignored, no stop, two stops, a window after
+  an exit in start, a window before start, a frame whenever winit wakes ("a
+  timed wake is never early"), `start` reading the clock (caught by the
+  `start` reads zero asserts), one clock for every run, the second
+  platform's message; and one each for the rules of the pacer, the clock
+  and the key mapping. Two of them hang instead of failing and are caught
+  by the watchdog after 60 s: the exit not passed to winit, and the timer
+  never armed (`ControlFlow::Wait` always). The first round, with the mouse
+  code, had four more, also caught.
+- The timer one passed the suite at first: the events of a window opening
+  (`Resized`, focus, occlusion) bring the suite's three timed frames
+  anyway. `timers` asks for more frames than they can bring (amendment
+  38).
+- On this Mac the harness passed 20 runs out of 20 (about 0.55 s each).
+  The window is really on screen while a run lasts and gone after it:
+  `CGWindowListCopyWindowInfo` lists it at layer 0, about 800 x 600 points
+  (`screencapture` is not permitted to this session).
+
+**Linux: Xvfb in Docker**, natively on arm64: `rust:1.99.1-slim-trixie`
+plus Xvfb, xdotool and the X11 libraries winit loads at run time
+(libx11-6, libx11-xcb1, libxcb1, libxcursor1, libxi6, libxrandr2,
+libxkbcommon0, libxkbcommon-x11-0), with no `-dev` package beyond the
+image's libc ones, and cargo-nextest 0.9.148, CI's version
+(`scratchpad/t10/docker/Dockerfile`).
+- winit built with no X11, Wayland or xkbcommon development packages:
+  decision 5 holds for winit (T7 confirmed wgpu).
+- No display: the windowed checks skip with winit's reason ("neither
+  WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set") and `no_display`
+  passes; with `ENG_REQUIRE_DISPLAY=1` the harness exits 1 with
+  `[E-NO-DISPLAY]`.
+- Under Xvfb (X11, no window manager): 21 of 21 under nextest, which
+  lists the 6 checks and runs each in its own process (several windows at
+  once), and 10 more runs of the harness out of 10.
+- `CI=1 cargo xtask ci --job test` without a display, as CI's Linux test
+  job: 9 of 9 steps, 299 tests under nextest's `ci` profile.
+- Wayland, with weston's headless backend (`scratchpad/t10/docker-wayland/`):
+  the 6 checks pass, under nextest too, and 10 runs out of 10; winit picks
+  Wayland when `WAYLAND_DISPLAY` is set, and `window_seam` saw Wayland
+  handles.
+- Real keys, with the events example: after `xdotool windowfocus --sync`,
+  XTEST input arrives as `FocusGained`, `KeyDown(KeyW)`, `KeyUp(KeyW)` and
+  `KeyDown(Escape)`, which quits; a click and a wheel notch now arrive as
+  nothing. `xdotool key --window <id>` sends nothing winit sees: it uses
+  `XSendEvent`, and winit reads the keyboard through XInput2 (amendment
+  37).
+- Not run: Windows. clippy with `-D warnings` is clean for both Windows
+  targets, `x86_64-apple-darwin` and both Linux targets in the container.
+
+**For rung 2: the mouse through winit 0.30** (learnt here, not built):
+- winit's wheel deltas say where the content moves, right and down
+  positive (its docs); it already flips Windows' horizontal wheel, and X11
+  buttons 6 and 7 are +1 and -1 in x. The contract's `y` (away from the
+  user) keeps winit's sign and its `x` (tilted right) is winit's negated,
+  as SDL does on macOS; under Xvfb a wheel-up notch came as `y = 1.0`, but
+  twice per notch.
+- On macOS both the wheel's sign (natural scrolling, on by default) and
+  the motion's acceleration come from the OS, and winit hides both; the
+  GCMouse shim the plan defers to rung 2 is where raw counts come from.
+- Raw motion is winit's `DeviceEvent::MouseMotion`, which winit sends only
+  while the window has focus.
+
+**Checks** (this Mac, aarch64-apple-darwin, the scratch clone, final code):
+- `cargo xtask quick`: 7 of 7 (98 s cold, 17 s warm), the windowed
+  harness inside `tests`.
+- `CI=1 cargo xtask ci --job lint`: 7 of 7, `cargo deny check`
+  ("advisories ok, bans ok, licenses ok, sources ok") and `typos` on the
+  real configs.
+- `CI=1 cargo xtask ci --job test`: 9 of 9. `CI=1 cargo xtask ci --job
+  wasm`: green. `cargo xtask selftest`: 17 of 17.
+- `RUSTDOCFLAGS=-Dwarnings cargo doc -p eng-platform-winit --no-deps`:
+  clean.
+- `cargo xtask replay`: 5 runs, hash streams equal to the committed ones;
+  nothing regenerated.
+- `t10.patch`, then `t10-oracles.patch`, apply with `git apply` to a fresh
+  clone of df96332, whose tree then equals the scratch clone's apart from
+  the two oracle files; there `quick` (7 of 7) and `CI=1 cargo xtask ci
+  --job lint` (7 of 7) pass, and docs-check fails without the CODEOWNERS
+  line.
+- `typos` with the repo's config passes on this entry and both patches.
+
+**Batch 2 against the real lock** (cargo-deny's graph for the seven
+targets, with the repo's policy):
+- 154 third-party names, 166 versions, all on batch 1 or batch 2; every
+  batch-2 version is the table's (rustix held at 1.1.5).
+- T10 adds 69 names, 73 versions: 67 batch-2 names (71 versions: winit and
+  its platform crates: X11, Wayland, `calloop`, `smithay-client-toolkit`,
+  the macOS `objc2` 0.5 family, `windows-sys` 0.52 and its targets, and
+  `cc`, `shlex` and `find-msvc-tools`, which build `wayland-backend` on
+  Linux), plus two batch-1 names: `getrandom` 0.3.4, now in the graph
+  through `ahash` on Linux (whose default `runtime-rng` feature takes it;
+  the policy's comment had it on other targets only, and the plan does
+  not mention it), and `bitflags` 1.3.2 through `core-graphics` on macOS,
+  a duplicate the plan foresaw.
+- 127 of the 136 batch-2 names are in the graph now. The other 9 are
+  `png` and its six crates (T9) and `nv-flip` and `nv-flip-sys` (T12).
+- Duplicates are the plan's list: `block2`, `objc2` and
+  `objc2-foundation` (macOS); `linux-raw-sys`, `rustix`, `thiserror` and
+  `thiserror-impl` (Linux); three `windows-sys`; batch 1's `bitflags`,
+  `hashbrown` and `syn`. The unused wrappers left are `gilrs` (rung 6),
+  `cpal`, and the seam's `eng-gpu` and `eng-app` (T11); winit's wrapper,
+  and `winit` and `eng-platform-winit` among the seam's, are matched now.
+- 54 registry packages join `Cargo.lock` outside that graph, for Android,
+  iOS, Redox, the web and other Windows ABIs, so cargo-deny never checks
+  them (as amendment 26 found for T7): `android-activity`,
+  `android-properties`, `atomic-waker`, `bytes`, `combine`, `hermit-abi`,
+  `jni` and `jni-macros`, two `jni-sys`, `jni-sys-macros`, `jobserver`,
+  `libredox`, `ndk`, `ndk-context`, `ndk-sys`, `num_enum`,
+  `num_enum_derive`, twelve `objc2-*` 0.2.2 crates for Apple targets
+  outside the seven, `orbclient`, `pin-project`, `pin-project-internal`,
+  `plain`, `proc-macro-crate`, `r-efi`, two `redox_syscall`,
+  `rustc_version`, `same-file`, `semver`, `simd_cesu8`, `simdutf8`,
+  `toml_edit`, `walkdir`, `wasip2`, `web-time`, `winapi-util`, five
+  `windows_*` 0.52.6 targets for i686 and gnullvm, and `wit-bindgen`.
+  `r-efi` is batch 1, and `objc2-metal` and `objc2-quartz-core` 0.2.2 are
+  other versions of batch-2 names; the rest are on neither list, and the
+  approved policy needs no entry.
+
+**`t10-oracles.patch`** (`docs/rungs/1b/patches/`, the owner's, a G5
+item): `crates/eng-platform-winit/tests/conformance.rs` joins
+`protected.toml` and `.github/CODEOWNERS` (amendment 35). The agent's
+version had df96332 with `t10.patch` as its base, and was tested as under
+"Checks". At integration the orchestrator re-made it on top of
+`t8-oracles.patch`, since both add a line at the same place. No xtask step:
+acceptance names none for this harness, and `tests` runs it.
+
+**Review** (the `reviewer` subagent, fresh context, read-only; 18 min,
+231k tokens, 74 tool calls): approve, no code blockers. It checked each of
+the contract's rules against `run.rs` and winit 0.30.13's backends (after
+an exit winit still calls `about_to_wait` and delivers the rest of the
+batch on macOS and X11, and the adapter drops it), the wheel and key
+conventions, the harness under nextest's command lines, the public API and
+the protected paths. Its one must-do was this entry: the lock recompute as
+an amendment (above), the lock-only crates, and the harness in place of
+the plan's child process (decision 8). Its other points:
+- mapping the mouse goes beyond "1b maps only keys", and on macOS the
+  motion is accelerated and the wheel follows natural scrolling: taken up
+  by removing the mouse (decision 6);
+- tell apps to drop the window and its surface by `stop`: in the crate
+  docs;
+- `clock_restarts`'s 300 ms margin is tight under parallel nextest: the
+  first run now lingers a second, and the check compares with the first
+  run's own clock at `stop`;
+- the example's `--seconds` overflowed: fixed;
+- `ARCHITECTURE.md` said the twenty frames come "only" from the timer:
+  reworded;
+- the `start` reads zero asserts prove nothing: kept, since they are what
+  catches the planted "`start` reads the clock" bug;
+- `live()` could also check `stopped`: not done, as `exiting` is winit's
+  last callback and `finish` runs after the loop has returned, so nothing
+  can reach it.
+It did not compile the Linux and Windows paths; the Docker runs above do.
+
+The proposals for the owner are amendments 35 to 39, in the block below.
+
+**Open questions**
+1. **macOS Quit** (amendment 39): Cmd+Q or the Dock's Quit ends the
+   process right after `stop`, so `run` never returns there. T11's
+   `play` should save its report and recording in `stop`, or drop winit's
+   default menu.
+2. **The suite's reach on a desktop** (amendment 38): `check` passes a
+   platform with no timer when OS events are frequent, and does not check
+   that a second run's clock restarts. The winit harness covers both;
+   whether `check` should is the owner's call, since the suite is about
+   to be protected.
+3. **The mouse in rung 2** ("For rung 2" above): the wheel came twice per
+   notch under Xvfb, and macOS needs the shim for raw counts and a way to
+   learn the natural-scrolling setting.
+4. **Windows** is only type-checked; T13's native jobs give it its first
+   run, as for eng-gpu's DX12 path.
+5. **Merging with T8.** Both change `docs/ARCHITECTURE.md`'s layer
+   diagram, on neighbouring lines (eng-platform-winit and eng-render lose
+   their marks), and `Cargo.toml`'s `[workspace.dependencies]` and
+   `Cargo.lock` may meet T8's; the second to land may need its hunks
+   applied by hand (`git apply -3`).
+
+**Costs and timings**
+- Session 17's T10 subagent, from about 16:36 to about 17:55 EET: reading
+  and design to 16:52, tests and code to 17:01 (the suite green on macOS
+  at its first run), the extra checks and planted bugs to 17:10, X11 in
+  Docker to 17:20, then the review, Wayland, the review's changes, the
+  final runs, the patches and this entry.
+- Builds: the crate's unit tests, winit included, built in about 8 s
+  here; `quick` 98 s cold; `ci --job test` 74 s. Docker (arm64, native):
+  image 25 s, the crate's tests built in 24 s, the whole CI test job in
+  2 min. Planted bugs: about 4 minutes a round, two minutes of it the two
+  watchdog cases.
+- Reviewer subagent: 18 minutes, 231k tokens, 74 tool calls.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1
@@ -3845,3 +4171,65 @@ otherwise have to change; the owner applies it, or unlocks the path.
     native job's `gpu-budgets` (X2), and CI's test job has no GPU. Best
     applied after T11 (open question 3); the patch itself only adds the
     path.
+
+35. **Amendment from session 17, T10** (to proposal 8 and amendment 24;
+    G5). `docs/rungs/1b/patches/t10-oracles.patch`: protect
+    `crates/eng-platform-winit/tests/conformance.rs` in `protected.toml`
+    and `.github/CODEOWNERS`, with amendment 24's suite and headless
+    harness. It runs `conformance::check` on real windows and holds the
+    checks the suite cannot make on a desktop (decision 8 and the tests
+    above) and the no-display skip; unprotected, making it skip would
+    leave the protected suite unrun on winit. The patches stack: apply
+    `t8-oracles.patch`, `t10-oracles.patch` and `t3-oracles.patch`
+    (amendment 24's entries) in one `git apply`, in that order.
+
+36. **Amendment from session 17, T10** (to proposal 7, X2 and X6; G5).
+    The native jobs set `ENG_REQUIRE_DISPLAY=1` for their `tests` step, as
+    they set `ENG_REQUIRE_GPU=1`, so a broken xvfb fails the windowed
+    tests instead of letting them skip; T11's windowed tests should read
+    `eng_platform_winit::display_required()` too. On the Linux runners X6
+    installs, besides xvfb and xdotool, the libraries winit loads:
+    libx11-6, libx11-xcb1, libxcursor1, libxi6, libxrandr2 and
+    libxkbcommon-x11-0 (GitHub's image may have them; listing them keeps
+    the job honest). `.config/nextest.toml` needs no serial group for
+    T10's tests: several ran at once under Xvfb.
+
+37. **Amendment from session 17, T10** (to `plan.md`'s T13 row and the
+    X2 `esc` step; the plan is not protected, but its rows are the
+    owner's). `xdotool key --window <id> Escape` cannot work with winit:
+    `--window` makes xdotool use `XSendEvent`, whose synthetic core events
+    winit never reads (it takes the keyboard from XInput2). Checked under
+    Xvfb with no window manager: nothing arrived that way, while
+    `xdotool windowfocus --sync <id>` followed by `xdotool key Escape`
+    (XTEST, the real input path) delivered `KeyDown(Escape)`. Proposed T13
+    row text: "`xdotool search --sync --name <title>`, then `windowfocus
+    --sync <id>` and `key Escape`".
+
+38. **Amendment from session 17, T10** (to the conformance suite,
+    `crates/eng-platform-api/src/conformance*`, which amendment 24 would
+    protect; described only). Two rules `check` cannot see on a desktop:
+    - its clock run asks for three timed frames, and the events of a
+      window opening can bring them, so a platform whose timer never fires
+      passes `check` there (planted in winit's adapter: it passed);
+    - nothing checks that a second run's clock starts again at zero.
+    The winit harness checks both (`timers`, `clock_restarts`), and
+    headless fails the first with `Idle`. If the owner wants `check` to,
+    it could ask for more timed frames than a window's opening brings, and
+    note `start`'s reading in each run.
+
+39. **Amendment from session 17, T10** (to the platform contract's
+    `Platform::run` docs, or to T11; the owner's call). The contract says
+    `run` returns `Ok(())` "also when the operating system ended the run
+    (a desktop's quit command)". On macOS winit cannot meet the second
+    half: its default menu's Quit is AppKit's `terminate:`
+    (`winit-0.30.13/src/platform_impl/macos/menu.rs`, line 71), winit's
+    delegate has no `applicationShouldTerminate:`, and AppKit calls
+    `exit()` after `applicationWillTerminate:`. winit does send
+    `LoopExiting` from that notification, so the adapter calls `stop`,
+    and then the process ends inside `run`. The Dock's Quit and logging
+    out take the same path. Options: (a) keep it, and say in the contract
+    that on macOS a quit command may end the process after `stop`
+    (proposed; T11's `play` saves its outputs in `stop`); (b) winit's
+    `with_default_menu(false)`, so Cmd+Q is just keys, which leaves the
+    Dock and logout; (c) intercepting `terminate:` needs Objective-C and
+    `unsafe`, which the crate forbids.

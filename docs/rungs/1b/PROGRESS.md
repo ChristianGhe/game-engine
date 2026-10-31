@@ -4597,6 +4597,9 @@ window: commit locally, push nothing, record decisions as proposals here.
       installs. The testbed binary, which now holds wgpu and winit,
       builds for riscv64, and its replays under QEMU equal the committed
       streams.
+  - the lint job's `cargo fmt --check` and clippy (`--workspace
+    --all-targets -D warnings`) on Linux arm64 in Docker, on a6c1550, so
+    the Linux-only code is linted too;
   - a fresh `reviewer` pass over T11 and T12 together, and over the six
     oracle patches. Its verdict was approve, with no blockers and one
     should-fix:

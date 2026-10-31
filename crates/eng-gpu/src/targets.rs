@@ -1,5 +1,7 @@
 //! Offscreen targets and readback: the engine-owned textures a graph renders
 //! into, and the output's pixels read back for `shot`, `video` and goldens.
+//! An offscreen texture can stand in for a window's surface, so that a
+//! surface graph renders whole without a window.
 
 use crate::Resource;
 use crate::error::GpuError;
@@ -12,31 +14,52 @@ const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// writes linear values (plan decision 2).
 const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
+/// The surface's format: BGRA, which every rung 1b backend offers a window,
+/// sRGB-encoded like the output, so the present blit reproduces the output's
+/// bytes.
+const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
+
 /// The longest side a target may have: Tier 0's largest 2D texture.
 pub(crate) const MAX_SIDE: u32 = 8192;
 
-/// The texture format of an engine-owned resource; `None` for the surface.
-pub(crate) fn format(resource: Resource) -> Option<wgpu::TextureFormat> {
+/// The texture format a resource is drawn in.
+pub(crate) fn format(resource: Resource) -> wgpu::TextureFormat {
     match resource {
-        Resource::Scene => Some(SCENE_FORMAT),
-        Resource::Output => Some(OUTPUT_FORMAT),
-        Resource::Surface => None,
+        Resource::Scene => SCENE_FORMAT,
+        Resource::Output => OUTPUT_FORMAT,
+        Resource::Surface => SURFACE_FORMAT,
     }
 }
 
 /// The engine-owned textures of one size that a graph renders into: the
-/// [`Resource::Scene`] and the [`Resource::Output`].
+/// [`Resource::Scene`] and the [`Resource::Output`], and with
+/// [`Targets::with_offscreen_surface`] a stand-in for the
+/// [`Resource::Surface`].
 pub struct Targets {
     width: u32,
     height: u32,
     scene: wgpu::TextureView,
     output_texture: wgpu::Texture,
     output: wgpu::TextureView,
+    surface: Option<(wgpu::Texture, wgpu::TextureView)>,
 }
 
 impl Targets {
     /// Targets of `width` by `height` pixels, each from 1 to 8,192.
     pub fn new(gpu: &Gpu, width: u32, height: u32) -> Result<Self, GpuError> {
+        Self::make(gpu, width, height, false)
+    }
+
+    /// Like [`Targets::new`], plus an offscreen texture in the surface's
+    /// format (B8G8R8A8, sRGB) that stands in for a window's surface: a
+    /// [`crate::Target::Surface`] graph renders into it, and
+    /// [`Targets::read_surface`] reads back what its present pass drew. A
+    /// window's own surface (rung 1b, T11) presents instead.
+    pub fn with_offscreen_surface(gpu: &Gpu, width: u32, height: u32) -> Result<Self, GpuError> {
+        Self::make(gpu, width, height, true)
+    }
+
+    fn make(gpu: &Gpu, width: u32, height: u32, surface: bool) -> Result<Self, GpuError> {
         let fits = |side: u32| (1..=MAX_SIDE).contains(&side);
         if !fits(width) || !fits(height) {
             return Err(GpuError::Size { width, height });
@@ -58,7 +81,7 @@ impl Targets {
             })
         };
         let drawn = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        let (scene, output_texture) = gpu
+        let (scene, output_texture, surface) = gpu
             .scoped(|| {
                 (
                     create("scene", SCENE_FORMAT, drawn),
@@ -67,15 +90,29 @@ impl Targets {
                         OUTPUT_FORMAT,
                         drawn | wgpu::TextureUsages::COPY_SRC,
                     ),
+                    // Like a swapchain image, it can be drawn into but not
+                    // read by a pass; the copy is for readback.
+                    surface.then(|| {
+                        create(
+                            "surface",
+                            SURFACE_FORMAT,
+                            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                        )
+                    }),
                 )
             })
             .map_err(GpuError::Wgpu)?;
+        let view = |texture: &wgpu::Texture| texture.create_view(&Default::default());
         Ok(Self {
             width,
             height,
-            scene: scene.create_view(&wgpu::TextureViewDescriptor::default()),
-            output: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            scene: view(&scene),
+            output: view(&output_texture),
             output_texture,
+            surface: surface.map(|texture| {
+                let surface_view = view(&texture);
+                (texture, surface_view)
+            }),
         })
     }
 
@@ -84,18 +121,43 @@ impl Targets {
         (self.width, self.height)
     }
 
-    /// The view a pass draws into or reads; `None` for the surface.
+    /// Whether the targets have a surface, so that a
+    /// [`crate::Target::Surface`] graph can render into them.
+    pub fn has_surface(&self) -> bool {
+        self.surface.is_some()
+    }
+
+    /// The view a pass draws into or reads; `None` for a missing surface.
     pub(crate) fn view(&self, resource: Resource) -> Option<&wgpu::TextureView> {
         match resource {
             Resource::Scene => Some(&self.scene),
             Resource::Output => Some(&self.output),
-            Resource::Surface => None,
+            Resource::Surface => self.surface.as_ref().map(|(_, view)| view),
         }
     }
 
     /// Copies the output back to the CPU, waiting for the GPU to finish the
     /// frames submitted before.
     pub fn read_output(&self, gpu: &Gpu) -> Result<Image, GpuError> {
+        self.read(gpu, &self.output_texture)
+    }
+
+    /// Copies the offscreen surface back to the CPU, as
+    /// [`Targets::read_output`] does the output: RGBA8 in that order,
+    /// sRGB-encoded, though the surface stores B, G, R, A. Without a surface
+    /// it fails with [`GpuError::NoSurface`].
+    pub fn read_surface(&self, gpu: &Gpu) -> Result<Image, GpuError> {
+        let (texture, _) = self.surface.as_ref().ok_or(GpuError::NoSurface)?;
+        let mut image = self.read(gpu, texture)?;
+        for pixel in image.rgba8.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+        Ok(image)
+    }
+
+    /// The bytes of a texture of this size with four bytes a pixel, as
+    /// stored.
+    fn read(&self, gpu: &Gpu, texture: &wgpu::Texture) -> Result<Image, GpuError> {
         let row = self.width * 4;
         let stride =
             row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -113,7 +175,7 @@ impl Targets {
                             label: Some("readback"),
                         });
                 encoder.copy_texture_to_buffer(
-                    self.output_texture.as_image_copy(),
+                    texture.as_image_copy(),
                     wgpu::TexelCopyBufferInfo {
                         buffer: &buffer,
                         layout: wgpu::TexelCopyBufferLayout {

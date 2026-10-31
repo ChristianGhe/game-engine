@@ -1,7 +1,9 @@
 //! The GPU layer (spec 6.7): adapter choice, the capability report, the
-//! fixed render graph, offscreen targets and readback. It is the only crate
-//! that may import wgpu (`[floor]` in `architecture.toml`), and no wgpu type
-//! appears in its public API. GPU work never feeds back into the simulation.
+//! fixed render graph, its passes' draws and per-frame counters, offscreen
+//! targets and readback. It is the only crate that may import wgpu
+//! (`[floor]` in `architecture.toml`), and no wgpu type appears in its
+//! public API. GPU work never feeds back into the simulation. eng-render
+//! builds rung 1b's passes on it.
 //!
 //! - **[`Gpu`]** opens a device at Tier 0, WebGPU's default features and
 //!   limits, whatever the adapter could do beyond them. [`GpuOptions`] picks
@@ -25,12 +27,26 @@
 //!   list. Ordering, culling and pooling come in rung 2.
 //! - **[`Pass`]**: each frame, [`Graph::render`] has every pass record into a
 //!   [`PassRecorder`], checks each recording against its declaration, then
-//!   encodes and submits the frame. A pass can clear its target and draw
-//!   [`FullscreenPipeline`]s, which take the pass's one read as input; the
-//!   caller writes only their fragment stage.
+//!   uploads the frame's instances, and encodes and submits the frame. A
+//!   pass can clear its target and draw, in order:
+//!   - [`FullscreenPipeline`]s, which take the pass's one read as input; the
+//!     caller writes only their fragment stage;
+//!   - [`InstancedPipeline`]s: a triangle strip per instance, each instance
+//!     reading its [`Attribute`]s from bytes the pass records, into the
+//!     scene or the output.
+//! - **[`FrameCounters`]**: [`Graph::render`] returns what the frame asked
+//!   of the GPU (spec 6.13): draws, pipeline switches, bind-group switches
+//!   and uploaded bytes. They are counted from the commands it encodes, so
+//!   they are exact and the same on every adapter. A pass binds a pipeline
+//!   only when a draw needs another, and its input once.
 //! - **[`Targets`]**: the engine-owned scene (`Rgba16Float`, linear HDR) and
 //!   output (`Rgba8UnormSrgb`) of one size. [`Targets::read_output`] reads
 //!   the output back as an [`Image`], RGBA8 as stored, rows top first.
+//!   [`Targets::with_offscreen_surface`] adds a texture in the surface's
+//!   format, `Bgra8UnormSrgb`, standing in for a window's: a
+//!   [`Target::Surface`] graph then renders whole, and
+//!   [`Targets::read_surface`] reads back what it presented, in RGBA order.
+//!   Opening a window's surface is rung 1b's task T11.
 //!
 //! Errors come back as [`GpuError`] values whose messages start with a log
 //! tag (`[E-NO-ADAPTER]`, `[E-GPU]`, `[E-SHADER]`, `[E-GRAPH]`). wgpu's own
@@ -44,16 +60,22 @@
 //! `include_str!`: WGSL written inline in Rust escapes that check.
 #![forbid(unsafe_code)]
 
+mod counters;
 mod error;
+mod fullscreen;
 mod gpu;
 mod graph;
+mod instanced;
 mod pass;
 mod report;
 mod targets;
 
+pub use counters::FrameCounters;
 pub use error::GpuError;
+pub use fullscreen::{FullscreenDesc, FullscreenPipeline};
 pub use gpu::{Gpu, GpuOptions, gpu_required};
 pub use graph::{DRAW, Graph, GraphError, PRESENT, PassDecl, Resource, TONEMAP, Target};
-pub use pass::{FullscreenDesc, FullscreenPipeline, LinearRgba, Pass, PassRecorder};
+pub use instanced::{Attribute, InstancedDesc, InstancedPipeline};
+pub use pass::{LinearRgba, Pass, PassRecorder};
 pub use report::{Backend, Capabilities, DeviceType, GpuReport};
 pub use targets::{Image, Targets};

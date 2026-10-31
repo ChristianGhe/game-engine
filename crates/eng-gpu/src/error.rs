@@ -29,6 +29,9 @@ pub enum GpuError {
     Pass { pass: &'static str, message: String },
     /// A target side outside 1 to 8,192, Tier 0's largest texture. `[E-GPU]`
     Size { width: u32, height: u32 },
+    /// A surface graph, or a surface readback, on targets without a surface.
+    /// `[E-GPU]`
+    NoSurface,
 }
 
 impl fmt::Display for GpuError {
@@ -57,6 +60,7 @@ impl fmt::Display for GpuError {
                 f,
                 "[E-GPU] target size {width}x{height}: each side must be 1 to {MAX_SIDE} (Tier 0)"
             ),
+            Self::NoSurface => f.write_str("[E-GPU] the targets have no surface to present into"),
         }
     }
 }

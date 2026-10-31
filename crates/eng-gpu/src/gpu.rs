@@ -6,8 +6,10 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
+use crate::Resource;
 use crate::error::GpuError;
-use crate::pass::{FullscreenDesc, FullscreenPipeline, Shared};
+use crate::fullscreen::{FullscreenDesc, FullscreenPipeline, Shared};
+use crate::instanced::{self, InstancedDesc, InstancedPipeline};
 use crate::report::{self, GpuReport};
 use crate::targets;
 
@@ -141,17 +143,39 @@ impl Gpu {
         &self,
         desc: &FullscreenDesc<'_>,
     ) -> Result<FullscreenPipeline, GpuError> {
+        let format = targets::format(desc.target);
+        self.scoped(|| self.shared.pipeline(&self.device, desc, format))
+            .map_err(|message| GpuError::Shader {
+                label: desc.label.to_string(),
+                message,
+            })
+    }
+
+    /// Compiles an instanced pipeline (`desc.wgsl`, both stages) for drawing
+    /// into `desc.target`, the scene or the output.
+    pub fn instanced_pipeline(
+        &self,
+        desc: &InstancedDesc<'_>,
+    ) -> Result<InstancedPipeline, GpuError> {
         let shader_error = |message: String| GpuError::Shader {
             label: desc.label.to_string(),
             message,
         };
-        let format = targets::format(desc.target).ok_or_else(|| {
-            shader_error(format!(
-                "eng-gpu has no `{}` to draw into yet",
+        // Only the present blit draws into the surface, so that shots, which
+        // read the output, see everything a window shows.
+        if desc.target == Resource::Surface {
+            return Err(shader_error(format!(
+                "instanced pipelines draw into the scene or the output, not `{}`",
                 desc.target.name()
-            ))
-        })?;
-        self.scoped(|| self.shared.pipeline(&self.device, desc, format))
+            )));
+        }
+        if desc.instance.is_empty() {
+            return Err(shader_error(
+                "an instanced pipeline needs at least one instance attribute".into(),
+            ));
+        }
+        let format = targets::format(desc.target);
+        self.scoped(|| instanced::pipeline(&self.device, desc, format))
             .map_err(shader_error)
     }
 

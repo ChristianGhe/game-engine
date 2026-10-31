@@ -2940,6 +2940,263 @@ this entry.
   over two rounds, 763k tokens. With the ADR, the G3 patch, T6 and its
   review (above), about 2.9M subagent tokens from 12:40 to 16:05 EET.
 
+## 2026-10-31, session 17 (continued): T8, `eng-render` (Claude Opus 5.5, subagent, owner away)
+
+The task: T8, the render passes. Its plan row asks for `eng-render`'s
+top-down, tone-map and present passes and the per-frame counters; done
+when a known scene reads back as expected and the counters are exact. It
+builds on T7's eng-gpu, which T7's decisions 6 and 7 left ready for it:
+passes record and the graph encodes, so commands can be counted, and the
+top-down pass needs instanced draws that T8 adds to `PassRecorder`. No new
+third-party crate, no protected path edited, no hash stream regenerated.
+A subagent built it in a scratch clone of main at df96332 while the owner
+was away, and left it uncommitted: `t8.patch` (below).
+
+**What eng-render has** (the crate docs and `docs/ARCHITECTURE.md`, "The
+frame", have the rest). No third-party type in its API, no `unsafe`, no
+`raw-window-handle`, and nothing that reaches the simulation.
+
+```rust
+TopDownScene { camera: TopDownCamera { centre: WorldPos, pixels_per_meter: f64 },
+               background: LinearRgb, shapes: Vec<Shape> }   // Shape::Rect { min, max, colour } | Shape::Disc { centre, radius, colour }
+scene.quads(width, height) -> Result<Vec<Quad>, RenderError> // clip space; camera subtracted in f64; [E-SCENE]
+Renderer::new(&gpu) -> Result<Renderer, GpuError>
+renderer.render(&gpu, &targets, &scene) -> Result<FrameCounters, RenderError>  // presents if targets have a surface
+```
+
+**What eng-gpu gained** (its crate docs and "The GPU layer"):
+
+```rust
+FrameCounters { draws, pipeline_switches, bind_group_switches, upload_bytes }  // Graph::render returns it
+gpu.instanced_pipeline(&InstancedDesc { label, wgsl, vertex_entry, fragment_entry,
+                                        instance: &[Attribute], vertices, target })
+rec.instanced(&pipeline, &bytes)                              // Attribute::{F32x2, F32x3, U32}, packed, little-endian
+Targets::with_offscreen_surface(&gpu, w, h)?.read_surface(&gpu) // Bgra8UnormSrgb stand-in, read back as RGBA
+GpuError::NoSurface
+```
+
+`pass.rs` was split: the fullscreen pipelines moved to `fullscreen.rs`,
+unchanged, and instanced pipelines are `instanced.rs`.
+
+**Decisions** (proposals; the owner can overrule any):
+1. **The counting lives in eng-gpu**, where commands are encoded, so the
+   counts cannot drift from what the GPU is asked. `Graph::render` returns
+   them for each frame. A draw is a draw call. A pipeline switch is a
+   `set_pipeline`: a pass binds one before its first draw and again only
+   for a draw that needs another, and nothing stays bound from one pass to
+   the next. A bind-group switch is a `set_bind_group`: a pass binds its
+   input once, before its first fullscreen draw. Uploaded bytes are the
+   bytes written into GPU buffers, today the instances. A clear counts
+   nothing, and an empty instance list records nothing.
+2. **The top-down projection runs on the CPU, into clip space.** Each
+   position is subtracted from the camera's in f64, scaled in f64, and
+   only then rounded to f32 (AGENTS.md conventions). The pass needs no
+   camera uniform and no bind group. The scene type is in world space, so
+   a GPU-side camera (rung 2's layout) can replace this without changing
+   it.
+3. **Shapes are filled rectangles and discs**, axis-aligned, opaque and
+   drawn in order, each over the ones before; heights are ignored, even a
+   NaN one. No rotation, outlines, lines or translucency yet: the testbed
+   needs a room and dots, and the automap's lines come with levels.
+4. **The camera is a centre and a zoom in pixels per meter**, the same
+   across and down, so pixels stay square and a larger window shows more
+   of the world. The extraction picks the zoom; 40 px/m fits the testbed's
+   8 m by 6 m room into the 320x240 shot exactly.
+5. **Colours are `LinearRgb`, without alpha.** Linear and scene-referred:
+   the scene holds values above 1, and rung 1b's clamp (plan decision 2)
+   makes 1 full intensity. The tone map writes alpha 1, so shots are opaque
+   (decision 3). Nits and EV100 exposure wait for lights (rung 2). The
+   clamp stays explicit although the 8-bit sRGB output would saturate
+   anyway: it matters once the curve or the output format changes.
+6. **Clipping, culling and `[E-SCENE]`.** Rectangles are clipped to the
+   image in f64 before rounding, so one far larger than the image keeps
+   its edges (unclipped, at 10^7 m the edge moved 5 pixels; the reviewer's
+   catch). Discs are not clipped. A shape that covers none of the image
+   is left out before upload, so it costs nothing and the counters show
+   what was drawn. A scene that cannot be drawn fails before any GPU work:
+   a value that is not finite, a rectangle inside out, a negative radius,
+   a zoom not above 0, a 0-pixel view, or a disc too large for f32 clip
+   space. The error names the shape's index.
+7. **The surface format is `Bgra8UnormSrgb`**, fixed. This differs from
+   spec 6.7, which blits into "the surface's preferred format, which is
+   often BGRA": wgpu 30 offers this one for windows on Metal, Vulkan (Mesa
+   included) and DX12, but nothing here has checked a real window, so T11
+   confirms it on each runner. The present blit samples the sRGB output
+   (decoding) and writes the sRGB surface (encoding); all 256 levels come
+   back as the same bytes on Metal and on lavapipe. T11 should set up the
+   window's surface in that format, or as `Bgra8Unorm` with an sRGB view
+   format, from the surface's capabilities, and fail with `[E-GPU]` where
+   neither exists. Rejected: copying the encoded bytes through non-sRGB
+   views, which needs extra views for the same result.
+8. **An offscreen surface stands in for a window's** until T11 opens one:
+   `Targets::with_offscreen_surface` adds a texture in the surface's
+   format that a surface graph draws into and `read_surface` reads back,
+   so the present pass is tested without a window. Like a swapchain image
+   it can be drawn into but not sampled. `Targets` holds it from when it
+   is built; a window gives a new image every frame, presented after the
+   submit and skipped while occluded (plan, "One frame"), so T11 will
+   pass the surface to `Graph::render` each frame. That is T11's API
+   change, not T9's: `shot` and `video` render offscreen.
+9. **Only the present blit draws into the surface.** Instanced pipelines
+   draw into the scene or the output, so shots, which read the output,
+   see everything a window shows.
+10. **One instance buffer per frame**, made and written by `Graph::render`
+    from every instanced draw's bytes in order, and one input bind group
+    per pass. Rung 2's megabuffers and pooling replace them. The bytes are
+    little-endian, WGSL's host-shareable layout.
+11. **The renderer picks the graph from the targets**: a surface means
+    `Graph::fixed(Surface)`, else `Offscreen`. `shot` and `video` (T9)
+    render offscreen; `play` (T11) presents.
+12. **Interpolation is the extraction's.** It has the previous and current
+    states and alpha; the renderer draws one scene. The plan's `shot` and
+    `video` use alpha 1, so they are exact.
+
+**Tests** (28 new in 6 files, plus 2 test shaders; T7's 21 unchanged):
+- eng-gpu `tests/counters.rs`, 7, on the adapter: clears count nothing; a
+  fullscreen draw binds its pipeline and input; five draws through
+  pipelines a, a, b, a, a switch three times and bind the input once; two
+  passes with the same pipeline each bind it; counters belong to one
+  frame; 7 instances in four instanced draws through a, a, b, a upload 224
+  bytes and switch three times; an empty instance list neither draws nor
+  switches, beside a draw that does.
+- eng-gpu `tests/instanced.rs`, 5: instances land where their attributes
+  say, in order (all three attribute types change the picture, each pixel
+  checked); each draw reads its own instances, within a pass and across
+  passes, and the frame uploads both passes' bytes; instance bytes must be
+  whole instances; a pipeline draws only into its target; a broken
+  shader, a layout the shader does not match, an empty layout and a
+  surface target are `[E-SHADER]`.
+- eng-gpu `tests/surface.rs`, 2: the present pass copies every sRGB level
+  (256 columns) into the offscreen surface, read back equal to the output;
+  targets without a surface refuse a surface graph and a surface readback
+  (`NoSurface`), and an offscreen graph renders into targets that have one.
+- eng-render `tests/scene.rs`, 7, no GPU, so they run in CI's test job:
+  shapes become quads with +X right and +Y up (values worked out by hand
+  on a 320x240 view at 30 px/m, exact in binary); the camera is subtracted
+  in f64 before rounding (at 10^9 m, where f32's step is 64 m); pixels stay
+  square on a narrower view; a rectangle far larger than the view keeps
+  its edge exactly; shapes outside the view, touching an edge or empty are
+  left out, and one crossing an edge is clipped; a camera or view that
+  shows nothing, and each kind of bad shape, is `[E-SCENE]` naming the
+  shape.
+- eng-render `tests/properties.rs`, 3 proptests, no GPU (added after the
+  review): on a 1/16 m grid with power-of-two zooms and sizes, where every
+  value is exact, the quads equal a model worked out in pixels, clipping
+  and culling included, and the scene moved up to 6.9e10 m away gives the
+  same quads; any finite scene gives finite quads in the shapes' order.
+  The generator puts shapes near the camera, a third of them empty, so
+  edges often fall exactly on the image's.
+- eng-render `tests/render.rs`, 4, on the adapter: the known scene (a grey
+  room, a red dot at 4.0, a green rectangle with red at -1.0 over the
+  room's corner, a dark blue background, a shape off the view, all 10^9 m
+  from the origin) reads back pixel for pixel as worked out by hand, on
+  the 320x240 shot; with a surface, output and surface both hold it;
+  counters are exact (offscreen 2 draws, 2 pipeline switches, 1 bind-group
+  switch, 96 bytes; with a surface 3, 3, 2, 96; nothing in view 1, 1, 1,
+  0); a scene that cannot be drawn renders nothing and leaves the last
+  frame in place.
+- Mutation checks, each reverted (`scratchpad/t8/scripts/mutate.py`): 41
+  planted bugs, 39 caught. Two needed stronger tests first: an empty
+  instance list recorded anyway, and culling at the image's exact edge,
+  which the first property generator missed. The two that survive change
+  nothing visible: the scene's alpha, which the tone map replaces with 1,
+  and the clamp, which the 8-bit output repeats (decision 5). Failing
+  mutants made proptest write a regression file in the scratch clone; it
+  was deleted, and none is in the patch.
+
+**Review** (the `reviewer` subagent, fresh context, read-only; 11 min,
+186k tokens, 37 tool calls): approve, no blockers. It ran `quick`, the
+lint job and the 45 GPU tests on Metal, re-derived every expected quad
+and the known scene's pixels by hand, and checked each counter against
+its wgpu call. Its should-fix points: this entry, with amendment 28's
+basis brought up to date (amendment 30); a property test for `quads`
+(added, `tests/properties.rs`); and T11's surface, which needs the
+surface each frame and a capability check (decisions 7 and 8, open
+question 1). Its nits, all taken: three doc comments said reports carry
+the counters, which is T9's; rectangles far larger than the view lost
+their edges in f32, now clipped first (decision 6); per-frame buffers
+and bind groups (decision 10); and the uploaded bytes of instances in
+two passes, now asserted.
+
+**Linux: lavapipe in Docker.** T7's images (`scratchpad/t7/docker/`,
+`docker-git/` and `docker-arm64/`), with `ENG_REQUIRE_GPU=1
+ENG_GPU_ADAPTER=llvmpipe`, on the final code:
+- Mesa 25.2.7 from gfx-rs/ci-build build26, the pinned version, emulated
+  x86_64 (`llvmpipe (LLVM 18.1.3, 256 bits)`, driver `Mesa 25.2.7`): the
+  whole workspace's tests, 306 of 306, eng-gpu's 35 and eng-render's 14
+  among them. The known scene and the 256 present levels come back byte
+  for byte as on Metal, so the golden test (T12) can expect them.
+- Debian 13's lavapipe natively on arm64 (Mesa 25.0.7, LLVM 19.1.7, 128
+  bits), as the arm64 runner will use: eng-gpu's and eng-render's 49.
+- `cargo check -p eng-gpu -p eng-render --all-targets` for
+  `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc`, in the arm64
+  container: clean. Nothing ran on Windows.
+
+**Checks** (aarch64-apple-darwin, in the scratch clone, on the final
+code):
+- `cargo xtask quick`: 7 of 7 (62 s on the first full run).
+- `CI=1 cargo xtask ci --job lint`: 7 of 7, cargo-deny and typos on the
+  repo's own configs.
+- `CI=1 cargo xtask ci --job test`: 9 of 9 (68 s), `shaders` included,
+  which checks the 5 new WGSL files.
+- `CI=1 cargo xtask ci --job wasm`: ok. `cargo xtask selftest`: 17 of 17.
+- `RUSTDOCFLAGS=-Dwarnings cargo doc -p eng-render --no-deps` (and
+  eng-gpu): clean. `cargo clippy --workspace --all-targets -- -D
+  warnings`: clean.
+- `cargo xtask replay`: hash streams match `crates/game-testbed/hashes/`,
+  no `--regen`.
+- eng-gpu's and eng-render's 49 tests on Metal with `ENG_REQUIRE_GPU=1`.
+- `Cargo.lock` gains only eng-render's two path dependencies; no
+  third-party crate is new.
+
+**The patches** (`scratchpad/t8/`):
+- `t8.patch`, the orchestrator's, nothing protected: 27 files, eng-gpu
+  and eng-render with their tests, `Cargo.lock` and
+  `docs/ARCHITECTURE.md`. Made with `git add -A` and `git diff --cached
+  --full-index df96332` in the work clone. On a fresh clone of the main
+  checkout at df96332 it passes `git apply --check`, applies, gives the
+  work clone's tree (the same `git write-tree`), and `cargo xtask quick`
+  passes there (7 of 7, 61 s).
+- `t8-oracles.patch`, optional, a G5 item for the owner (amendment 31):
+  `protected.toml` and `.github/CODEOWNERS`, one line each. On another
+  fresh clone, `t8.patch` then this one each pass `git apply --check` and
+  apply; then `cargo xtask docs-check` (CODEOWNERS covers protected.toml),
+  `quick` (7 of 7) and `selftest` (17 of 17) pass.
+- typos with the repo's `_typos.toml` on both patches and this entry:
+  clean. Scripts: `scratchpad/t8/scripts/` (`verify-t8-patch.sh`,
+  `make-t8-oracles.sh`, `test-oracles.sh`, `check-windows.sh`,
+  `mutate.py`).
+
+**Open questions**
+1. **The surface** (decisions 7 and 8): T11 meets real windows. It will
+   pass each frame's surface image to `Graph::render`, present after the
+   submit and skip occluded windows. If a runner's surface offers neither
+   `Bgra8UnormSrgb` nor `Bgra8Unorm`, the owner decides between failing
+   and another format with its own present pipeline, which would also
+   bring back spec 6.7's "preferred format".
+2. **The shapes** (decision 3) cover the testbed. T9's extraction may want
+   the room's walls as outlines; four thin rectangles do it today.
+3. **Protecting the counting test** (amendment 31) is optional and best
+   applied after T11, which may change `Graph::render`'s signature to take
+   a window's frame.
+4. **Per-frame buffers** (decision 10): four small copies and one buffer a
+   frame cost nothing at the testbed's sizes; T11's profiling may say
+   otherwise.
+
+**Costs and timings**
+- Session 17's T8 subagent, from about 16:30 to 17:50 EET: reading and
+  design to 16:50; eng-gpu's counters, instanced draws and offscreen
+  surface, test first, to 17:02; eng-render's scene and renderer to
+  17:10; docs and the checks to 17:14; the review to 17:25, with the
+  lavapipe and Windows runs alongside; its fixes, the property tests, the
+  patches and their tests after.
+- Reviewer subagent: 11 minutes, 186k tokens, 37 tool calls.
+- Builds: `quick` in the scratch clones 61 to 65 s cold (the seeded
+  `target/` made wgpu free), a few seconds warm. Docker (emulated
+  x86_64): eng-gpu's and eng-render's tests in 1 min 28 s to 1 min 39 s,
+  the whole workspace in 2 min 36 s cold and 45 s warm; arm64 natively in
+  36 s, plus 35 s for both Windows checks.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1
@@ -3562,3 +3819,29 @@ otherwise have to change; the owner applies it, or unlocks the path.
     and worked in scratch clones instead. Worktrees outside the checkout,
     or a guard rule that treats `.claude/worktrees/<name>/` as a checkout
     of its own, would let isolated agents work in place.
+
+30. **Amendment from session 17, T8** (to proposal 6 and amendment 28;
+    `budgets.toml [gpu]`, with T9). T8 gives the exact basis. A frame of
+    the top-down view costs, offscreen (`shot`, `video`), 2 draws, 2
+    pipeline switches, 1 bind-group switch and 32 bytes for each shape in
+    view; a window adds 1, 1 and 1 for the present blit. The testbed's
+    room and one dot are 64 bytes, and at the snapshot's limit of 10
+    players, 352. Proposal 6's 8 draws, 8 bind-group switches and 16,384
+    bytes leave room; its 4 pipeline switches leave one over the window's
+    3, so any second pipeline in the top-down pass would break it.
+    Suggested, about four times the window's frame: 12 draws, 12 pipeline
+    switches, 8 bind-group switches, and 2,048 bytes (four times the 10
+    players' 352, rounded up). Also (to
+    amendment 11): `.config/nextest.toml` needs no serial GPU group for
+    T8's tests, which pass in parallel threads on Metal and lavapipe.
+
+31. **Amendment from session 17, T8** (to proposal 8; optional, G5).
+    `docs/rungs/1b/patches/t8-oracles.patch`, on top of T8's commit:
+    protect `crates/eng-gpu/tests/counters.rs` in `protected.toml` and
+    `.github/CODEOWNERS`. Criterion 9 (`gpu-report-budgets`) holds the
+    counters against `budgets.toml [gpu]`; a weaker count would pass it
+    falsely, and this file pins how counting works with made-up passes,
+    whatever eng-render draws. No xtask step: criterion 9's check is the
+    native job's `gpu-budgets` (X2), and CI's test job has no GPU. Best
+    applied after T11 (open question 3); the patch itself only adds the
+    path.

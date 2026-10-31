@@ -1,0 +1,43 @@
+Patch T8 oracles (rung 1b, task T8; gate G5, optional): protect eng-gpu's
+counting test.
+
+- crates/eng-gpu/tests/counters.rs joins protected.toml and
+  .github/CODEOWNERS (proposal 8, amendment 31). Criterion 9
+  `gpu-report-budgets` holds the per-frame counters against
+  budgets.toml [gpu]; this file pins how eng-gpu counts draws, pipeline
+  and bind-group switches and uploaded bytes, with passes made up for the
+  test, whatever eng-render draws.
+- No xtask step: criterion 9's check is the native job's `gpu-budgets`
+  step (X2), and CI's test job has no GPU, where the file's tests skip.
+
+Base: main at df96332 with t8.patch applied, which adds the test file.
+Best applied after T11, which may change `Graph::render` to take a
+window's frame each frame. At the repo root, run `git apply` with this
+file, then `cargo xtask quick`. Session 17's T8 entry in PROGRESS.md says
+how it was tested.
+Text before the first `diff --git` line is ignored by `git apply`.
+
+diff --git a/.github/CODEOWNERS b/.github/CODEOWNERS
+index e665280b86ba69e23ef0cbdb2b7da0280bdbfc17..b8025d5b173195f46cc1d7821d2b8f15475d925f 100644
+--- a/.github/CODEOWNERS
++++ b/.github/CODEOWNERS
+@@ -16,6 +16,7 @@
+ /crates/eng-net-wire/tests/never_panic.rs @ChristianGhe
+ /crates/eng-session/tests/hash_equality.rs @ChristianGhe
+ /crates/eng-gpu/tests/shaders.rs @ChristianGhe
++/crates/eng-gpu/tests/counters.rs @ChristianGhe
+ /crates/game-testbed/scenarios/scenarios.toml @ChristianGhe
+ /crates/*/tests/golden.rs @ChristianGhe
+ **/golden/ @ChristianGhe
+diff --git a/protected.toml b/protected.toml
+index f4a63c753c564deeb8e81fee640809eb57549dc0..a20bf03d94bb82a83126f8f2d410ea56a466121e 100644
+--- a/protected.toml
++++ b/protected.toml
+@@ -28,6 +28,7 @@ paths = [
+   "crates/eng-net-wire/tests/never_panic.rs",
+   "crates/eng-session/tests/hash_equality.rs",
+   "crates/eng-gpu/tests/shaders.rs",
++  "crates/eng-gpu/tests/counters.rs",
+   "crates/game-testbed/scenarios/scenarios.toml",
+   "crates/*/tests/golden.rs",
+   "**/golden/**",

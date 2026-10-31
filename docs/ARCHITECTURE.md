@@ -14,7 +14,7 @@ L1  eng-ecs  eng-net-transport  eng-net-wire                   (core set)
     eng-platform-api  eng-platform-winit*                      (std)
 L2  eng-sim  eng-collision-api  kit-fps  game-testbed-sim      (core set)
     eng-session                                                (core set)
-L3  eng-gpu  eng-render*                                       (std)
+L3  eng-gpu  eng-render                                        (std)
 L4  eng-cli  eng-app*                                          (std)
 game  game-testbed (binary)        tool  xtask
 ```
@@ -210,16 +210,17 @@ then `Commands` up and a `Snapshot` down every tick.
 ## The GPU layer
 
 `eng-gpu` (spec 6.7) is the only crate that imports wgpu, and no wgpu type
-appears in its API. Nothing calls it yet; `eng-render` will (rung 1b, T8).
-GPU work never feeds back into the simulation. The crate docs have the
-details.
+appears in its API. `eng-render` builds rung 1b's passes on it (next
+section). GPU work never feeds back into the simulation. The crate docs
+have the details.
 
 ```
 Gpu::new(GpuOptions) ──adapter──▶ a Tier 0 device, and its GpuReport
 Graph::fixed(Offscreen):
   draw ──▶ scene (Rgba16Float, linear) ──tonemap──▶ output (Rgba8UnormSrgb)
                                     output ──Targets::read_output──▶ Image (RGBA8)
-Graph::fixed(Surface) adds present: output ──▶ surface (T8, T11)
+Graph::fixed(Surface) adds present: output ──▶ surface (Bgra8UnormSrgb)
+Graph::render ──▶ FrameCounters (draws, switches, uploaded bytes)
 ```
 
 - **Tier 0.** The device asks for WebGPU's default features and limits,
@@ -241,13 +242,31 @@ Graph::fixed(Surface) adds present: output ──▶ surface (T8, T11)
   pass writes exactly one resource, that the output is written but never as
   the surface, and that only a surface graph uses the surface.
   `Graph::render` takes one `Pass` per declaration, in order. Each records
-  into a `PassRecorder`: a clear, then fullscreen draws. Every recording is
-  checked against its declaration before the frame is encoded and
+  into a `PassRecorder`: a clear, then fullscreen and instanced draws.
+  Every recording is checked against its declaration before the frame's
+  instances are uploaded, in one buffer, and the frame is encoded and
   submitted.
 - **Fullscreen passes.** eng-gpu owns the vertex stage
   (`src/fullscreen.wgsl`, one triangle over the target). The caller writes
   the fragment stage, which gets `uv` and may bind the pass's one read as
   `input`, with a sampler that takes the nearest texel.
+- **Instanced draws.** An `InstancedPipeline` draws a triangle strip per
+  instance, into the scene or the output, never the surface. Its vertex
+  stage reads each instance's `Attribute`s (`f32x2`, `f32x3`, `u32`,
+  packed, little-endian) from bytes the pass records.
+- **Counters.** `Graph::render` returns the frame's `FrameCounters` (spec
+  6.13): draws, pipeline switches, bind-group switches and uploaded bytes,
+  counted from the commands it encodes, so they are exact and the same on
+  every adapter. A pass binds a pipeline only when a draw needs another,
+  and its input once; nothing stays bound from one pass to the next.
+- **The surface.** Its format is fixed, `Bgra8UnormSrgb`, rather than the
+  surface's preferred one (spec 6.7): wgpu 30 offers it for windows on
+  Metal, Vulkan and DX12, and the present blit then reproduces the
+  output's bytes. `Targets::with_offscreen_surface` adds a texture in that
+  format standing in for a window's, so a surface graph renders whole
+  offscreen and `Targets::read_surface` reads it back in RGBA order. A
+  window's surface (T11) gives a new image every frame, so `Graph::render`
+  will take it per frame then.
 - **Errors.** wgpu's errors, validation included, are caught around each
   call that returns a `Result` and come back as `GpuError` (`[E-GPU]`,
   `[E-SHADER]`, `[E-GRAPH]`). Any other one panics, so validation errors
@@ -257,8 +276,51 @@ Graph::fixed(Surface) adds present: output ──▶ surface (T8, T11)
   shader model 5.1, the lowest each backend runs at. Every shader is
   therefore a `.wgsl` file, loaded with `include_str!`; WGSL inline in Rust
   would escape the check.
-- Not built yet: the surface and the present pass (T8, T11), and the
-  per-frame counters (T8).
+- Not built yet: a window's surface (T11).
+
+## The frame
+
+`eng-render` (spec 6.7, 6.13) draws rung 1b's top-down view, the one kept
+later as the automap and debug view, through eng-gpu's fixed graph.
+Nothing calls it yet: `shot` and `video` will (T9), and `play`'s window
+(T11). It reads only the scene a game's extraction hands it, never the
+simulation, and nothing flows back.
+
+```
+game extraction (T9) ──▶ TopDownScene: camera, background, shapes (WorldPos, f64)
+     TopDownScene::quads: camera subtracted in f64, then clip space, then f32
+Renderer::render:
+  draw     top_down.wgsl  background, then every quad in one instanced draw ──▶ scene
+  tonemap  tonemap.wgsl   clamp to [0, 1], alpha 1 ──▶ output (shot, video, goldens)
+  present  present.wgsl   output, texel for texel ──▶ surface (targets with one)
+  ──▶ FrameCounters
+```
+
+- **The view** looks straight down: +X to the right of the image, +Y up
+  it, heights ignored. `TopDownCamera` gives the world point at the
+  image's centre and the zoom in pixels per meter, the same across and
+  down. Shapes are rectangles (`min`, `max`) and discs, drawn in order.
+- **Precision.** Each position is subtracted from the camera's in f64 and
+  scaled to clip space before rounding to f32, so a world 10^9 m from its
+  origin draws as well as one at it (AGENTS.md conventions). Rectangles
+  are clipped to the image in f64 first, so one far larger than the image
+  keeps its edges.
+- **Colour.** Shape and background colours are `LinearRgb`, linear and
+  scene-referred; the scene holds values above 1. Rung 1b's tone map
+  clamps each channel to [0, 1] (plan decision 2), and the output's sRGB
+  format encodes it, so 1 shows as full intensity. Light in nits and EV100
+  exposure arrive with lights and the tone-mapping curve in rung 2.
+- **Interpolation** is the extraction's: it builds the scene from the
+  previous and current states at the frame's alpha. `shot` and `video` use
+  alpha 1 at a tick, so they are exact.
+- **Culling and checks.** A shape that covers none of the image is left
+  out, so it costs nothing to upload. A scene that cannot be drawn (a
+  value that is not finite, a rectangle inside out, a zoom that is not
+  above 0) fails with `[E-SCENE]` before any GPU work.
+- **Cost.** Offscreen a frame is 2 draws, 2 pipeline switches, 1
+  bind-group switch and 32 bytes per shape in view; presenting adds 1, 1
+  and 1. With nothing in view the top-down draw is skipped. From T9,
+  reports carry the counters and `budgets.toml [gpu]` holds them.
 
 ## Invariants
 

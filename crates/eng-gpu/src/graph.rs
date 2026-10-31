@@ -13,8 +13,9 @@ pub enum Resource {
     /// engine-owned texture, never the surface: screenshots and golden tests
     /// read it (spec 6.7).
     Output,
-    /// The window's swapchain image, in the surface's preferred format. Only
-    /// a [`Target::Surface`] graph has one.
+    /// The window's swapchain image, or an offscreen texture standing in for
+    /// it ([`crate::Targets::with_offscreen_surface`]), in `Bgra8UnormSrgb`.
+    /// Only a [`Target::Surface`] graph has one.
     Surface,
 }
 
@@ -40,7 +41,7 @@ pub struct PassDecl {
     pub writes: &'static [Resource],
 }
 
-/// Draws the scene. In 1b eng-render's top-down pass goes here (task T8).
+/// Draws the scene. In 1b it is eng-render's top-down pass.
 pub const DRAW: PassDecl = PassDecl {
     name: "draw",
     reads: &[],

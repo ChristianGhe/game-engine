@@ -992,7 +992,15 @@ With nothing sold, Steam's AI-disclosure rules and the sales risk of visible AI 
   - Ray-traced global illumination and shadows, with a software fallback.
   - Neural upscaling and denoising, and HDR output.
   - Native GPU backends where wgpu falls short.
-- **Every level** starts with an upgrade rung (toolchain and floor majors). It revisits platforms toward the owner's "all the main platforms": consoles, mobile and web. It finishes at least one game.
+- **Every level** starts with an upgrade rung (toolchain and floor majors). It revisits platforms toward the owner's "all the main platforms": consoles, mobile and web, and the parked "open OASIS" idea below. It finishes at least one game.
+- **Parked: an open "OASIS"** (owner, 2026-10-31: "park the idea with the mention that we should revisit later").
+  - The idea, in the owner's words: the engine as "the place where all humankind goes into virtual", like the OASIS in *Ready Player One* (the book), so "we need to be as compatible as possible".
+  - It changes nothing in Level 1. It comes back at each level start, with the platform review, until the owner decides it.
+  - Starting points for that discussion (Claude's call, nothing decided):
+    - A far goal, not the next step: a game still drives every rung (anti-goal: "an engine with no game").
+    - "Compatible" means open standards at the edges (glTF models, VRM avatars, OpenXR headsets, WebAssembly for other people's content, WebGPU-core graphics), plus our network protocol and world format published as specs, so other software can join without our code.
+    - Many hosts and one open protocol, like the web, rather than a central server: nothing is sold (G2), so nobody pays for one.
+    - Consoles stay out of reach while their SDKs are under NDA.
 
 ---
 

@@ -239,3 +239,10 @@ A second fresh-context `reviewer` pass confirmed the first round's fixes
   macOS user for agents (P7) is the real fix.
 - Built and tested in a scratch clone; the owner applies it as one patch,
   so the guard stays closed throughout.
+
+## 2026-10-31, owner idea parked
+
+- The owner floated an open "OASIS" for the engine (Ready Player One, the
+  book; "as compatible as possible") and asked to park it and revisit
+  later. Recorded in the spec, section 12; it comes back at each level
+  start. No code or rung change.

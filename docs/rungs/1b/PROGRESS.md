@@ -2906,6 +2906,33 @@ this entry.
   built in 2 min 13 s, the workspace's in 1 min 24 s more; arm64 natively
   in 1 min 28 s.
 
+## 2026-10-31, session 17 (continued): wrap-up while the owner is away (Claude Opus 5.5)
+
+- Commits on `main` since the owner pushed 13fcdaa, none of them pushed:
+  75e444f (ADR-0016), e2ccc83 (T6), 08bc6c2 (the G3 patch), 31c3a8c (T3),
+  2b95993 (T7 as patches) and this one.
+- The owner's return sequence, tested end to end on a fresh clone of
+  2b95993:
+  1. The owner applies `g3-crate-batch-2.patch` and `t7-libm.patch`, and
+     an agent applies `t7-eng-gpu.patch`. Then `cargo xtask quick` (7 of
+     7), `CI=1 cargo xtask ci --job lint` (7 of 7, with cargo-deny and
+     typos on the patched configs), the wasm job, selftest (17 of 17) and
+     eng-gpu's 21 tests on Metal all pass. G3 is one commit; T7 with its
+     libm pin is the next.
+  2. G5, at any time: `t6-oracles.patch`, then `t7-oracles.patch`. `ci
+     --job test` then runs 9 of 9 steps, `wire-session` and `shaders`
+     included, and quick stays green.
+  3. Then the owner pushes.
+- T7's agent worktree sat under `.claude/worktrees/`, where the guard
+  refuses writes, so it was never used. It has been removed with its
+  branch. Scratch clones did the job.
+- The owner approved T6, T3 and T7 for this window. Next in the plan's
+  order: T10 (needs T3, done) and T8 (needs T7 landed), then T9.
+- Costs (approximate, subagents): T3 about 75 minutes over two rounds,
+  608k tokens; its review 13 minutes, 203k tokens; T7 about 112 minutes
+  over two rounds, 763k tokens. With the ADR, the G3 patch, T6 and its
+  review (above), about 2.9M subagent tokens from 12:40 to 16:05 EET.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1

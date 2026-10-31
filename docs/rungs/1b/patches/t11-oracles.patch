@@ -8,9 +8,10 @@ and Esc tests, and add `play` to the crash harness.
   stream) join protected.toml and .github/CODEOWNERS (amendment 45).
 - crates/game-testbed/tests/crash_json.rs gains its `play` half
   (criterion 6): `play --ticks 5 --seed 7 --panic-at-tick 3` in a window
-  exits 12 and writes every field. It skips without a display or an
-  adapter unless ENG_REQUIRE_DISPLAY=1 or ENG_REQUIRE_GPU=1. The `run`
-  half is unchanged in substance, moved into a shared `check_crash`.
+  exits 12 and writes every field. It skips without a display unless
+  ENG_REQUIRE_DISPLAY=1, and without an adapter unless ENG_REQUIRE_GPU=1,
+  so the native jobs set both. The `run` half is unchanged in
+  substance, moved into a shared `check_crash`.
 - No xtask step: the native jobs' `tests` run all three files; amendment
   46 gives the native job's `window`, `esc` and `crash-json` commands.
 
@@ -41,9 +42,9 @@ index 555a4486c139c29d042edbcae8d6eff87ac8b884..b187a287df7245beffbcbbeac15e02ca
  //! `crash.json` from the panic hook (rung 1b, spec 9.2 done-when 4 and
  //! 6.13), run against the real binary: a panic writes every field and
 -//! exits 12.
-+//! exits 12, in `run` and in the window of `play`. `play` needs a display
-+//! and a GPU adapter: without them it skips, unless `ENG_REQUIRE_DISPLAY=1`
-+//! or `ENG_REQUIRE_GPU=1` (the native jobs of CI) makes it fail.
++//! exits 12, in `run` and in the window of `play`. `play` skips without a
++//! display unless `ENG_REQUIRE_DISPLAY=1`, and without a GPU adapter unless
++//! `ENG_REQUIRE_GPU=1`; CI's native jobs set both, so it cannot skip there.
  
  use std::path::{Path, PathBuf};
  use std::process::{Command, Output};

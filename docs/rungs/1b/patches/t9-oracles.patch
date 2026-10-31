@@ -1,3 +1,23 @@
+Patch T9 oracles (rung 1b, task T9; gate G5): the per-frame GPU budgets,
+and protection for the shot and video tests.
+
+- budgets.toml gains a [gpu] table (amendments 30 and 40): at most 12
+  draws, 12 pipeline switches, 8 bind-group switches and 2,048 uploaded
+  bytes per frame, about four times what the testbed's top-down view
+  needs. `shot` and `video` hold every frame they render to it with
+  `--budgets` (exit 13, [E-BUDGET]): criterion 9 `gpu-report-budgets`.
+- crates/game-testbed/tests/shot_video.rs joins protected.toml and
+  .github/CODEOWNERS (amendment 41, optional).
+- No xtask step: criterion 9's check is the native job's `gpu-budgets`
+  step (amendment 42).
+
+Base: main with T9's commit (14ca032). Its lines sit right after
+version.rs's, so it applies before or after the other queued oracle
+patches. At the repo root, run `git apply` with this file, then
+`cargo xtask quick`. Session 17's T9 entry in PROGRESS.md says how it was
+tested.
+Text before the first `diff --git` line is ignored by `git apply`.
+
 diff --git a/.github/CODEOWNERS b/.github/CODEOWNERS
 index e665280b86ba69e23ef0cbdb2b7da0280bdbfc17..5c61caa1076ead6916c9ef7ca3801ebea982ef12 100644
 --- a/.github/CODEOWNERS

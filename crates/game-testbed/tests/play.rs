@@ -176,10 +176,13 @@ fn escape_from_the_keyboard_quits_within_5_seconds() {
         .spawn()
         .unwrap();
     // The window shows once the GPU is open; a `play` that exits first (no
-    // adapter) never shows it.
+    // adapter) never shows it. It is found by the child's PID (winit sets
+    // `_NET_WM_PID`), not by its title: the windowed hash-stream test runs
+    // at the same time with the same title.
+    let pid = child.id().to_string();
     let deadline = Instant::now() + Duration::from_secs(30);
     let window = loop {
-        let found = xdotool(&["search", "--onlyvisible", "--name", "game-testbed"]);
+        let found = xdotool(&["search", "--onlyvisible", "--pid", &pid]);
         if let Some(id) = found.and_then(|ids| ids.lines().next().map(str::to_string)) {
             break Some(id);
         }
@@ -194,7 +197,7 @@ fn escape_from_the_keyboard_quits_within_5_seconds() {
         if skipped(&out) {
             return;
         }
-        panic!("no window titled game-testbed within 30 s: {}", text(&out));
+        panic!("no window of process {pid} within 30 s: {}", text(&out));
     };
     let focused = xdotool(&["windowfocus", "--sync", &window]).is_some();
     let sent = Instant::now();

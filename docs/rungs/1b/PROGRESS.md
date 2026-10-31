@@ -5338,8 +5338,9 @@ otherwise have to change; the owner applies it, or unlocks the path.
     (criterion 6):
     `play --ticks 5 --seed 7 --panic-at-tick 3` in a window exits 12 with
     every field, the panic in `play.rs` and `eng_app::` frames in its
-    backtrace; it skips without a display or an adapter unless
-    `ENG_REQUIRE_DISPLAY=1` or `ENG_REQUIRE_GPU=1`. The run half is
+    backtrace; it skips without a display unless
+    `ENG_REQUIRE_DISPLAY=1`, and without an adapter unless
+    `ENG_REQUIRE_GPU=1`, so the native jobs set both. The run half is
     unchanged in substance, moved into a shared `check_crash`. The new
     lines sit right after `known_answers.rs`'s, so the patch applies in
     any order with the queued oracle patches that add lines after
@@ -5358,11 +5359,13 @@ otherwise have to change; the owner applies it, or unlocks the path.
       the report's `gpu.frames` and `dropped_ticks`.
     - `esc` (criterion 3, ubuntu-24.04): start `game-testbed play --report
       target/ci/esc.json` in the background; `xdotool search --sync
-      --onlyvisible --name game-testbed`; `xdotool windowfocus --sync <id>`;
-      `xdotool key Escape`; the process exits 0 within 5 s. The window's
-      title is the game's name. `play.rs`'s Esc test does exactly this
-      where X11 and xdotool are, so the step may simply be that test with
-      the variables set.
+      --onlyvisible --pid $!` (winit sets `_NET_WM_PID`); `xdotool
+      windowfocus --sync <id>`; `xdotool key Escape`; the process exits 0
+      within 5 s. `play.rs`'s Esc test does exactly this where X11 and
+      xdotool are, so the step may simply be that test with the variables
+      set. (The orchestrator changed both from `--name game-testbed` after
+      the integration review: the windowed hash-stream test runs at the
+      same time with the same title, and Escape could reach its window.)
     - `crash-json` (criterion 6): `cargo test -p game-testbed --test
       crash_json` with both variables set, so `play`'s half cannot skip.
 47. **Amendment from session 17, T11** (to amendment 39 and the platform
@@ -5458,3 +5461,31 @@ otherwise have to change; the owner applies it, or unlocks the path.
     as pixels; the FLIP limits are three (amendment 56); and
     `ENG_SHOT_MODE` and `ENG_GOLDEN_DIR` join `ENG_GPU_ADAPTER` and
     `ENG_REQUIRE_GPU` in decision 4's list.
+
+61. **Amendment from session 17, the orchestrator** (to proposal 8, the G5
+    rows and T13). Four points from a fresh reviewer's pass over T11 and
+    T12 together (0b8196d, 710cf94) and over the six queued oracle
+    patches:
+    - Apply `t10-oracles.patch` with `t11-oracles.patch`. The one command
+      in the wrap-up below applies all six. `play.rs` and the winit
+      harness decide between failing and skipping through
+      `eng_platform_winit::display_required()`, which lives in
+      unprotected source, and only t10's harness pins its behaviour.
+    - With `ENG_SHOT_MODE=exact`, a runner whose configuration has
+      drifted panics before `judge()` runs. By then the harness has
+      emptied `golden-candidates/`, so the artifact holds no candidates
+      and no `shots.json`, though the log does name the configuration it
+      found. If the owner wants the artifact anyway, T13 can save the
+      candidates and `shots.json` before that check. That is a change to
+      `shots.rs`, which becomes the owner's at G5.
+    - `crates/game-testbed/hashes/dot-square.seed1.txt` and
+      `crates/game-testbed/scenarios/dot-square.input.toml` are not
+      protected, and the plan does not ask for it. Criteria 2, 4, 5 and 7
+      depend on them, so one commit that regenerates both would move
+      those criteria's reference. Only review keeps them from being
+      regenerated in 1b: the commit must say why (AGENTS.md). The owner
+      may want the input script protected.
+    - The plan's G5 row for `.claude/**` names the `golden-update` skill
+      and the advisory `visual-qa` subagent (spec 7.5). No task builds
+      them and no patch adds them, yet T16 needs them. Proposal: T13 or
+      T16 drafts both as a patch for the owner, as with X1 to X7.

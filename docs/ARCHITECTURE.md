@@ -132,8 +132,11 @@ messages and their layouts.
    no std transcendentals, no `HashMap` iteration.
 3. State is always finite.
 4. A system's order depends only on stages, `before`/`after` and names.
-5. Third-party types never appear in an engine crate's public API (serde
-   derives on authored-data types are the one exception).
+5. Third-party types never appear in an engine crate's public API. There
+   are two exceptions: serde derives on authored-data types, and
+   `raw-window-handle`'s `HasWindowHandle` and `HasDisplayHandle` between
+   `eng-platform-api`, `eng-platform-winit`, `eng-gpu` and `eng-app`
+   (ADR-0016).
 
 ## Oracles
 

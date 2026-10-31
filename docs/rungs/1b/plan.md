@@ -3,7 +3,9 @@
 > **APPROVED BY THE OWNER, 2026-10-31** (gates G1 and G2), as drafted:
 > the acceptance criteria, the time-box and the AI budget (touchpoint 2,
 > spec 2.2), and the seven-crate layout. `docs/rungs/1b/acceptance.json`
-> holds the criteria and `docs/rungs/current.txt` says `1b`. G3 to G7 are
+> holds the criteria and `docs/rungs/current.txt` says `1b`. The owner
+> approved G3 and G4 the same day: G3's `deny.toml` and `_typos.toml`
+> change goes to the owner as a patch, and G4 is ADR-0016. G5 to G7 are
 > still the owner's; every other proposal below stands until the owner
 > changes it.
 

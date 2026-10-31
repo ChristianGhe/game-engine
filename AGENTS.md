@@ -80,8 +80,10 @@ until their tasks in `docs/rungs/1b/plan.md`.
 - A new crate goes in `crates/<name>/` and must be listed in
   `architecture.toml` (protected: ask the owner). Follow "Adding a crate"
   in `docs/ARCHITECTURE.md`.
-- Third-party types never appear in our public APIs. `serde` derives on
-  authored-data types are the one exception.
+- Third-party types never appear in our public APIs. Two exceptions:
+  `serde` derives on authored-data types, and `raw-window-handle`'s
+  `HasWindowHandle` and `HasDisplayHandle` between `eng-platform-api`,
+  `eng-platform-winit`, `eng-gpu` and `eng-app` (ADR-0016).
 - New third-party crates need the owner's approval (`deny.toml` allow-list).
   Updating the lock for crates already allowed is fine.
 - Files over 500 lines warn and over 1,000 fail: split them.

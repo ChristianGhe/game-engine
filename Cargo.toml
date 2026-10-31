@@ -34,7 +34,9 @@ eng-render = { path = "crates/eng-render" }
 eng-app = { path = "crates/eng-app" }
 
 # Third-party crates. New entries need the owner's approval (deny.toml allow-list).
-libm = { version = "=0.2.16", default-features = false }
+# `force-soft-floats` keeps libm's `arch` code off even when another crate
+# turns the feature on, as wgpu's naga does (architecture.toml).
+libm = { version = "=0.2.16", default-features = false, features = ["force-soft-floats"] }
 proc-macro2 = "1.0.107"
 quote = "1.0.47"
 syn = "3.0.9"
@@ -45,6 +47,11 @@ proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 # The window seam (ADR-0016): only eng-platform-api, eng-platform-winit,
 # eng-gpu and eng-app may depend on it (gate G3's wrapper ban).
 raw-window-handle = "=0.6.2"
+# Batch 2 (rung 1b). wgpu only in eng-gpu ([floor] in architecture.toml), with
+# plan decision 5's features. naga is wgpu's own shader compiler, at wgpu's
+# version; eng-gpu's shader test uses its WGSL front end and three back ends.
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "dx12", "metal", "vulkan", "wgsl"] }
+naga = { version = "=30.0.1", features = ["wgsl-in", "spv-out", "msl-out", "hlsl-out"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

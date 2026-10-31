@@ -46,7 +46,8 @@ seed, tick, last log lines).
 The simulation must give bit-identical results on every OS and CPU.
 
 - Core crates are `#![no_std]` and `#![forbid(unsafe_code)]`. Their only
-  third-party dependency is `libm` (pinned `=0.2.16`, `arch` off).
+  third-party dependency is `libm` (pinned `=0.2.16`; `force-soft-floats`
+  keeps its `arch` code off).
 - Math comes from `eng-math` only: `eng_math::{sqrt, sin, min, max, clamp, ...}`.
   Never std float functions, `mul_add`, `algebraic_*`, `to_radians`, or
   approximate SIMD reciprocals. Clippy denies them (`clippy.toml`).

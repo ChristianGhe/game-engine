@@ -14,7 +14,7 @@ L1  eng-ecs  eng-net-transport  eng-net-wire                   (core set)
     eng-platform-api  eng-platform-winit*                      (std)
 L2  eng-sim  eng-collision-api  kit-fps  game-testbed-sim      (core set)
     eng-session                                                (core set)
-L3  eng-gpu*  eng-render*                                      (std)
+L3  eng-gpu  eng-render*                                       (std)
 L4  eng-cli  eng-app*                                          (std)
 game  game-testbed (binary)        tool  xtask
 ```
@@ -27,7 +27,9 @@ A crate depends only on lower layers, or on same-layer crates declared in
 plus the network codec, transport and session loops: `#![no_std]`, `#![forbid(unsafe_code)]`, only `libm` as a third-party
 dependency (plus `eng-derive`'s build-time `syn`/`quote`), overflow checks
 in release. `cargo xtask arch-check` enforces all of it over the transitive
-dependency closure. The core set also builds for `wasm32-unknown-unknown`
+dependency closure. eng-math gives libm `force-soft-floats`, so libm's `arch`
+code stays off even in builds where wgpu's shader compiler turns the
+feature on. The core set also builds for `wasm32-unknown-unknown`
 and is tested on RISC-V under QEMU.
 
 L3 starts in rung 1b with GPU and render; audio and UI come later.
@@ -205,13 +207,67 @@ then `Commands` up and a `Snapshot` down every tick.
   bytes a peer should not have sent instead of failing; the one error from
   the network is a snapshot the client's sim refuses.
 
+## The GPU layer
+
+`eng-gpu` (spec 6.7) is the only crate that imports wgpu, and no wgpu type
+appears in its API. Nothing calls it yet; `eng-render` will (rung 1b, T8).
+GPU work never feeds back into the simulation. The crate docs have the
+details.
+
+```
+Gpu::new(GpuOptions) ──adapter──▶ a Tier 0 device, and its GpuReport
+Graph::fixed(Offscreen):
+  draw ──▶ scene (Rgba16Float, linear) ──tonemap──▶ output (Rgba8UnormSrgb)
+                                    output ──Targets::read_output──▶ Image (RGBA8)
+Graph::fixed(Surface) adds present: output ──▶ surface (T8, T11)
+```
+
+- **Tier 0.** The device asks for WebGPU's default features and limits,
+  whatever the adapter supports. `GpuReport` records the adapter, backend,
+  device type, driver and tier, and what the adapter could do beyond Tier 0
+  (timestamp queries, binding arrays, indirect counts, ray queries, mesh
+  shaders).
+- **Adapters.** `ENG_GPU_ADAPTER` picks the first adapter whose name
+  contains it, ignoring case; otherwise wgpu chooses, software last. With
+  no adapter `Gpu::new` fails with `[E-NO-ADAPTER]`, and GPU tests skip
+  unless `ENG_REQUIRE_GPU=1` (CI) makes them fail. Each OS has one
+  backend, so machines agree: Metal on macOS, Vulkan on Linux, and DX12 on
+  Windows, which compiles shaders with FXC, part of Windows.
+- **Flags.** Debug builds use wgpu's release flags, as the game does;
+  `WGPU_DEBUG=1` and `WGPU_VALIDATION=1` add debug labels and the
+  backend's validation layer when debugging.
+- **The graph.** Passes declare what they read and write (`PassDecl`).
+  `Graph::new` checks that each read was written by an earlier pass, that a
+  pass writes exactly one resource, that the output is written but never as
+  the surface, and that only a surface graph uses the surface.
+  `Graph::render` takes one `Pass` per declaration, in order. Each records
+  into a `PassRecorder`: a clear, then fullscreen draws. Every recording is
+  checked against its declaration before the frame is encoded and
+  submitted.
+- **Fullscreen passes.** eng-gpu owns the vertex stage
+  (`src/fullscreen.wgsl`, one triangle over the target). The caller writes
+  the fragment stage, which gets `uv` and may bind the pass's one read as
+  `input`, with a sampler that takes the nearest texel.
+- **Errors.** wgpu's errors, validation included, are caught around each
+  call that returns a `Result` and come back as `GpuError` (`[E-GPU]`,
+  `[E-SHADER]`, `[E-GRAPH]`). Any other one panics, so validation errors
+  are fatal in tests.
+- **Shaders.** `tests/shaders.rs` validates every WGSL file in the repo at
+  Tier 0 with naga and translates it to SPIR-V 1.0, MSL 2.1 and HLSL
+  shader model 5.1, the lowest each backend runs at. Every shader is
+  therefore a `.wgsl` file, loaded with `include_str!`; WGSL inline in Rust
+  would escape the check.
+- Not built yet: the surface and the present pass (T8, T11), and the
+  per-frame counters (T8).
+
 ## Invariants
 
 1. The simulation is a pure function of the initial state and the commands.
    Nothing in the core set reads a clock, a file, the OS or unseeded randomness.
 2. Results are bit-identical on every target. Floats use only IEEE basic
-   operations and `eng-math` (pure-Rust `libm`, pinned, `arch` off); no FMA,
-   no std transcendentals, no `HashMap` iteration.
+   operations and `eng-math` (pure-Rust `libm`, pinned, its `arch` code off
+   by `force-soft-floats`); no FMA, no std transcendentals, no `HashMap`
+   iteration.
 3. State is always finite.
 4. A system's order depends only on stages, `before`/`after` and names.
 5. Third-party types never appear in an engine crate's public API. There

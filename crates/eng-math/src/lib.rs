@@ -1,8 +1,9 @@
 //! The only math the simulation may use (spec 6.4).
 //!
 //! - Only IEEE basic operations plus the functions here, which wrap the
-//!   pure-Rust `libm` pinned to `=0.2.16` with its `arch` feature off, so
-//!   every target runs the same code.
+//!   pure-Rust `libm` pinned to `=0.2.16`, whose `arch` code stays off
+//!   (`force-soft-floats`, even where another crate turns the feature on),
+//!   so every target runs the same code.
 //! - [`min`], [`max`] and [`clamp`] replace std's, which may return either
 //!   signed zero.
 //! - Never `mul_add`, `algebraic_*` or approximate reciprocals (clippy bans).

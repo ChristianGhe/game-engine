@@ -13,8 +13,12 @@ allowed_patches = []
 # Third-party crates the core set may reach, transitively, pinned to an exact
 # version from crates.io and an exact feature set. eng-derive is a
 # proc-macro: its syn/quote/proc-macro2 dependencies are build-time only.
+# libm's set is the workspace's: wgpu's shader compiler, naga, turns on
+# libm's default `arch` feature (through half and num-traits), and eng-math's
+# `force-soft-floats` switches its code back off. The core set's math is then
+# the same in every build, with or without eng-gpu (rung 1b, T7).
 [core_third_party]
-libm = { version = "0.2.16", features = [] }
+libm = { version = "0.2.16", features = ["arch", "default", "force-soft-floats"] }
 
 # Floor crates and the single engine crate allowed to depend on each.
 [floor]

@@ -58,6 +58,7 @@ dependencies = [
  "eng-input",
  "eng-math",
  "eng-net-transport",
+ "eng-platform-api",
  "eng-platform-headless",
  "eng-schema-core",
  "eng-schema-json",
@@ -109,6 +110,7 @@ name = "eng-input"
 version = "0.1.0"
 dependencies = [
  "eng-core",
+ "eng-platform-api",
  "eng-schema-core",
  "eng-schema-json",
  "proptest",
@@ -140,10 +142,17 @@ dependencies = [
 [[package]]
 name = "eng-platform-api"
 version = "0.1.0"
+dependencies = [
+ "raw-window-handle",
+]
 
 [[package]]
 name = "eng-platform-headless"
 version = "0.1.0"
+dependencies = [
+ "eng-platform-api",
+ "proptest",
+]
 
 [[package]]
 name = "eng-platform-winit"
@@ -362,6 +371,12 @@ checksum = "60aa6af80be32871323012e02e6e65f8a7cc7890931ae421d217ad8fe0df2ccf"
 dependencies = [
  "rand_core",
 ]
+
+[[package]]
+name = "raw-window-handle"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 
 [[package]]
 name = "regex-syntax"

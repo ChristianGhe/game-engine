@@ -1,7 +1,7 @@
 use eng_core::{PlayerCommand, Tick};
 
 use crate::bindings::{Action, ActionSet, Bindings};
-use crate::key::{Key, KeyEvent};
+use eng_platform_api::{Key, KeyEvent};
 
 /// The stick value of a movement action: full speed.
 pub const FULL_AXIS: i8 = 127;

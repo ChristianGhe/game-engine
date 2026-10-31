@@ -5,7 +5,7 @@ use eng_schema_json::{Authored, PathStep, TomlSpans, load_toml};
 use serde::Deserialize;
 use serde::de::IgnoredAny;
 
-use crate::key::Key;
+use eng_platform_api::Key;
 
 /// Something a key can do.
 ///

@@ -2,7 +2,9 @@
 //! through the same session as every other mode (spec 6.8): a server and
 //! player 0's client in-process over Memory, every message encoded to
 //! bytes. The probe reads the client's sim, the state the session
-//! delivered, and records the commands the server applied.
+//! delivered, and records the commands the server applied. The ticks run
+//! on the headless platform, one per frame of its virtual clock
+//! ([`Ticker`]).
 
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -12,7 +14,6 @@ use std::time::Instant;
 use eng_core::{PlayerCommand, Tick};
 use eng_input::{InputScript, Recording, RecordingHeader, TickHash, write_recording};
 use eng_net_transport::memory::{MemoryEndpoint, MemoryNetwork};
-use eng_platform_headless::HeadlessPlatform;
 use eng_schema_json::JsonValue;
 use eng_session::{Client, Server, SessionError};
 use eng_sim::{RestoreError, Sim, SimConfig};
@@ -20,6 +21,7 @@ use eng_sim::{RestoreError, Sim, SimConfig};
 use crate::args::RunArgs;
 use crate::assertions::{self, Tracker};
 use crate::budgets::BudgetTracker;
+use crate::ticker::{Flow, Ticker};
 use crate::{ENGINE_SHA, Exit, GameDef, RUSTC_VERSION, exit, log, report, version};
 
 pub(crate) fn read_text(path: &Path) -> Result<String, String> {
@@ -247,8 +249,11 @@ pub(crate) fn run(game: &GameDef, a: &RunArgs) -> Exit {
         session.sim().world().entity_count() as u64,
     );
 
-    let mut platform = HeadlessPlatform::new(game.tick_rate, a.ticks);
-    while within_budget && platform.next_frame().is_some() {
+    // One tick per frame of the headless platform.
+    let ticker = Ticker::new(game.tick_rate, a.ticks, || {
+        if !within_budget {
+            return Flow::Stop;
+        }
         let tick = session.server.sim().tick().next();
         exit::note_tick(tick);
         if a.panic_at_tick == Some(tick.0) {
@@ -258,7 +263,7 @@ pub(crate) fn run(game: &GameDef, a: &RunArgs) -> Exit {
         let command = scripted.as_mut().and_then(Iterator::next);
         let command = match command_for(tick, command.unwrap_or(PlayerCommand::idle(tick))) {
             Ok(command) => command,
-            Err(message) => return exit::usage(game.name, &message),
+            Err(message) => return Flow::Exit(exit::usage(game.name, &message)),
         };
         let client = &mut session.client;
         client
@@ -276,7 +281,7 @@ pub(crate) fn run(game: &GameDef, a: &RunArgs) -> Exit {
                     .budgets
                     .exceeded
                     .get_or_insert(snapshot_limit(e, tick));
-                break;
+                return Flow::Stop;
             }
         };
         tick_ns.push(started.elapsed().as_nanos() as u64);
@@ -285,7 +290,7 @@ pub(crate) fn run(game: &GameDef, a: &RunArgs) -> Exit {
         }
         client.poll().unwrap_or_else(|e| session_bug(&e, tick));
         if let Err(message) = restored(client.latest(), tick) {
-            return fail(Exit::Desync, &message);
+            return Flow::Exit(fail(Exit::Desync, &message));
         }
         let sim = client.sim();
         if tick.0.is_multiple_of(a.hash_every) || tick.0 == a.ticks {
@@ -297,7 +302,9 @@ pub(crate) fn run(game: &GameDef, a: &RunArgs) -> Exit {
         if let Some(out) = events_out.as_mut() {
             match write_events(out, sim) {
                 Ok(n) => event_count += n,
-                Err(e) => return exit::usage(game.name, &format!("writing events: {e}")),
+                Err(e) => {
+                    return Flow::Exit(exit::usage(game.name, &format!("writing events: {e}")));
+                }
             }
         }
         observe(&mut inputs.trackers, sim);
@@ -306,6 +313,10 @@ pub(crate) fn run(game: &GameDef, a: &RunArgs) -> Exit {
             sim.state_len() as u64,
             sim.world().entity_count() as u64,
         );
+        Flow::Next
+    });
+    if let Some(exit) = ticker.run() {
+        return exit;
     }
     let sim = session.sim();
     for tracker in &mut inputs.trackers {

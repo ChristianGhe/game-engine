@@ -1,6 +1,6 @@
 [package]
 name = "eng-platform-api"
-description = "The platform contract: input and window events, a monotonic clock, the app callback trait and the window seam."
+description = "The platform contract: input and window events, a monotonic clock, the app callback trait, the window seam and the conformance suite."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,6 +8,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# Only for the window seam (ADR-0016), and never re-exported. `alloc` makes
+# an `Arc<dyn Window>` a window handle, as wgpu's surface creation needs.
+raw-window-handle = { workspace = true, features = ["alloc"] }
 
 [lints]
 workspace = true

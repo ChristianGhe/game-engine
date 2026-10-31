@@ -1,53 +1,8 @@
-//! Key and action names, and the bindings file's other strictness rules.
-//! Criterion 18's own checks are in `live_input.rs`.
+//! Action names, and the bindings file's other strictness rules.
+//! Criterion 18's own checks are in `live_input.rs`. Key names are tested
+//! with `Key` itself, in `eng-platform-api`.
 
 use eng_input::*;
-
-#[test]
-fn key_names_are_w3c_codes_and_round_trip() {
-    assert_eq!(Key::COUNT, Key::ALL.len());
-    for (i, &key) in Key::ALL.iter().enumerate() {
-        assert_eq!(key.index(), i);
-        assert_eq!(Key::from_name(key.name()), Some(key));
-        assert_eq!(key.to_string(), key.name());
-    }
-    let mut names: Vec<_> = Key::ALL.iter().map(|k| k.name()).collect();
-    names.sort_unstable();
-    names.dedup();
-    assert_eq!(names.len(), Key::COUNT, "names are unique");
-    // Spot checks against the W3C `code` table.
-    for name in [
-        "KeyA",
-        "KeyZ",
-        "Digit0",
-        "Digit9",
-        "ArrowUp",
-        "ArrowLeft",
-        "Escape",
-        "Space",
-        "Enter",
-        "Tab",
-        "Backspace",
-        "ShiftLeft",
-        "ControlRight",
-        "AltLeft",
-        "MetaLeft",
-        "Backquote",
-        "Quote",
-        "IntlBackslash",
-        "Numpad0",
-        "NumpadEnter",
-        "F1",
-        "F12",
-        "PageDown",
-    ] {
-        assert!(Key::from_name(name).is_some(), "{name}");
-    }
-    // Names are exact; there are no aliases.
-    for not_a_key in ["keyw", "W", "Esc", "Up", "SuperLeft", "OSLeft", "F13", ""] {
-        assert_eq!(Key::from_name(not_a_key), None, "{not_a_key}");
-    }
-}
 
 #[test]
 fn action_names_round_trip() {

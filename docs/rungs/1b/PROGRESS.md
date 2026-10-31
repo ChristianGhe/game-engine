@@ -2289,6 +2289,270 @@ proposes a fix.
 - T6 (its entry above): about 64 minutes over two rounds, 577k tokens.
 - T6's review: about 21 minutes, 266k tokens, 89 tool calls.
 
+## 2026-10-31, session 17 (continued): T3, `eng-platform-api` (Claude Opus 5.5, subagent, owner away)
+
+The task: T3, the platform contract. Its plan row asks for
+`eng-platform-api` and its conformance suite, `Key` and `KeyEvent` moved
+in from `eng-input`, and `eng-platform-headless` ported to it. Done when
+the suite passes for headless, including a scripted close request reaching
+the app. One crate from batch 2 (`raw-window-handle =0.6.2`, approved at
+G3), no protected path edited, and no hash stream regenerated. A subagent
+built it while the owner was away, so it is left uncommitted for review.
+
+**The contract** (the crate docs list the rules; `docs/ARCHITECTURE.md`
+gains "The platform"):
+- `Platform` (`name`, `run(&mut self, &mut dyn App)`) runs an app; the
+  platform owns the event loop and calls back, as winit does. `App` has
+  `start`, `window`, `event`, `frame` (answering `Wake::At(Instant)` or
+  `Wake::OnEvent`) and `stop`; all but `frame` have empty defaults.
+  `Control` has `now` and `exit`. `PlatformError` is `Unavailable`,
+  `Failed`, and headless's `Idle`, `TimeLimit` and `Stalled`
+  (`#[non_exhaustive]`).
+- `PlatformEvent` is plain data: `KeyDown`/`KeyUp(Key)`,
+  `MouseMotion { dx, dy }`, `MouseDown`/`MouseUp(MouseButton)`,
+  `Wheel(WheelDelta)`, `GamepadConnected`/`GamepadDisconnected(GamepadId)`,
+  `GamepadDown`/`GamepadUp { pad, button }`,
+  `GamepadAxis { pad, axis, value }`, `FocusGained`, `FocusLost`,
+  `Resized(PhysicalSize)`, `Occluded(bool)` and `CloseRequested`.
+  `key_event()` gives the keyboard's part as a `KeyEvent`, which
+  `LiveInput::handle` takes.
+- `Instant`: nanoseconds (`u64`) since the run started, with
+  `core::time::Duration` arithmetic.
+- The window seam, `window::Window: HasWindowHandle + HasDisplayHandle +
+  Send + Sync` with `size()`, is the only item that names
+  `raw-window-handle`'s traits, and nothing re-exports them. A windowed
+  platform hands an `Arc<dyn Window>` to `App::window`, which wgpu 30's
+  safe `create_surface` takes as it is (a test pins those bounds).
+- The rules: `start` first, once; `window` once, right after it, on a
+  windowed platform; then batches, the events due followed by one `frame`;
+  the first frame at once; after `At(t)` the next frame at `t`, at once if
+  `t` is not after now, or sooner with an event's batch, and without an
+  event never before `t`; after `OnEvent` only with an event; after `exit`
+  only `stop`, the rest of the batch dropped; `run` returns `Ok(())` after
+  an exit; `stop` last, once, whatever `run` returns; a close request is an
+  event, and the platform runs on until the app exits; the clock never
+  goes back; `run` can be called again, the clock starting from zero.
+
+**The headless platform** (`crates/eng-platform-headless/src/lib.rs`):
+`HeadlessPlatform::new().script(events).time_limit(at)`. Its clock is
+virtual and jumps to each wake, the earlier of the timer and the next
+scripted event, so a run takes no real time and repeats exactly. Events
+due together are one batch. An app that waits for an event when none is
+left gets `Err(Idle)`, a wake past the limit `Err(TimeLimit)`, and an app
+that keeps the clock still `Err(Stalled)`, all after `stop`, so a twin
+test fails instead of hanging. Each run replays
+the script from zero. The old frame counter (`new(tick_rate, frames)`,
+`next_frame`) is gone: `run --headless` now paces its ticks as an app on
+the platform (`crates/eng-cli/src/ticker.rs`), one tick per frame, a tick
+apart; the loop body in `run.rs` is the same, as a closure.
+
+**`Key` and `KeyEvent`** moved with `git mv` (staged as a rename), with
+new module docs and nothing else changed. `eng-input` re-exports both, so
+`eng_input::Key` and `eng_input::KeyEvent` work as before and
+`crates/eng-input/tests/live_input.rs` passes unchanged, its known answer
+included. The key-name test moved with them, to
+`crates/eng-platform-api/tests/key.rs`.
+
+**Decisions** (proposals; the owner can overrule any):
+1. **Flat events.** `FocusLost` is its own event, and `key_event()`
+   projects the keyboard's part, rather than a `Key(KeyEvent)` variant
+   carrying `KeyEvent::FocusLost`. Focus loss releases mouse buttons too,
+   no event can hold an invalid state, and `KeyEvent` stays exactly as T4
+   made it.
+2. **The window comes through `App::window`**, a default method called
+   once after `start`. What a platform implements (`Platform`, `Control`)
+   never names the window, so headless stays outside the seam (ADR-0016),
+   and apps outside it (the probe's ticker, the tests) implement `App`
+   without naming the traits. `Arc`, `Send` and `Sync` are what wgpu needs
+   for a `Surface<'static>`.
+3. **The shape follows winit 0.30's `ApplicationHandler`**: `start` is
+   `resumed`, `frame` is `about_to_wait` with `ControlFlow::WaitUntil`,
+   `stop` is `exiting`. T10 maps one to one, and eng-app's accumulator
+   (T11) answers `Wake::At(next tick)`.
+4. **A close request never stops a platform by itself**, as in winit; the
+   app exits. The suite checks it with a close request the app ignores.
+5. **After `exit`, only `stop`.** The rest of the batch is dropped, so an
+   app needs no guard; winit's adapter needs one flag.
+6. **`run` can run again.** The suite runs a platform three times; winit
+   can with `run_app_on_demand` on every desktop. If T10 finds it cannot,
+   `check` could take a factory instead.
+7. **Headless ends stuck runs with errors**, `Idle`, `TimeLimit` and
+   `Stalled`, headless-only variants of the contract's (non-exhaustive)
+   error, so a test fails instead of hanging. `Stalled` comes after
+   `HeadlessPlatform::STALL_FRAMES` (10,000) frames in a row at one
+   instant with no event delivered: on a virtual clock nothing can change
+   while the app keeps asking for a time not after now (from the review).
+8. **One headless API.** The probe uses the contract rather than keeping
+   the frame counter beside it.
+9. **Conventions**, from what the operating systems, winit, gilrs and SDL3
+   report: raw mouse `dy` is positive towards the user, wheel `y` away from
+   the user, stick `y` up; triggers are axes from 0 to 1; mouse buttons
+   past the five named ones are `Other(u16)`; a gamepad is a `GamepadId`.
+   Disconnecting a gamepad releases it.
+10. **Scripted checks need a virtual clock.** `check_scripted` asks for
+    exact times, so it is for headless (and any later replay platform);
+    winit runs `check` where a display exists (T10).
+11. **`Instant` is our own** `u64` of nanoseconds, with std's `Duration`;
+    a test pins `Key::COUNT` at 110, since the key set is contract.
+
+**Tests** (34 new, 3 of them from the review; 1 moved; 1 removed, the
+old frame counter's unit test; expected values written out)
+- `crates/eng-platform-api/tests/`: `key.rs` 3 (names, the closed set,
+  `key_event` for every kind of event), `contract.rs` 5 (`Instant`, its
+  overflow, sizes, error messages, object safety), `window.rs` 3 (an
+  `Arc<dyn Window>` meets wgpu's surface bounds; a fake windowed platform
+  passes the suite; a window before `start` or twice is rejected).
+- `crates/eng-platform-headless/tests/conformance.rs`, 4: headless passes
+  `check` and `check_scripted` (T3's done-when); the fault injector alone
+  passes; and 22 broken platforms, built by putting a fault between the
+  headless platform and the app, are each rejected with the rule they
+  break: start twice, a frame before start, no stop, two stops, a clock
+  that goes back, a wake 1 ns early, a timer 1 ms late, an exit ignored
+  once, an error after an exit, an event dropped, repeated or swapped, a
+  close request that stops the platform, no frame after a batch, a clock
+  1 ns ahead after events, a wake without an event, and every event lost
+  with the clock then standing still; and, from the review, an exit never
+  passed on, batches split one event per frame, a run the platform ends
+  itself, a first frame 1 ms late, and a wake in the past that sets the
+  clock back.
+- `crates/eng-platform-headless/tests/headless.rs`, 14: a close request
+  scripted at 500 ms reaches a 100 Hz loop, which exits; exact jumps;
+  events due together before one frame; a wake not after now; `Idle`;
+  the time limit, and events past it; `Stalled` after 10,000 frames at one
+  instant, and no stall below that (both from the review); exit in
+  `start`; a repeated run equal to the first; a script out of order
+  refused; and a proptest against the rules written out (random scripts,
+  answers and limits).
+- `crates/game-testbed/tests/session.rs` gains 1 (from the review): a
+  budget exceeded at tick 0 stops `run` before it steps, so `ticks_run` is
+  0 and the hash stream holds tick 0 alone.
+- `eng-input`: `tests/quantize.rs` gains 1 (platform events drive live
+  input through `key_event`, focus loss included); `tests/bindings.rs`
+  lost the key-name test that moved.
+- `eng-cli`: 3 unit tests of the ticker (every tick once, a stop, an
+  exit). They were written after the ticker, so the ticker was stubbed,
+  the tests failed against it, and it was restored.
+- The protected `live_input.rs` (12), `exit_codes.rs` (7) and
+  `crash_json.rs` (2) pass unchanged.
+- The suite caught a bug in itself on its first run against headless: the
+  wake check read the next event after counting the batch that woke the
+  frame. Fixed before anything else ran.
+- Mutation checks, each reverted, all caught. In the headless platform: a
+  past wake not clamped to now (2 tests fail), an exit that does not drop
+  the rest of the batch (4), a wake at the limit refused (2), an idle run
+  ending quietly (2), no `stop` (11), an event waiting for the timer (6), a
+  frame after an exit in an event (5), the script order unchecked (1). In
+  the ticker: one tick fewer (4, three of them binary tests), an early
+  exit lost (1), a stop ignored (1); the new unit tests are the only ones
+  that see the last two.
+- One more planted bug, events due exactly now held back, made the virtual
+  clock stand still: the suite's probe never reached its give-up time and
+  spun, and two test binaries had to be killed. Probes now also give up
+  after 1,000 frames, the stalling broken platform above checks it (it
+  hung before the fix), and the headless tests' recorder fails after
+  100,000 calls. Run again, that bug fails 8 tests in milliseconds.
+- A failing proptest against the first stub wrote
+  `headless.proptest-regressions`, which the guard moved to
+  `target/guard-quarantine/1793450248-toolu_01FpqXjpQh2S4W6Qg4Vi3Czz/`.
+  Its seed comes from a stub, so it is not a candidate for the owner.
+  Later red runs set `PROPTEST_DISABLE_FAILURE_PERSISTENCE=1`, which
+  proptest 1.12 reads, and wrote no other file.
+
+**No oracle patch.** G5's rows name no T3 harness to protect and no xtask
+step for T3 (the headless-twin Esc test they list is T11's), so
+`t3-oracles.patch` is not needed.
+
+**Checked** (this repo, aarch64-apple-darwin; again after the review's
+fixes, with the same results)
+- `cargo xtask quick` green (20 s).
+- The approved G3 policy: `cargo deny --config <scratchpad>/g3/g3-policy.toml
+  check` exits 0 ("advisories ok, bans ok, licenses ok, sources ok"); its
+  warnings are batch-2 wrappers and licences nothing uses yet (wgpu,
+  winit). `typos --config <scratchpad>/g3/g3-typos-config.toml` is clean.
+- The repo's own `CI=1 cargo xtask ci --job lint`: 5 of 7. `deny` fails
+  on `raw-window-handle`, which today's allow-list lacks, and `typos` on
+  the G3 patch file's own lines; both pass once the owner applies the G3
+  patch.
+- `CI=1 cargo xtask ci --job wasm` green; `cargo xtask selftest` 17 of 17.
+- `RUSTDOCFLAGS=-Dwarnings cargo doc --no-deps` for eng-platform-api,
+  eng-platform-headless, eng-input and eng-cli: clean.
+- `cargo xtask replay`: 5 runs, hash streams equal to the committed ones;
+  nothing regenerated.
+- `cargo test --workspace`: 257 passed, 0 failed, 1 ignored (the
+  `eng-derive` doc example).
+- `Cargo.lock` gains one package, `raw-window-handle` 0.6.2: the only
+  batch-2 crate added, exactly as approved.
+- Not run: RISC-V (the core set did not change).
+
+**Reviewer** (fresh context, read-only, run by the coordinator): changes
+needed, all small. Nothing wrong with scope, determinism, protected paths,
+ADR-0016 or the `run --headless` rewrite; the problem was the suite, which
+could hang and could pass broken platforms. Each finding came with a
+planted bug, and each is fixed in this change:
+1. **A platform that ignores `exit` hung the suite**: after its exit the
+   clock probe answered `At(now + 1 s)` forever, and the give-up never
+   applied to it. Now every probe answers a wake at once after its exit,
+   and the third callback after it fails from inside the callback with
+   "nothing comes after exit but stop". Every plan gives up after 1,000
+   frames, the scripted ones also at 100 ms. New fault: `IgnoresExit`.
+2. **"Every event due comes before the frame" was checked only at the
+   exit frame**, and `wakes` took an undelivered event already due as the
+   next one, so headless delivering one event per frame passed. It is now
+   checked at every frame. New fault: `SplitsBatches`.
+3. **No probe asked for a wake in the past**, so headless without its
+   clamp passed. The clock run's second frame now asks for
+   `Instant::ZERO`. New fault: `PastWakeGoesBack`.
+4. **Two rules had no fault**: "the run lasts until the app exits" and
+   "the first frame comes at once". New faults: `EndsEarly`,
+   `FirstFrameLate`.
+5. **`run`'s budget stop was untested**: deleting it left every test
+   green. The new `session.rs` test covers it, since `exit_codes.rs` is
+   protected.
+6. **Headless spun forever on an app answering `Wake::At(t)` with `t` not
+   after now**, which its docs said could not happen. It now ends with
+   `Stalled` (decision 7).
+7. **`docs/ARCHITECTURE.md` counted "sixteen" broken platforms.** It now
+   says "at least one per rule", which stays true as faults are added.
+
+Planted again after the fixes, each reverted exactly: headless's `exit()`
+as a no-op (12 tests fail, the lifecycle run among them with "nothing
+comes after exit but stop", in milliseconds instead of hanging); one event
+per frame (5, with "every event due comes before the frame"); no clamp on
+a past wake (4, "the clock never goes back"); `lasted` and the first-frame
+check as no-ops (the rejection test fails on `EndsEarly` and
+`FirstFrameLate`); no budget stop (the new `session.rs` test); no stall
+detection (the new stall test). Before the fixes, `IgnoresExit` hung the
+suite (killed after 60 s), and `SplitsBatches` and `PastWakeGoesBack`
+passed it. Amendment 24 proposes protecting the suite.
+
+**Open questions**
+1. **Protecting the suite** is now amendment 24.
+2. **For T10 (winit).** On macOS the event loop needs the main thread, so
+   `check` belongs in a `harness = false` test, and running again needs
+   `run_app_on_demand`. winit's macOS mouse deltas are coalesced (spec
+   6.10), so `MouseMotion`'s "raw counts" waits for rung 2's shim there.
+   During a live resize on macOS winit sends only `RedrawRequested`; the
+   adapter may call `frame` then, with no contract change.
+3. **Not in the contract:** text input, the cursor's position and the
+   scale factor. Spec 6.10 lists none of them; the first UI rung adds them,
+   a contract change with an ADR (spec 6.2 rule 6).
+4. **Merging with T7.** The root `Cargo.toml` gains
+   `raw-window-handle = "=0.6.2"` under `[workspace.dependencies]`; T7's
+   worktree may add the same line.
+5. **G3 before the push**, as known: until the owner applies the G3 patch,
+   CI's `cargo deny check` fails on `raw-window-handle`, and `typos` on
+   the patch file.
+
+**Costs and timings**
+- One subagent session, from about 14:20 to about 15:15 EET, then about
+  15:15 to 15:40 EET for the review's fixes, while the owner was away. The
+  review itself ran in the coordinator's context.
+- Builds and test runs took seconds (`quick` 15 to 21 s). The first
+  mutation checks took about 15 minutes, most of it the stalled-clock
+  bug's two hung test binaries before they were killed; later runs had a
+  process-group timeout, and the re-planted review bugs took about 4
+  minutes.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1
@@ -2828,3 +3092,18 @@ otherwise have to change; the owner applies it, or unlocks the path.
     `target/selftest` when it finishes, or the selftest job deletes it
     before the post step runs. Either removes the ENOENT annotations that
     every cache miss prints. Low priority: the job passes.
+
+24. **Amendment from session 17, T3's review** (to proposal 8; the text
+    above is kept as written). With the review's fixes in, protect the
+    platform conformance suite at G5:
+    - `protected.toml` and `.github/CODEOWNERS` entries for
+      `crates/eng-platform-api/src/conformance.rs`,
+      `crates/eng-platform-api/src/conformance/**` and
+      `crates/eng-platform-headless/tests/conformance.rs`. The last holds
+      the broken platforms that show the suite still bites.
+    - Why (the reviewer's reason): T10 and T11 will be tempted to relax a
+      rule when winit misbehaves, and whether a rule may change should be
+      the owner's call.
+    - Described only; no patch yet. `cargo xtask docs-check` wants a
+      CODEOWNERS line for each new pattern, so the two files change
+      together.

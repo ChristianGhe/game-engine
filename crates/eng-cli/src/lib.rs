@@ -35,6 +35,7 @@ mod log;
 mod replay;
 mod report;
 mod run;
+mod ticker;
 mod version;
 
 use std::process::ExitCode;

@@ -1,9 +1,8 @@
-//! Physical keys and key events: plain data with no platform types.
+//! Physical keys, and the keyboard's view of platform events: plain data
+//! with no platform types.
 //!
-//! They live here until the platform contract exists. In rung 1b task T3
-//! both move to `eng-platform-api` and `eng-input` depends on it; the
-//! names, and so every bindings file, stay the same. This module uses
-//! only `core`, so the move is a cut and paste.
+//! Both came from `eng-input` in rung 1b (T3), unchanged; `eng-input`
+//! re-exports them, so bindings files and live input did not change.
 
 use core::fmt;
 
@@ -190,7 +189,10 @@ impl fmt::Display for Key {
     }
 }
 
-/// What the keyboard did, in the order the platform reports it.
+/// What the keyboard did, in the order the platform reports it: the
+/// keyboard's part of the platform's events
+/// ([`PlatformEvent::key_event`](crate::PlatformEvent::key_event)), which
+/// is what live input (`eng-input`) reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum KeyEvent {
     /// A key went down. OS key repeat may send it again while the key is

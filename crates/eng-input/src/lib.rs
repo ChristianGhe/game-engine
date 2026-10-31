@@ -9,18 +9,19 @@
 //!   [`Action`]s, sampled once per tick ([`LiveInput`], [`quantize`]). The
 //!   caller says which tick it samples; nothing here reads a clock.
 //!
-//! [`Key`] and [`KeyEvent`] are plain data. They move to `eng-platform-api`
-//! when that crate exists (rung 1b, task T3).
+//! [`Key`] and [`KeyEvent`] are the platform contract's (`eng-platform-api`),
+//! re-exported here. A platform reports `PlatformEvent`s, and
+//! `PlatformEvent::key_event` gives the [`KeyEvent`] that
+//! [`LiveInput::handle`] takes.
 #![forbid(unsafe_code)]
 
 mod bindings;
-mod key;
 mod live;
 mod recording;
 mod script;
 
 pub use bindings::{Action, ActionSet, Bindings, BindingsError, DEFAULT_BINDINGS};
-pub use key::{Key, KeyEvent};
+pub use eng_platform_api::{Key, KeyEvent};
 pub use live::{FULL_AXIS, LiveInput, TickInput, command_for, quantize};
 pub use recording::{
     RECORDING_KIND, RECORDING_VERSION, Recording, RecordingHeader, TickHash, read_recording,

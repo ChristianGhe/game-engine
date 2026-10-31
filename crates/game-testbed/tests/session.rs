@@ -86,6 +86,40 @@ fn run_stops_where_a_snapshot_outgrows_a_datagram() {
     }
 }
 
+/// A budget exceeded at tick 0 stops `run` before it steps the sim: no
+/// tick runs, and the hash stream holds tick 0 alone.
+#[test]
+fn a_budget_stops_the_run_before_the_next_tick() {
+    let dir = scratch("budget");
+    let budgets = "version = 1\n[sim]\nmax_state_bytes = 64\n";
+    std::fs::write(dir.join("b.toml"), budgets).unwrap();
+    let out = probe(
+        &dir,
+        &[
+            "run",
+            "--headless",
+            "--ticks",
+            "5",
+            "--budgets",
+            "b.toml",
+            "--report",
+            "r.json",
+            "--hashes",
+            "h.txt",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(13), "{}", text(&out));
+    let report = read_json(&dir.join("r.json"));
+    assert_eq!(report["ticks_run"], 0, "nothing runs past the budget");
+    let hashes = std::fs::read_to_string(dir.join("h.txt")).unwrap();
+    let ticks: Vec<&str> = hashes
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .map(|l| l.split(' ').next().unwrap())
+        .collect();
+    assert_eq!(ticks, ["0"]);
+}
+
 #[test]
 fn a_two_player_session_records_what_the_server_applied() {
     let dir = scratch("two-players");

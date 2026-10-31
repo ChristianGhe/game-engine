@@ -56,6 +56,40 @@ fn commands_carry_the_tick_and_the_held_view() {
     assert_eq!((next.forward, next.side), (0, 127));
 }
 
+/// `Key` and `KeyEvent` are the platform contract's own types, so platform
+/// events drive live input through `PlatformEvent::key_event`, as the app
+/// will feed it.
+#[test]
+fn platform_events_drive_live_input() {
+    use eng_platform_api::PlatformEvent as E;
+    fn feed(live: &mut LiveInput, events: &[E]) {
+        for event in events {
+            if let Some(key) = event.key_event() {
+                live.handle(key);
+            }
+        }
+    }
+    let mut live = LiveInput::new(Bindings::default());
+    let size = eng_platform_api::PhysicalSize::new(9, 9);
+    feed(
+        &mut live,
+        &[E::FocusGained, E::KeyDown(KeyW), E::Resized(size)],
+    );
+    feed(
+        &mut live,
+        &[E::KeyDown(KeyA), E::MouseMotion { dx: 4.0, dy: 0.0 }],
+    );
+    let input = live.sample(Tick(1)).command;
+    assert_eq!((input.forward, input.side), (127, -127));
+    feed(&mut live, &[E::FocusLost]);
+    assert!(
+        !live.is_held(KeyW) && !live.is_held(KeyA),
+        "focus loss releases"
+    );
+    let idle = live.sample(Tick(2));
+    assert_eq!(idle.command, PlayerCommand::idle(Tick(2)));
+}
+
 #[test]
 #[should_panic(expected = "tick order")]
 fn a_timeline_out_of_tick_order_panics() {

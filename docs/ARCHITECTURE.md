@@ -11,7 +11,7 @@ commit that changes what it describes.
 L0  eng-schema-core  eng-derive  eng-math  eng-core           (core set)
 L1  eng-ecs  eng-net-transport  eng-net-wire                   (core set)
     eng-schema-json  eng-input  eng-platform-headless          (std)
-    eng-platform-api*  eng-platform-winit*                     (std)
+    eng-platform-api  eng-platform-winit*                      (std)
 L2  eng-sim  eng-collision-api  kit-fps  game-testbed-sim      (core set)
     eng-session                                                (core set)
 L3  eng-gpu*  eng-render*                                      (std)
@@ -68,19 +68,65 @@ input script (TOML) ──eng-input──▶ PlayerCommand per player, per tick
 - **Randomness.** `GameplayRng` (PCG32, stream "gameplay") is a resource,
   so it is part of the state. Cosmetic randomness never enters the simulation.
 
+## The platform
+
+`eng-platform-api` is the platform contract (spec 6.1, 6.10):
+`eng-platform-headless` implements it, and `eng-platform-winit` will
+(T10). The platform owns the event loop and calls the app back, as winit
+does; the crate docs list the rules.
+
+```
+Platform::run(&mut app):  start ─▶ window (windowed only)
+                          ─▶ { events due ─▶ frame, which answers Wake } ... ─▶ stop
+```
+
+- Events (`PlatformEvent`) are plain data: physical keys (`Key`, by W3C
+  `code`), raw mouse motion, mouse buttons, the wheel, gamepad buttons and
+  axes, focus, resize, occlusion and close requests. Mouse and gamepad
+  events exist already, so rungs 2 and 6 need no contract change.
+- The clock is `Control::now()`: an `Instant`, nanoseconds since the run
+  started, never going back. Each `frame` answers `Wake::At(t)` or
+  `Wake::OnEvent`, so ticks come from the timer, not from presenting
+  (spec 6.6); an event's batch wakes the app sooner.
+- `Control::exit()` ends the run: only `stop` follows, and the rest of
+  the batch is dropped. A close request is an event like any other: the
+  platform keeps running until the app exits.
+- The window seam (ADR-0016) is `window::Window`, the one part that names
+  `raw-window-handle`'s traits. A windowed platform hands an
+  `Arc<dyn Window>` to `App::window` once, after `start`; wgpu's safe
+  surface creation takes it as it is. Nothing a platform must implement
+  names it, so the headless platform stays outside the seam.
+- `HeadlessPlatform` has a virtual clock that jumps to each wake, so a run
+  takes no real time and repeats exactly. A script of
+  `(Instant, PlatformEvent)` plays the user. A run whose app waits for an
+  event when none is left fails with `Idle`, one past its time limit with
+  `TimeLimit`, and one whose app keeps asking to be woken at once with
+  `Stalled` (after 10,000 frames at one instant), instead of hanging.
+  `run --headless` paces its ticks on it, one per frame
+  (`crates/eng-cli/src/ticker.rs`).
+- The conformance suite is `conformance::check` (any platform: order, the
+  clock, timed wakes including one in the past, exit, running again) and
+  `conformance::check_scripted` (event delivery, exact times, every event
+  due before its frame, batches, close requests). Its probes give up after
+  a bounded number of frames and fail a platform that keeps calling after
+  an exit, so the suite never hangs. Headless passes both, and the
+  deliberately broken platforms in its tests, at least one per rule, each
+  fail on the rule they break.
+
 ## Live input
 
 `eng-input` also quantizes the keyboard into one `PlayerCommand` per tick
 (spec 6.10). Nothing calls it yet; `eng-app`'s window will (rung 1b, T11).
 
 ```
-KeyEvent (Down/Up of a Key, FocusLost) ──LiveInput::handle──▶ held keys + taps
+PlatformEvent ──key_event()──▶ KeyEvent (Down/Up of a Key, FocusLost)
+          ──LiveInput::handle──▶ held keys + taps
           Bindings (strict TOML) ──LiveInput::sample(tick)──▶ TickInput { command, actions }
 ```
 
 - `Key` names physical keys by their W3C `code` (`KeyW`, `ArrowUp`,
   `Escape`), so bindings do not depend on the layout. `Key` and `KeyEvent`
-  are plain data; they move to `eng-platform-api` in T3.
+  are the platform contract's plain data; `eng-input` re-exports them.
 - The caller passes the tick to `sample`; `eng-input` reads no clock.
   `quantize` does the same for a whole timeline of `(tick, event)`.
 - A key counts for a tick if it is held when the tick is sampled or went
@@ -195,7 +241,8 @@ then `Commands` up and a `Snapshot` down every tick.
   report (`target/ci/report.json`, copied to `target/ci/reports/`), which
   `cargo xtask acceptance` reads.
 - The probe (`eng-cli`, linked by every game) runs headless with scripted
-  input through the in-process session (above), writes reports, events,
+  input through the in-process session (above), on the headless platform,
+  writes reports, events,
   hash streams and recordings, and verifies replays. Exit codes are listed
   in `AGENTS.md`. Its panic hook (in
   `exit.rs`) writes `crash-<game>-<pid>.json` beside the agent log and

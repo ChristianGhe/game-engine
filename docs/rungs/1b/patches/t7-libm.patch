@@ -1,0 +1,52 @@
+Patch T7 libm (rung 1b, task T7): keep libm's soft-float code in the core
+set now that wgpu is in the workspace. This is architecture.toml's part of
+the fix; t7-eng-gpu.patch holds the rest.
+
+Why: wgpu's shader compiler, naga, depends on half with its num-traits
+feature; half turns on num-traits' libm feature, and num-traits takes libm
+with its default features, which include `arch`. Cargo unifies features
+across the workspace, so with wgpu in it, every workspace build compiles
+the simulation's libm with `arch`, and arch-check fails with [E-ARCH-PIN].
+naga needs that half feature, so no choice of crates avoids it.
+
+The fix: eng-math gives libm `force-soft-floats` (the root Cargo.toml's
+`[workspace.dependencies]`, in t7-eng-gpu.patch). libm 0.2.16 compiles its
+`arch` code only for `arch` without `force-soft-floats` (configure.rs), and
+outside it has no arch-specific code but i586's, so libm compiles exactly
+as it does today with no features, whatever turns `arch` on. This patch
+pins the workspace's resulting set, ["arch", "default",
+"force-soft-floats"]. Builds of the core set alone (RISC-V, wasm32)
+resolve to `force-soft-floats` only and compile the same code. Losing
+`force-soft-floats` fails the pin.
+
+Checked: the hash streams are unchanged (`cargo xtask replay`, no
+`--regen`). T7's `reviewer` subagent read libm 0.2.16's configure.rs and
+math/arch independently and confirmed that the fix changes no simulation
+result.
+
+Apply it with t7-eng-gpu.patch, in one commit: arch-check fails with
+either alone. Base: main at 31c3a8c. It touches architecture.toml only, so
+it does not depend on the G3 patch or on t6-oracles.patch. At the repo
+root, run `git apply` with this file, then with t7-eng-gpu.patch, then
+`cargo xtask quick`. Session 17's T7 entry in PROGRESS.md says how it was
+tested.
+Text before the first `diff --git` line is ignored by `git apply`.
+
+diff --git a/architecture.toml b/architecture.toml
+index 20c4d3b7501da545ddb199f8dadf4bf2ded0173f..67971bbc769ff2b2a46ae9331df6bc8a2d15a8cd 100644
+--- a/architecture.toml
++++ b/architecture.toml
+@@ -13,8 +13,12 @@ allowed_patches = []
+ # Third-party crates the core set may reach, transitively, pinned to an exact
+ # version from crates.io and an exact feature set. eng-derive is a
+ # proc-macro: its syn/quote/proc-macro2 dependencies are build-time only.
++# libm's set is the workspace's: wgpu's shader compiler, naga, turns on
++# libm's default `arch` feature (through half and num-traits), and eng-math's
++# `force-soft-floats` switches its code back off. The core set's math is then
++# the same in every build, with or without eng-gpu (rung 1b, T7).
+ [core_third_party]
+-libm = { version = "0.2.16", features = [] }
++libm = { version = "0.2.16", features = ["arch", "default", "force-soft-floats"] }
+ 
+ # Floor crates and the single engine crate allowed to depend on each.
+ [floor]

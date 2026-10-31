@@ -1,0 +1,3431 @@
+Patch T7 eng-gpu (rung 1b, task T7): the GPU layer, with the unprotected
+half of the libm fix. No path in it is protected. It goes into the same
+commit as t7-libm.patch, applied after it.
+
+- crates/eng-gpu: the adapter, the capability report, the fixed render
+  graph, offscreen targets, readback, and the shader test
+  (tests/shaders.rs, which t7-oracles.patch protects later).
+- Cargo.toml `[workspace.dependencies]`: wgpu =30.0.1 with plan decision
+  5's features, naga =30.0.1 for the shader test, and libm's
+  `force-soft-floats` (t7-libm.patch says why).
+- Cargo.lock: the wgpu part of crate batch 2, at the versions of plan.md's
+  table (`log`, `ordered-float` and `unicode-width` held at 0.4.34, 5.5.0
+  and 0.2.2).
+- docs/ARCHITECTURE.md: "The GPU layer", eng-gpu no longer a skeleton, and
+  how libm's `arch` code stays off, which AGENTS.md and eng-math's crate
+  docs now say too.
+
+`cargo deny check` also needs the G3 patch (wgpu's crates on the
+allow-list). Base: main at 31c3a8c. At the repo root, after
+t7-libm.patch, run `git apply` with this file, then `cargo xtask quick`.
+Session 17's T7 entry in PROGRESS.md says how it was tested.
+Text before the first `diff --git` line is ignored by `git apply`.
+
+diff --git a/AGENTS.md b/AGENTS.md
+index bbb22c10aac52cb96c0f97dc49f43a36daa55df8..4524969499938b97adfb4986527ca3ea9d576793 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -46,7 +46,8 @@ seed, tick, last log lines).
+ The simulation must give bit-identical results on every OS and CPU.
+ 
+ - Core crates are `#![no_std]` and `#![forbid(unsafe_code)]`. Their only
+-  third-party dependency is `libm` (pinned `=0.2.16`, `arch` off).
++  third-party dependency is `libm` (pinned `=0.2.16`; `force-soft-floats`
++  keeps its `arch` code off).
+ - Math comes from `eng-math` only: `eng_math::{sqrt, sin, min, max, clamp, ...}`.
+   Never std float functions, `mul_add`, `algebraic_*`, `to_radians`, or
+   approximate SIMD reciprocals. Clippy denies them (`clippy.toml`).
+diff --git a/Cargo.lock b/Cargo.lock
+index 1907eadb15bdb694bc769be4994818c9763bd7d3..1d2a43c2a364f21b17c0ecf897f4a264121e70d7 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2,24 +2,110 @@
+ # It is not intended for manual editing.
+ version = 4
+ 
++[[package]]
++name = "allocator-api2"
++version = "0.2.21"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
++
++[[package]]
++name = "android_system_properties"
++version = "0.1.6"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ae221649c9976a6f6c56ae1facf410f3ddb33cc661c4b7b61020a912d4237fbc"
++dependencies = [
++ "libc",
++]
++
++[[package]]
++name = "arrayvec"
++version = "0.7.8"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
++
++[[package]]
++name = "ash"
++version = "0.38.0+1.3.281"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
++dependencies = [
++ "libloading",
++]
++
+ [[package]]
+ name = "autocfg"
+ version = "1.5.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
+ 
++[[package]]
++name = "bit-set"
++version = "0.10.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "09ec2f926cc3060f09db9ebc5b52823d85268d24bb917e472c0c4bea35780a7d"
++dependencies = [
++ "bit-vec",
++]
++
++[[package]]
++name = "bit-vec"
++version = "0.9.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b71798fca2c1fe1086445a7258a4bc81e6e49dcd24c8d0dd9a1e57395b603f51"
++
+ [[package]]
+ name = "bitflags"
+ version = "2.13.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
+ 
++[[package]]
++name = "block2"
++version = "0.6.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5"
++dependencies = [
++ "objc2",
++]
++
++[[package]]
++name = "bumpalo"
++version = "3.20.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
++
++[[package]]
++name = "bytemuck"
++version = "1.25.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797"
++dependencies = [
++ "bytemuck_derive",
++]
++
++[[package]]
++name = "bytemuck_derive"
++version = "1.12.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6a1f896587b6f2c069c73d2f0913e2d590c3990285cd2f0b6aa02b786b4c679c"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 3.0.9",
++]
++
+ [[package]]
+ name = "cfg-if"
+ version = "1.0.5"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
+ 
++[[package]]
++name = "cfg_aliases"
++version = "0.2.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
++
+ [[package]]
+ name = "chacha20"
+ version = "0.10.2"
+@@ -31,6 +117,15 @@ dependencies = [
+  "rand_core",
+ ]
+ 
++[[package]]
++name = "codespan-reporting"
++version = "0.13.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
++dependencies = [
++ "unicode-width",
++]
++
+ [[package]]
+ name = "core_detect"
+ version = "1.0.0"
+@@ -46,6 +141,31 @@ dependencies = [
+  "libc",
+ ]
+ 
++[[package]]
++name = "crunchy"
++version = "0.2.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
++
++[[package]]
++name = "dispatch2"
++version = "0.3.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
++dependencies = [
++ "bitflags",
++ "objc2",
++]
++
++[[package]]
++name = "document-features"
++version = "0.2.12"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d4b8a88685455ed29a21542a33abd9cb6510b6b129abadabdcef0f4c55bc8f61"
++dependencies = [
++ "litrs",
++]
++
+ [[package]]
+ name = "eng-app"
+ version = "0.1.0"
+@@ -89,7 +209,7 @@ version = "0.1.0"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+- "syn",
++ "syn 3.0.9",
+ ]
+ 
+ [[package]]
+@@ -104,6 +224,10 @@ dependencies = [
+ [[package]]
+ name = "eng-gpu"
+ version = "0.1.0"
++dependencies = [
++ "naga",
++ "wgpu",
++]
+ 
+ [[package]]
+ name = "eng-input"
+@@ -208,6 +332,36 @@ version = "1.0.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
+ 
++[[package]]
++name = "foldhash"
++version = "0.2.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
++
++[[package]]
++name = "futures-core"
++version = "0.3.34"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "92d699e522242e69e3003b94ecc1f960f3a5e015aa7c5d7486e65ad01dd94f5e"
++
++[[package]]
++name = "futures-task"
++version = "0.3.34"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "cd417de3d1d015fc3bfd2b1ea46dfc7bab72ef86f1cc7cc9c78e728b34a6d1fd"
++
++[[package]]
++name = "futures-util"
++version = "0.3.34"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc"
++dependencies = [
++ "futures-core",
++ "futures-task",
++ "pin-project-lite",
++ "slab",
++]
++
+ [[package]]
+ name = "game-testbed"
+ version = "0.1.0"
+@@ -247,11 +401,51 @@ dependencies = [
+  "rand_core",
+ ]
+ 
++[[package]]
++name = "gpu-allocator"
++version = "0.28.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "51255ea7cfaadb6c5f1528d43e92a82acb2b96c43365989a28b2d44ee38f8795"
++dependencies = [
++ "ash",
++ "hashbrown 0.16.1",
++ "log",
++ "presser",
++ "thiserror",
++ "windows",
++]
++
++[[package]]
++name = "half"
++version = "2.7.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b"
++dependencies = [
++ "cfg-if",
++ "crunchy",
++ "num-traits",
++ "zerocopy",
++]
++
++[[package]]
++name = "hashbrown"
++version = "0.16.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
++dependencies = [
++ "allocator-api2",
++ "equivalent",
++ "foldhash",
++]
++
+ [[package]]
+ name = "hashbrown"
+ version = "0.17.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
++dependencies = [
++ "foldhash",
++]
+ 
+ [[package]]
+ name = "indexmap"
+@@ -260,7 +454,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
+ dependencies = [
+  "equivalent",
+- "hashbrown",
++ "hashbrown 0.17.1",
+ ]
+ 
+ [[package]]
+@@ -269,6 +463,17 @@ version = "1.0.18"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+ 
++[[package]]
++name = "js-sys"
++version = "0.3.107"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "8dc09d2154098bbf4ef54eab6b117a3c24cbbffe94046b16ee6d6d4510584d3a"
++dependencies = [
++ "cfg-if",
++ "futures-util",
++ "wasm-bindgen",
++]
++
+ [[package]]
+ name = "kit-fps"
+ version = "0.1.0"
+@@ -286,18 +491,87 @@ version = "0.2.191"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
+ 
++[[package]]
++name = "libloading"
++version = "0.8.9"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
++dependencies = [
++ "cfg-if",
++ "windows-link",
++]
++
+ [[package]]
+ name = "libm"
+ version = "0.2.16"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+ 
++[[package]]
++name = "litrs"
++version = "1.0.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
++
++[[package]]
++name = "lock_api"
++version = "0.4.14"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
++dependencies = [
++ "scopeguard",
++]
++
++[[package]]
++name = "log"
++version = "0.4.34"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
++
+ [[package]]
+ name = "memchr"
+ version = "2.8.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+ 
++[[package]]
++name = "naga"
++version = "30.0.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a616d2fb8c89516ac2723a581f69d6c18576046bed761bd6b305e5618e6ae130"
++dependencies = [
++ "arrayvec",
++ "bit-set",
++ "bitflags",
++ "cfg-if",
++ "cfg_aliases",
++ "codespan-reporting",
++ "half",
++ "hashbrown 0.17.1",
++ "indexmap",
++ "libm",
++ "log",
++ "naga-types",
++ "num-traits",
++ "once_cell",
++ "rustc-hash",
++ "spirv",
++ "thiserror",
++ "unicode-ident",
++]
++
++[[package]]
++name = "naga-types"
++version = "30.0.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "590afbf58a6f4f62873cd5cff4468061844bafa1cdf399cc954537c22d768d49"
++dependencies = [
++ "hashbrown 0.17.1",
++ "indexmap",
++ "rustc-hash",
++ "thiserror",
++]
++
+ [[package]]
+ name = "num-traits"
+ version = "0.2.19"
+@@ -305,8 +579,160 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
+ dependencies = [
+  "autocfg",
++ "libm",
++]
++
++[[package]]
++name = "objc2"
++version = "0.6.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "08849bbd4767dfae9457696856ae1c84fe4e0281bbe4a7abff2d0e06fb7981f8"
++dependencies = [
++ "objc2-encode",
++]
++
++[[package]]
++name = "objc2-core-foundation"
++version = "0.3.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
++dependencies = [
++ "bitflags",
++ "dispatch2",
++ "objc2",
+ ]
+ 
++[[package]]
++name = "objc2-core-graphics"
++version = "0.3.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e022c9d066895efa1345f8e33e584b9f958da2fd4cd116792e15e07e4720a807"
++dependencies = [
++ "dispatch2",
++ "objc2",
++ "objc2-core-foundation",
++ "objc2-io-surface",
++]
++
++[[package]]
++name = "objc2-encode"
++version = "4.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ef25abbcd74fb2609453eb695bd2f860d389e457f67dc17cafc8b8cbc89d0c33"
++
++[[package]]
++name = "objc2-foundation"
++version = "0.3.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
++dependencies = [
++ "bitflags",
++ "objc2",
++ "objc2-core-foundation",
++]
++
++[[package]]
++name = "objc2-io-surface"
++version = "0.3.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "180788110936d59bab6bd83b6060ffdfffb3b922ba1396b312ae795e1de9d81d"
++dependencies = [
++ "bitflags",
++ "objc2",
++ "objc2-core-foundation",
++]
++
++[[package]]
++name = "objc2-metal"
++version = "0.3.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a0125f776a10d00af4152d74616409f0d4a2053a6f57fa5b7d6aa2854ac04794"
++dependencies = [
++ "bitflags",
++ "block2",
++ "objc2",
++ "objc2-foundation",
++]
++
++[[package]]
++name = "objc2-quartz-core"
++version = "0.3.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "96c1358452b371bf9f104e21ec536d37a650eb10f7ee379fff67d2e08d537f1f"
++dependencies = [
++ "bitflags",
++ "objc2",
++ "objc2-core-foundation",
++ "objc2-core-graphics",
++ "objc2-foundation",
++ "objc2-metal",
++]
++
++[[package]]
++name = "once_cell"
++version = "1.21.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
++
++[[package]]
++name = "ordered-float"
++version = "5.5.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "8c7c9e0d9b23589f26070720bac724174bfec1083e82f7854cdd0267518343c0"
++dependencies = [
++ "num-traits",
++]
++
++[[package]]
++name = "parking_lot"
++version = "0.12.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "93857453250e3077bd71ff98b6a65ea6621a19bb0f559a85248955ac12c45a1a"
++dependencies = [
++ "lock_api",
++ "parking_lot_core",
++]
++
++[[package]]
++name = "parking_lot_core"
++version = "0.9.12"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1"
++dependencies = [
++ "cfg-if",
++ "libc",
++ "redox_syscall",
++ "smallvec",
++ "windows-link",
++]
++
++[[package]]
++name = "pin-project-lite"
++version = "0.2.17"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
++
++[[package]]
++name = "portable-atomic"
++version = "1.15.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
++
++[[package]]
++name = "portable-atomic-util"
++version = "0.2.8"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "10ab3eb7f3becc3a1cbc4f2c6f20267996cfc1a6467a873763411b136a122715"
++dependencies = [
++ "portable-atomic",
++]
++
++[[package]]
++name = "presser"
++version = "0.3.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e8cf8e6a8aa66ce33f63993ffc4ea4271eb5b0530a9002db8455ea6050c77bfa"
++
+ [[package]]
+ name = "proc-macro2"
+ version = "1.0.107"
+@@ -316,6 +742,12 @@ dependencies = [
+  "unicode-ident",
+ ]
+ 
++[[package]]
++name = "profiling"
++version = "1.0.18"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
++
+ [[package]]
+ name = "proptest"
+ version = "1.12.0"
+@@ -372,18 +804,69 @@ dependencies = [
+  "rand_core",
+ ]
+ 
++[[package]]
++name = "range-alloc"
++version = "0.1.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ca45419789ae5a7899559e9512e58ca889e41f04f1f2445e9f4b290ceccd1d08"
++
+ [[package]]
+ name = "raw-window-handle"
+ version = "0.6.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
+ 
++[[package]]
++name = "raw-window-metal"
++version = "1.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "40d213455a5f1dc59214213c7330e074ddf8114c9a42411eb890c767357ce135"
++dependencies = [
++ "objc2",
++ "objc2-core-foundation",
++ "objc2-foundation",
++ "objc2-quartz-core",
++]
++
++[[package]]
++name = "redox_syscall"
++version = "0.5.18"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
++dependencies = [
++ "bitflags",
++]
++
+ [[package]]
+ name = "regex-syntax"
+ version = "0.8.11"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+ 
++[[package]]
++name = "renderdoc-sys"
++version = "1.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
++
++[[package]]
++name = "rustc-hash"
++version = "1.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
++
++[[package]]
++name = "rustversion"
++version = "1.0.23"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
++
++[[package]]
++name = "scopeguard"
++version = "1.2.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
++
+ [[package]]
+ name = "serde"
+ version = "1.0.229"
+@@ -411,7 +894,7 @@ checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+- "syn",
++ "syn 3.0.9",
+ ]
+ 
+ [[package]]
+@@ -436,6 +919,44 @@ dependencies = [
+  "serde_core",
+ ]
+ 
++[[package]]
++name = "slab"
++version = "0.4.12"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
++
++[[package]]
++name = "smallvec"
++version = "1.16.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
++
++[[package]]
++name = "spirv"
++version = "0.4.0+sdk-1.4.341.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d9571ea910ebd84c86af4b3ed27f9dbdc6ad06f17c5f96146b2b671e2976744f"
++dependencies = [
++ "bitflags",
++]
++
++[[package]]
++name = "static_assertions"
++version = "1.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
++
++[[package]]
++name = "syn"
++version = "2.0.119"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "unicode-ident",
++]
++
+ [[package]]
+ name = "syn"
+ version = "3.0.9"
+@@ -447,6 +968,35 @@ dependencies = [
+  "unicode-ident",
+ ]
+ 
++[[package]]
++name = "thiserror"
++version = "2.0.21"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e"
++dependencies = [
++ "thiserror-impl",
++]
++
++[[package]]
++name = "thiserror-impl"
++version = "2.0.21"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 3.0.9",
++]
++
++[[package]]
++name = "tokio"
++version = "1.54.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3"
++dependencies = [
++ "pin-project-lite",
++]
++
+ [[package]]
+ name = "toml"
+ version = "1.1.8+spec-1.1.0"
+@@ -498,6 +1048,339 @@ version = "1.0.27"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
+ 
++[[package]]
++name = "unicode-width"
++version = "0.2.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
++
++[[package]]
++name = "wasm-bindgen"
++version = "0.2.130"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a0181c14ddd6c7b8b0b0132a5f1ea2f32be0d893cd3ea97b6e3b28886b8a3d1c"
++dependencies = [
++ "cfg-if",
++ "rustversion",
++ "wasm-bindgen-macro",
++ "wasm-bindgen-shared",
++]
++
++[[package]]
++name = "wasm-bindgen-futures"
++version = "0.4.80"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "5e14e0327cb5368ad60ccb22d04a9827a693c95a926d8d125e9fa39e0baec501"
++dependencies = [
++ "js-sys",
++ "tokio",
++ "wasm-bindgen",
++]
++
++[[package]]
++name = "wasm-bindgen-macro"
++version = "0.2.130"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6e931a02a39abdbf66966fc35902b5ed58344750a70885bed4ebb3d8eaf28ed9"
++dependencies = [
++ "quote",
++ "wasm-bindgen-macro-support",
++]
++
++[[package]]
++name = "wasm-bindgen-macro-support"
++version = "0.2.130"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2ca4b54280e455bd831e33a6b8e734baf432fe63fbc35c42ac14ce67a043a53a"
++dependencies = [
++ "bumpalo",
++ "proc-macro2",
++ "quote",
++ "syn 3.0.9",
++ "wasm-bindgen-shared",
++]
++
++[[package]]
++name = "wasm-bindgen-shared"
++version = "0.2.130"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3b1f9c3798725016c6ee5f2f57869ec0831e8bbc0ab0310a86e787e97f41389e"
++dependencies = [
++ "unicode-ident",
++]
++
++[[package]]
++name = "web-sys"
++version = "0.3.107"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d7d179596ff5ec0f6de4db64d54011bde6289cc49603d3a6e4ce3f329207ab88"
++dependencies = [
++ "js-sys",
++ "wasm-bindgen",
++]
++
++[[package]]
++name = "wgpu"
++version = "30.0.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "527ccdf43dd5b2e8676eed9984ce00e2bbb0a1b85b70c1969dcb6cd2eb55ab9e"
++dependencies = [
++ "arrayvec",
++ "bitflags",
++ "bytemuck",
++ "cfg-if",
++ "cfg_aliases",
++ "document-features",
++ "hashbrown 0.17.1",
++ "js-sys",
++ "log",
++ "portable-atomic",
++ "profiling",
++ "raw-window-handle",
++ "smallvec",
++ "static_assertions",
++ "wasm-bindgen",
++ "wasm-bindgen-futures",
++ "web-sys",
++ "wgpu-core",
++ "wgpu-hal",
++ "wgpu-types",
++]
++
++[[package]]
++name = "wgpu-core"
++version = "30.0.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "14c018fce9b6270aa203c2fdd56f3cce996713534bd757e4ea58c8560b121f14"
++dependencies = [
++ "arrayvec",
++ "bit-set",
++ "bit-vec",
++ "bitflags",
++ "bytemuck",
++ "cfg_aliases",
++ "document-features",
++ "hashbrown 0.17.1",
++ "indexmap",
++ "log",
++ "naga",
++ "naga-types",
++ "once_cell",
++ "parking_lot",
++ "portable-atomic",
++ "profiling",
++ "raw-window-handle",
++ "rustc-hash",
++ "smallvec",
++ "thiserror",
++ "wgpu-core-deps-apple",
++ "wgpu-core-deps-windows-linux-android",
++ "wgpu-hal",
++ "wgpu-naga-bridge",
++ "wgpu-types",
++]
++
++[[package]]
++name = "wgpu-core-deps-apple"
++version = "30.0.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "061f3d319a40d39d00b1ecc2c33b89fe21d4e6fe01859df3500a3a8ecccd6b68"
++dependencies = [
++ "wgpu-hal",
++]
++
++[[package]]
++name = "wgpu-core-deps-windows-linux-android"
++version = "30.0.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7586165fd5f6d881cb9ce4bb71f40d6caab2c0f1837e3fc1d9788a197fb6004f"
++dependencies = [
++ "wgpu-hal",
++]
++
++[[package]]
++name = "wgpu-hal"
++version = "30.0.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b6b7fb58561a792bc237628ba0792e332de418fefe145f13b5ed8201e6d52f58"
++dependencies = [
++ "android_system_properties",
++ "arrayvec",
++ "ash",
++ "bit-set",
++ "bitflags",
++ "block2",
++ "bytemuck",
++ "cfg-if",
++ "cfg_aliases",
++ "gpu-allocator",
++ "hashbrown 0.17.1",
++ "libc",
++ "libloading",
++ "log",
++ "naga",
++ "naga-types",
++ "objc2",
++ "objc2-core-foundation",
++ "objc2-core-graphics",
++ "objc2-foundation",
++ "objc2-metal",
++ "objc2-quartz-core",
++ "once_cell",
++ "ordered-float",
++ "parking_lot",
++ "portable-atomic",
++ "portable-atomic-util",
++ "profiling",
++ "range-alloc",
++ "raw-window-handle",
++ "raw-window-metal",
++ "renderdoc-sys",
++ "smallvec",
++ "static_assertions",
++ "thiserror",
++ "wgpu-naga-bridge",
++ "wgpu-types",
++ "windows",
++ "windows-core",
++]
++
++[[package]]
++name = "wgpu-naga-bridge"
++version = "30.0.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d2f62e73117bb7a62bfd9c5a5841438a823f6566c6442a808ee269d2d055c081"
++dependencies = [
++ "naga",
++ "wgpu-types",
++]
++
++[[package]]
++name = "wgpu-types"
++version = "30.0.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "99dad6f1fbdbbdb4c278a6508b059d44688f5cebddf78d005a46a31340269286"
++dependencies = [
++ "bitflags",
++ "bytemuck",
++ "js-sys",
++ "log",
++ "naga-types",
++ "raw-window-handle",
++ "static_assertions",
++ "web-sys",
++]
++
++[[package]]
++name = "windows"
++version = "0.62.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "527fadee13e0c05939a6a05d5bd6eec6cd2e3dbd648b9f8e447c6518133d8580"
++dependencies = [
++ "windows-collections",
++ "windows-core",
++ "windows-future",
++ "windows-numerics",
++]
++
++[[package]]
++name = "windows-collections"
++version = "0.3.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "23b2d95af1a8a14a3c7367e1ed4fc9c20e0a26e79551b1454d72583c97cc6610"
++dependencies = [
++ "windows-core",
++]
++
++[[package]]
++name = "windows-core"
++version = "0.62.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb"
++dependencies = [
++ "windows-implement",
++ "windows-interface",
++ "windows-link",
++ "windows-result",
++ "windows-strings",
++]
++
++[[package]]
++name = "windows-future"
++version = "0.3.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e1d6f90251fe18a279739e78025bd6ddc52a7e22f921070ccdc67dde84c605cb"
++dependencies = [
++ "windows-core",
++ "windows-link",
++ "windows-threading",
++]
++
++[[package]]
++name = "windows-implement"
++version = "0.60.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "053e2e040ab57b9dc951b72c264860db7eb3b0200ba345b4e4c3b14f67855ddf"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 2.0.119",
++]
++
++[[package]]
++name = "windows-interface"
++version = "0.59.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3f316c4a2570ba26bbec722032c4099d8c8bc095efccdc15688708623367e358"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 2.0.119",
++]
++
++[[package]]
++name = "windows-link"
++version = "0.2.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
++
++[[package]]
++name = "windows-numerics"
++version = "0.3.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6e2e40844ac143cdb44aead537bbf727de9b044e107a0f1220392177d15b0f26"
++dependencies = [
++ "windows-core",
++ "windows-link",
++]
++
++[[package]]
++name = "windows-result"
++version = "0.4.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7781fa89eaf60850ac3d2da7af8e5242a5ea78d1a11c49bf2910bb5a73853eb5"
++dependencies = [
++ "windows-link",
++]
++
++[[package]]
++name = "windows-strings"
++version = "0.5.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7837d08f69c77cf6b07689544538e017c1bfcf57e34b4c0ff58e6c2cd3b37091"
++dependencies = [
++ "windows-link",
++]
++
++[[package]]
++name = "windows-threading"
++version = "0.2.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3949bd5b99cafdf1c7ca86b43ca564028dfe27d66958f2470940f73d86d75b37"
++dependencies = [
++ "windows-link",
++]
++
+ [[package]]
+ name = "winnow"
+ version = "1.0.4"
+@@ -513,6 +1396,26 @@ dependencies = [
+  "toml",
+ ]
+ 
++[[package]]
++name = "zerocopy"
++version = "0.8.63"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e5fe1f8f1b06191a00962174c61aa5005e0bb391a6d80d07e24d115c01a92ed8"
++dependencies = [
++ "zerocopy-derive",
++]
++
++[[package]]
++name = "zerocopy-derive"
++version = "0.8.63"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "863ad3ac83293fb4d740aedbfdc9240dd8d1a50c1099acd76ce80ce7c7230c7f"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 2.0.119",
++]
++
+ [[package]]
+ name = "zmij"
+ version = "1.0.23"
+diff --git a/Cargo.toml b/Cargo.toml
+index 8250e98b1754a73b775b996f5de220824a6f5ec7..c01089605a5a629351f0ac22da10863735e28ee7 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -34,7 +34,9 @@ eng-render = { path = "crates/eng-render" }
+ eng-app = { path = "crates/eng-app" }
+ 
+ # Third-party crates. New entries need the owner's approval (deny.toml allow-list).
+-libm = { version = "=0.2.16", default-features = false }
++# `force-soft-floats` keeps libm's `arch` code off even when another crate
++# turns the feature on, as wgpu's naga does (architecture.toml).
++libm = { version = "=0.2.16", default-features = false, features = ["force-soft-floats"] }
+ proc-macro2 = "1.0.107"
+ quote = "1.0.47"
+ syn = "3.0.9"
+@@ -45,6 +47,11 @@ proptest = { version = "1.12.0", default-features = false, features = ["std"] }
+ # The window seam (ADR-0016): only eng-platform-api, eng-platform-winit,
+ # eng-gpu and eng-app may depend on it (gate G3's wrapper ban).
+ raw-window-handle = "=0.6.2"
++# Batch 2 (rung 1b). wgpu only in eng-gpu ([floor] in architecture.toml), with
++# plan decision 5's features. naga is wgpu's own shader compiler, at wgpu's
++# version; eng-gpu's shader test uses its WGSL front end and three back ends.
++wgpu = { version = "=30.0.1", default-features = false, features = ["std", "dx12", "metal", "vulkan", "wgsl"] }
++naga = { version = "=30.0.1", features = ["wgsl-in", "spv-out", "msl-out", "hlsl-out"] }
+ 
+ [workspace.lints.rust]
+ unsafe_code = "deny"
+diff --git a/crates/eng-gpu/Cargo.toml b/crates/eng-gpu/Cargo.toml
+index 45f19961b21ced4659ebd11d42c0cd645598e721..c95605c407acb6ecc4ad5ced90ae09f5ca317398 100644
+--- a/crates/eng-gpu/Cargo.toml
++++ b/crates/eng-gpu/Cargo.toml
+@@ -8,6 +8,10 @@ license.workspace = true
+ publish.workspace = true
+ 
+ [dependencies]
++wgpu.workspace = true
++
++[dev-dependencies]
++naga.workspace = true
+ 
+ [lints]
+ workspace = true
+diff --git a/crates/eng-gpu/src/error.rs b/crates/eng-gpu/src/error.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..530e3f6ef104741088b6e8c41a9b061bc0091d79
+--- /dev/null
++++ b/crates/eng-gpu/src/error.rs
+@@ -0,0 +1,70 @@
++//! The crate's error type.
++
++use std::fmt;
++
++use crate::GraphError;
++use crate::targets::MAX_SIDE;
++
++/// What went wrong on the GPU side. Each message starts with a log tag.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub enum GpuError {
++    /// No adapter, or none whose name contains `wanted` (`ENG_GPU_ADAPTER`).
++    /// `found` lists each adapter seen as `name (backend, device type)`.
++    /// `[E-NO-ADAPTER]`; the probe exits 64 with it (plan decision 4).
++    NoAdapter {
++        wanted: Option<String>,
++        found: Vec<String>,
++    },
++    /// The adapter could not open a Tier 0 device. `[E-GPU]`
++    Device(String),
++    /// A WGSL module or the pipeline made from it did not compile.
++    /// `[E-SHADER]`
++    Shader { label: String, message: String },
++    /// wgpu reported an error while rendering or reading back: validation,
++    /// out of memory or internal. `[E-GPU]`
++    Wgpu(String),
++    /// The graph, or the passes given to it. `[E-GRAPH]`
++    Graph(GraphError),
++    /// A pass recorded something its declaration does not allow. `[E-GPU]`
++    Pass { pass: &'static str, message: String },
++    /// A target side outside 1 to 8,192, Tier 0's largest texture. `[E-GPU]`
++    Size { width: u32, height: u32 },
++}
++
++impl fmt::Display for GpuError {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::NoAdapter { wanted, found } => {
++                match wanted {
++                    Some(name) => write!(
++                        f,
++                        "[E-NO-ADAPTER] no GPU adapter's name contains \"{name}\" (ENG_GPU_ADAPTER)"
++                    )?,
++                    None => f.write_str("[E-NO-ADAPTER] no GPU adapter")?,
++                }
++                if found.is_empty() {
++                    f.write_str("; none found")
++                } else {
++                    write!(f, "; found: {}", found.join("; "))
++                }
++            }
++            Self::Device(message) => write!(f, "[E-GPU] cannot open a Tier 0 device: {message}"),
++            Self::Shader { label, message } => write!(f, "[E-SHADER] {label}: {message}"),
++            Self::Wgpu(message) => write!(f, "[E-GPU] {message}"),
++            Self::Graph(error) => error.fmt(f),
++            Self::Pass { pass, message } => write!(f, "[E-GPU] pass `{pass}`: {message}"),
++            Self::Size { width, height } => write!(
++                f,
++                "[E-GPU] target size {width}x{height}: each side must be 1 to {MAX_SIDE} (Tier 0)"
++            ),
++        }
++    }
++}
++
++impl std::error::Error for GpuError {}
++
++impl From<GraphError> for GpuError {
++    fn from(error: GraphError) -> Self {
++        Self::Graph(error)
++    }
++}
+diff --git a/crates/eng-gpu/src/fullscreen.wgsl b/crates/eng-gpu/src/fullscreen.wgsl
+new file mode 100644
+index 0000000000000000000000000000000000000000..6d730277042809fc1b48d5dc0e8d1053735a7d16
+--- /dev/null
++++ b/crates/eng-gpu/src/fullscreen.wgsl
+@@ -0,0 +1,18 @@
++// The vertex stage of every fullscreen pass (eng-gpu): one triangle that
++// covers the target. `uv` runs from (0, 0) at the target's top left to (1, 1)
++// at its bottom right, so each pixel gets the uv of its centre.
++
++struct Fullscreen {
++    @builtin(position) position: vec4<f32>,
++    @location(0) uv: vec2<f32>,
++}
++
++@vertex
++fn fullscreen_vertex(@builtin(vertex_index) index: u32) -> Fullscreen {
++    // Vertices 0, 1 and 2 at uv (0, 0), (2, 0) and (0, 2).
++    let uv = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
++    var out: Fullscreen;
++    out.position = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
++    out.uv = uv;
++    return out;
++}
+diff --git a/crates/eng-gpu/src/gpu.rs b/crates/eng-gpu/src/gpu.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..abf98ffdff050d6367a583c9b10f42fd5e6eaec1
+--- /dev/null
++++ b/crates/eng-gpu/src/gpu.rs
+@@ -0,0 +1,189 @@
++//! Opening the GPU: the instance, the adapter (plan decision 4), a Tier 0
++//! device, and what every fullscreen pass shares.
++
++use std::future::Future;
++use std::pin::pin;
++use std::sync::Arc;
++use std::task::{Context, Poll, Waker};
++
++use crate::error::GpuError;
++use crate::pass::{FullscreenDesc, FullscreenPipeline, Shared};
++use crate::report::{self, GpuReport};
++use crate::targets;
++
++/// One backend for each OS, the ones spec 8.3's adapters use: Metal on
++/// macOS, DX12 on Windows, Vulkan elsewhere. wgpu tries Vulkan first and
++/// sorts adapters only by device type, so with all three a Windows PC with a
++/// Vulkan driver would render through Vulkan, and machines would differ.
++const BACKENDS: wgpu::Backends = if cfg!(target_os = "macos") {
++    wgpu::Backends::METAL
++} else if cfg!(windows) {
++    wgpu::Backends::DX12
++} else {
++    wgpu::Backends::VULKAN
++};
++
++/// How [`Gpu::new`] picks its adapter.
++#[derive(Clone, Debug, Default, PartialEq, Eq)]
++pub struct GpuOptions {
++    /// The first adapter whose name contains this text, ignoring case. With
++    /// `None`, wgpu prefers a discrete GPU, then an integrated one, and
++    /// software rendering last.
++    pub adapter: Option<String>,
++}
++
++impl GpuOptions {
++    /// `adapter` from `ENG_GPU_ADAPTER`; an empty value counts as unset.
++    pub fn from_env() -> Self {
++        Self {
++            adapter: std::env::var("ENG_GPU_ADAPTER")
++                .ok()
++                .filter(|name| !name.is_empty()),
++        }
++    }
++}
++
++/// Whether a missing adapter fails rather than skips: `ENG_REQUIRE_GPU=1`,
++/// which CI sets (plan decision 4).
++pub fn gpu_required() -> bool {
++    std::env::var("ENG_REQUIRE_GPU").is_ok_and(|value| value == "1")
++}
++
++/// A device on one adapter, at Tier 0: WebGPU's default features and limits
++/// (spec 6.7), whatever the adapter could do beyond them.
++///
++/// Errors that no call returns, which should not happen through this API,
++/// panic with `[E-GPU]`: validation errors are fatal (spec 6.7).
++pub struct Gpu {
++    pub(crate) device: wgpu::Device,
++    pub(crate) queue: wgpu::Queue,
++    pub(crate) shared: Shared,
++    report: GpuReport,
++}
++
++impl Gpu {
++    /// Opens a device on the adapter `options` names, or on wgpu's choice.
++    pub fn new(options: &GpuOptions) -> Result<Self, GpuError> {
++        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
++            backends: BACKENDS,
++            // wgpu's release flags in every build, so tests run as the game
++            // does; `WGPU_DEBUG=1` and `WGPU_VALIDATION=1` add debug labels
++            // and the backend's validation layer when debugging. Debug builds
++            // used to add them by default, and Debian 13's Vulkan loader then
++            // hung or crashed now and then when several threads created and
++            // dropped devices at once (rung 1b, T7).
++            flags: wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL.with_env(),
++            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
++            backend_options: wgpu::BackendOptions {
++                // FXC ships with Windows, so no DLL goes next to the binary
++                // (plan decision 10). wgpu's default would take DXC when one
++                // is on the PATH, so machines would differ.
++                dx12: wgpu::Dx12BackendOptions {
++                    shader_compiler: wgpu::Dx12Compiler::Fxc,
++                    ..wgpu::Dx12BackendOptions::default()
++                },
++                ..wgpu::BackendOptions::default()
++            },
++            display: None,
++        });
++        let adapters = block_on(instance.enumerate_adapters(BACKENDS));
++        let adapter = match &options.adapter {
++            Some(wanted) => {
++                let wanted = wanted.to_lowercase();
++                adapters
++                    .iter()
++                    .find(|a| a.get_info().name.to_lowercase().contains(&wanted))
++                    .cloned()
++            }
++            None => block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
++                power_preference: wgpu::PowerPreference::HighPerformance,
++                ..wgpu::RequestAdapterOptions::default()
++            }))
++            .ok(),
++        };
++        let Some(adapter) = adapter else {
++            return Err(GpuError::NoAdapter {
++                wanted: options.adapter.clone(),
++                found: adapters
++                    .iter()
++                    .map(|a| report::describe(&a.get_info()))
++                    .collect(),
++            });
++        };
++        let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
++            label: Some("eng-gpu"),
++            required_features: wgpu::Features::empty(),
++            required_limits: wgpu::Limits::default(),
++            ..wgpu::DeviceDescriptor::default()
++        }))
++        .map_err(|e| GpuError::Device(e.to_string()))?;
++        device.on_uncaptured_error(Arc::new(|error| {
++            panic!("[E-GPU] wgpu error outside any call that returns one: {error}")
++        }));
++        let report = report::report(&adapter.get_info(), adapter.features());
++        let shared = Shared::new(&device);
++        Ok(Self {
++            device,
++            queue,
++            shared,
++            report,
++        })
++    }
++
++    /// The adapter and what it supports.
++    pub fn report(&self) -> &GpuReport {
++        &self.report
++    }
++
++    /// Compiles a fullscreen pass's fragment stage (`desc.wgsl`) behind
++    /// eng-gpu's vertex stage, for drawing into `desc.target`.
++    pub fn fullscreen_pipeline(
++        &self,
++        desc: &FullscreenDesc<'_>,
++    ) -> Result<FullscreenPipeline, GpuError> {
++        let shader_error = |message: String| GpuError::Shader {
++            label: desc.label.to_string(),
++            message,
++        };
++        let format = targets::format(desc.target).ok_or_else(|| {
++            shader_error(format!(
++                "eng-gpu has no `{}` to draw into yet",
++                desc.target.name()
++            ))
++        })?;
++        self.scoped(|| self.shared.pipeline(&self.device, desc, format))
++            .map_err(shader_error)
++    }
++
++    /// Runs `work`, then returns the first error wgpu reported meanwhile:
++    /// validation, internal or out of memory.
++    pub(crate) fn scoped<T>(&self, work: impl FnOnce() -> T) -> Result<T, String> {
++        let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
++        let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
++        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
++        let value = work();
++        // Scopes pop in reverse order, each as soon as `pop` is called.
++        let popped = [validation.pop(), internal.pop(), memory.pop()];
++        let mut first = None;
++        for scope in popped {
++            if let Some(error) = block_on(scope) {
++                first.get_or_insert_with(|| error.to_string());
++            }
++        }
++        first.map_or(Ok(value), Err)
++    }
++}
++
++/// Drives a wgpu future to its end without an async runtime (plan decision
++/// 6). The native backends finish these at once; GPU work that takes time is
++/// waited for with `Device::poll` instead.
++pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
++    let mut future = pin!(future);
++    let mut context = Context::from_waker(Waker::noop());
++    loop {
++        if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
++            return output;
++        }
++        std::thread::yield_now();
++    }
++}
+diff --git a/crates/eng-gpu/src/graph.rs b/crates/eng-gpu/src/graph.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..03d372d0af6b7396f319a36fdf613e816c8f906c
+--- /dev/null
++++ b/crates/eng-gpu/src/graph.rs
+@@ -0,0 +1,246 @@
++//! The fixed render graph (spec 6.3, 6.7; rung 1b plan, decision 1): passes
++//! declare the virtual resources they read and write, and building a graph
++//! checks the declarations. Ordering, culling and pooling come in rung 2.
++
++use std::fmt;
++
++/// A virtual resource that passes read and write.
++#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
++pub enum Resource {
++    /// The scene: linear, scene-referred HDR colour (`Rgba16Float`).
++    Scene,
++    /// The tone-mapped image (`Rgba8UnormSrgb`). It is always an
++    /// engine-owned texture, never the surface: screenshots and golden tests
++    /// read it (spec 6.7).
++    Output,
++    /// The window's swapchain image, in the surface's preferred format. Only
++    /// a [`Target::Surface`] graph has one.
++    Surface,
++}
++
++impl Resource {
++    /// The name used in messages and reports.
++    pub const fn name(self) -> &'static str {
++        match self {
++            Self::Scene => "scene",
++            Self::Output => "output",
++            Self::Surface => "surface",
++        }
++    }
++}
++
++/// What a pass reads and writes.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct PassDecl {
++    pub name: &'static str,
++    /// Each must be written by an earlier pass. A fullscreen pass draws from
++    /// its one read ([`crate::PassRecorder::fullscreen`]).
++    pub reads: &'static [Resource],
++    /// Exactly one: the pass's colour target.
++    pub writes: &'static [Resource],
++}
++
++/// Draws the scene. In 1b eng-render's top-down pass goes here (task T8).
++pub const DRAW: PassDecl = PassDecl {
++    name: "draw",
++    reads: &[],
++    writes: &[Resource::Scene],
++};
++
++/// Maps the scene into the output. In 1b the map is a clamp to [0, 1]
++/// (plan decision 2); the output's sRGB format does the encoding.
++pub const TONEMAP: PassDecl = PassDecl {
++    name: "tonemap",
++    reads: &[Resource::Scene],
++    writes: &[Resource::Output],
++};
++
++/// Blits the output into the surface's format, rather than copying, because
++/// swapchain textures cannot be relied on for copies (spec 6.7).
++pub const PRESENT: PassDecl = PassDecl {
++    name: "present",
++    reads: &[Resource::Output],
++    writes: &[Resource::Surface],
++};
++
++/// Where a graph's frames go.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum Target {
++    /// Engine-owned textures only: `shot`, `video` and tests.
++    Offscreen,
++    /// A window: the output is also presented.
++    Surface,
++}
++
++/// A checked list of passes, run in order by [`Graph::render`].
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct Graph {
++    pub(crate) passes: Vec<PassDecl>,
++    target: Target,
++}
++
++impl Graph {
++    /// Checks `passes`, in the order they will run:
++    /// - each read was written by an earlier pass;
++    /// - each pass writes exactly one resource;
++    /// - the output is written, never by the pass that writes the surface;
++    /// - an offscreen graph never uses the surface, and a surface graph
++    ///   writes it.
++    pub fn new(passes: &[PassDecl], target: Target) -> Result<Self, GraphError> {
++        let mut written: Vec<Resource> = Vec::new();
++        for pass in passes {
++            let uses_surface = pass
++                .reads
++                .iter()
++                .chain(pass.writes)
++                .any(|r| *r == Resource::Surface);
++            if uses_surface && target == Target::Offscreen {
++                return Err(GraphError::SurfaceOffscreen { pass: pass.name });
++            }
++            if let Some(&resource) = pass.reads.iter().find(|r| !written.contains(r)) {
++                return Err(GraphError::ReadBeforeWrite {
++                    pass: pass.name,
++                    resource,
++                });
++            }
++            // Before the count, so that the error names this rule: only a pass
++            // with two writes can break it while each pass writes one.
++            if pass.writes.contains(&Resource::Output) && pass.writes.contains(&Resource::Surface) {
++                return Err(GraphError::OutputIsSurface { pass: pass.name });
++            }
++            if pass.writes.len() != 1 {
++                return Err(GraphError::Writes {
++                    pass: pass.name,
++                    count: pass.writes.len(),
++                });
++            }
++            written.extend_from_slice(pass.writes);
++        }
++        if !written.contains(&Resource::Output) {
++            return Err(GraphError::OutputNotWritten);
++        }
++        if target == Target::Surface && !written.contains(&Resource::Surface) {
++            return Err(GraphError::SurfaceNotWritten);
++        }
++        Ok(Self {
++            passes: passes.to_vec(),
++            target,
++        })
++    }
++
++    /// Rung 1b's graph: [`DRAW`], [`TONEMAP`], then [`PRESENT`] for a surface.
++    pub fn fixed(target: Target) -> Self {
++        let passes: &[PassDecl] = match target {
++            Target::Offscreen => &[DRAW, TONEMAP],
++            Target::Surface => &[DRAW, TONEMAP, PRESENT],
++        };
++        Self::new(passes, target).expect("the fixed graph passes its own checks")
++    }
++
++    pub fn passes(&self) -> &[PassDecl] {
++        &self.passes
++    }
++
++    pub fn target(&self) -> Target {
++        self.target
++    }
++}
++
++/// A graph whose declarations do not fit together, or passes that do not
++/// match their graph.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub enum GraphError {
++    ReadBeforeWrite {
++        pass: &'static str,
++        resource: Resource,
++    },
++    Writes {
++        pass: &'static str,
++        count: usize,
++    },
++    OutputIsSurface {
++        pass: &'static str,
++    },
++    SurfaceOffscreen {
++        pass: &'static str,
++    },
++    OutputNotWritten,
++    SurfaceNotWritten,
++    /// [`Graph::render`] was given another number of passes.
++    PassCount {
++        expected: usize,
++        found: usize,
++    },
++    /// A pass given to [`Graph::render`] declares other reads or writes than
++    /// the graph has at its position.
++    PassMismatch {
++        index: usize,
++        expected: PassDecl,
++        found: PassDecl,
++    },
++}
++
++impl fmt::Display for GraphError {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.write_str("[E-GRAPH] ")?;
++        match self {
++            Self::ReadBeforeWrite { pass, resource } => write!(
++                f,
++                "pass `{pass}` reads `{}` before any pass writes it",
++                resource.name()
++            ),
++            Self::Writes { pass, count } => write!(
++                f,
++                "pass `{pass}` writes {count} resources; a pass writes exactly one"
++            ),
++            Self::OutputIsSurface { pass } => write!(
++                f,
++                "pass `{pass}` writes the output into the surface; the output stays an engine-owned texture"
++            ),
++            Self::SurfaceOffscreen { pass } => write!(
++                f,
++                "pass `{pass}` uses the surface, but the graph renders offscreen"
++            ),
++            Self::OutputNotWritten => {
++                f.write_str("no pass writes `output`, which screenshots read")
++            }
++            Self::SurfaceNotWritten => {
++                f.write_str("no pass writes `surface`, so nothing would be presented")
++            }
++            Self::PassCount { expected, found } => write!(
++                f,
++                "the graph declares {expected} passes, but {found} were given"
++            ),
++            Self::PassMismatch {
++                index,
++                expected,
++                found,
++            } if expected.name != found.name => write!(
++                f,
++                "pass {index} is `{}`, but the graph declares `{}` there",
++                found.name, expected.name
++            ),
++            Self::PassMismatch {
++                index,
++                expected,
++                found,
++            } => write!(
++                f,
++                "pass {index}, `{}`, reads {} and writes {}, but the graph declares it reading {} and writing {}",
++                found.name,
++                names(found.reads),
++                names(found.writes),
++                names(expected.reads),
++                names(expected.writes)
++            ),
++        }
++    }
++}
++
++impl std::error::Error for GraphError {}
++
++/// Resources as `[scene, output]`.
++fn names(resources: &[Resource]) -> String {
++    let names: Vec<&str> = resources.iter().map(|r| r.name()).collect();
++    format!("[{}]", names.join(", "))
++}
+diff --git a/crates/eng-gpu/src/lib.rs b/crates/eng-gpu/src/lib.rs
+index 2c82feae455f0789446646399ec85ffbcb525f06..6897eb2b17f4047bb8e8c78b10eea3e4758acec1 100644
+--- a/crates/eng-gpu/src/lib.rs
++++ b/crates/eng-gpu/src/lib.rs
+@@ -1,6 +1,59 @@
+-//! The GPU layer (spec 6.7): adapter choice, the capability report, surface
+-//! and offscreen targets, the fixed render graph and readback. It is the
+-//! only crate that may import wgpu (`[floor]` in `architecture.toml`).
++//! The GPU layer (spec 6.7): adapter choice, the capability report, the
++//! fixed render graph, offscreen targets and readback. It is the only crate
++//! that may import wgpu (`[floor]` in `architecture.toml`), and no wgpu type
++//! appears in its public API. GPU work never feeds back into the simulation.
+ //!
+-//! An empty skeleton until rung 1b's task T7 (`docs/rungs/1b/plan.md`).
++//! - **[`Gpu`]** opens a device at Tier 0, WebGPU's default features and
++//!   limits, whatever the adapter could do beyond them. [`GpuOptions`] picks
++//!   the adapter: `ENG_GPU_ADAPTER` names it, else wgpu chooses. Without one,
++//!   [`Gpu::new`] fails with `[E-NO-ADAPTER]`; tests then skip, unless
++//!   `ENG_REQUIRE_GPU=1` ([`gpu_required`]) says CI needs a GPU (plan
++//!   decision 4). Each OS has one backend: Metal on macOS, Vulkan on Linux,
++//!   and DX12 on Windows, with the FXC shader compiler, which ships with
++//!   Windows (decision 10). Debug builds run as release builds do;
++//!   `WGPU_DEBUG=1` and `WGPU_VALIDATION=1` add debug labels and the
++//!   backend's validation layer.
++//! - **[`GpuReport`]**, the capability report: the adapter, its backend,
++//!   device type and driver, the tier, and what it supports beyond Tier 0
++//!   ([`Capabilities`]: timestamp queries and the later tiers' features).
++//! - **[`Graph`]**, the fixed render graph (decision 1). Passes declare what
++//!   they read and write ([`PassDecl`]): [`DRAW`] writes the
++//!   [`Resource::Scene`], [`TONEMAP`] reads it and writes the
++//!   [`Resource::Output`], and [`PRESENT`] reads the output and writes the
++//!   [`Resource::Surface`], in a [`Target::Surface`] graph only.
++//!   [`Graph::new`] checks the declarations; [`Graph::fixed`] is rung 1b's
++//!   list. Ordering, culling and pooling come in rung 2.
++//! - **[`Pass`]**: each frame, [`Graph::render`] has every pass record into a
++//!   [`PassRecorder`], checks each recording against its declaration, then
++//!   encodes and submits the frame. A pass can clear its target and draw
++//!   [`FullscreenPipeline`]s, which take the pass's one read as input; the
++//!   caller writes only their fragment stage.
++//! - **[`Targets`]**: the engine-owned scene (`Rgba16Float`, linear HDR) and
++//!   output (`Rgba8UnormSrgb`) of one size. [`Targets::read_output`] reads
++//!   the output back as an [`Image`], RGBA8 as stored, rows top first.
++//!
++//! Errors come back as [`GpuError`] values whose messages start with a log
++//! tag (`[E-NO-ADAPTER]`, `[E-GPU]`, `[E-SHADER]`, `[E-GRAPH]`). wgpu's own
++//! errors, validation included, are caught around each call that returns a
++//! `Result`; any other one panics, so validation errors are fatal in tests
++//! (spec 6.7).
++//!
++//! `tests/shaders.rs` validates every WGSL file in the repo with naga and
++//! translates it to SPIR-V, MSL and HLSL (decision 11, acceptance feature
++//! `shaders`). So every shader lives in a `.wgsl` file, loaded with
++//! `include_str!`: WGSL written inline in Rust escapes that check.
+ #![forbid(unsafe_code)]
++
++mod error;
++mod gpu;
++mod graph;
++mod pass;
++mod report;
++mod targets;
++
++pub use error::GpuError;
++pub use gpu::{Gpu, GpuOptions, gpu_required};
++pub use graph::{DRAW, Graph, GraphError, PRESENT, PassDecl, Resource, TONEMAP, Target};
++pub use pass::{FullscreenDesc, FullscreenPipeline, LinearRgba, Pass, PassRecorder};
++pub use report::{Backend, Capabilities, DeviceType, GpuReport};
++pub use targets::{Image, Targets};
+diff --git a/crates/eng-gpu/src/pass.rs b/crates/eng-gpu/src/pass.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..2c80f9c48b3e61761e00365d37a1e86e3b2d391e
+--- /dev/null
++++ b/crates/eng-gpu/src/pass.rs
+@@ -0,0 +1,339 @@
++//! Passes and how a graph runs them. A pass records commands into a
++//! [`PassRecorder`]; once every pass has recorded and each recording fits
++//! its declaration, the frame is encoded and submitted at once.
++
++use crate::error::GpuError;
++use crate::gpu::Gpu;
++use crate::graph::{Graph, GraphError, PassDecl, Resource};
++use crate::targets::Targets;
++
++/// The vertex stage of every fullscreen pass.
++const FULLSCREEN_WGSL: &str = include_str!("fullscreen.wgsl");
++
++/// A colour in linear, scene-referred units (AGENTS.md conventions). The
++/// scene holds values above 1.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub struct LinearRgba {
++    pub r: f32,
++    pub g: f32,
++    pub b: f32,
++    pub a: f32,
++}
++
++impl LinearRgba {
++    /// What a pass's target starts as unless the pass clears it.
++    pub const TRANSPARENT: Self = Self {
++        r: 0.0,
++        g: 0.0,
++        b: 0.0,
++        a: 0.0,
++    };
++}
++
++/// One pass of a graph. [`Graph::render`] runs it where the graph declares
++/// the same [`PassDecl`].
++pub trait Pass {
++    /// What the pass reads and writes.
++    fn decl(&self) -> PassDecl;
++    /// Records this frame's work. It reaches the GPU after every pass has
++    /// recorded.
++    fn record(&mut self, rec: &mut PassRecorder);
++}
++
++/// A fullscreen pass's fragment stage.
++pub struct FullscreenDesc<'a> {
++    /// Names the pipeline in errors and GPU debuggers.
++    pub label: &'a str,
++    /// A WGSL module with the fragment entry point. It takes
++    /// `@location(0) uv: vec2<f32>`, from (0, 0) at the top left to (1, 1) at
++    /// the bottom right, and may bind the pass's input as
++    /// `@group(0) @binding(0) var input: texture_2d<f32>` and
++    /// `@group(0) @binding(1) var input_sampler: sampler`, which samples the
++    /// nearest texel. Load it from a `.wgsl` file with `include_str!`, so
++    /// that the shader test checks it.
++    pub wgsl: &'a str,
++    /// The fragment entry point's name.
++    pub entry: &'a str,
++    /// What the pipeline draws into; it sets the colour format.
++    pub target: Resource,
++}
++
++/// A compiled fullscreen pipeline, for [`PassRecorder::fullscreen`]. Cheap
++/// to clone.
++#[derive(Clone, Debug)]
++pub struct FullscreenPipeline {
++    pipeline: wgpu::RenderPipeline,
++    target: Resource,
++}
++
++/// The commands a pass records for one frame.
++#[derive(Debug)]
++pub struct PassRecorder {
++    clear: LinearRgba,
++    commands: Vec<Command>,
++}
++
++#[derive(Debug)]
++enum Command {
++    Fullscreen(FullscreenPipeline),
++}
++
++impl PassRecorder {
++    fn new() -> Self {
++        Self {
++            clear: LinearRgba::TRANSPARENT,
++            commands: Vec::new(),
++        }
++    }
++
++    /// Starts the pass's target as `colour` rather than
++    /// [`LinearRgba::TRANSPARENT`].
++    pub fn clear(&mut self, colour: LinearRgba) {
++        self.clear = colour;
++    }
++
++    /// Draws `pipeline` over the whole target, with the pass's one read as
++    /// its input.
++    pub fn fullscreen(&mut self, pipeline: &FullscreenPipeline) {
++        self.commands.push(Command::Fullscreen(pipeline.clone()));
++    }
++
++    /// Whether the recording fits the pass's declaration.
++    fn check(&self, decl: &PassDecl) -> Result<(), GpuError> {
++        let fail = |message: String| GpuError::Pass {
++            pass: decl.name,
++            message,
++        };
++        for Command::Fullscreen(pipeline) in &self.commands {
++            if decl.reads.len() != 1 {
++                return Err(fail(format!(
++                    "a fullscreen draw takes the pass's one read as its input, but the pass reads {}",
++                    decl.reads.len()
++                )));
++            }
++            if decl.writes != [pipeline.target] {
++                return Err(fail(format!(
++                    "the pipeline draws into `{}`, but the pass writes `{}`",
++                    pipeline.target.name(),
++                    decl.writes.first().map_or("nothing", |r| r.name())
++                )));
++            }
++        }
++        Ok(())
++    }
++}
++
++impl Graph {
++    /// Records `passes`, one for each of the graph's declarations and in the
++    /// same order, then submits the frame. Each pass draws into the target
++    /// it writes; a later [`Targets::read_output`] sees the frame.
++    pub fn render(
++        &self,
++        gpu: &Gpu,
++        targets: &Targets,
++        passes: &mut [&mut dyn Pass],
++    ) -> Result<(), GpuError> {
++        if passes.len() != self.passes.len() {
++            return Err(GraphError::PassCount {
++                expected: self.passes.len(),
++                found: passes.len(),
++            }
++            .into());
++        }
++        let mut recorded = Vec::with_capacity(passes.len());
++        for (index, (decl, pass)) in self.passes.iter().zip(passes.iter_mut()).enumerate() {
++            let found = pass.decl();
++            if found != *decl {
++                return Err(GraphError::PassMismatch {
++                    index,
++                    expected: *decl,
++                    found,
++                }
++                .into());
++            }
++            let mut rec = PassRecorder::new();
++            pass.record(&mut rec);
++            rec.check(decl)?;
++            recorded.push(rec);
++        }
++        // Only a surface graph has the surface, and eng-gpu cannot render one
++        // yet. Each pass writes exactly one resource (Graph::new).
++        let mut views = Vec::with_capacity(recorded.len());
++        for decl in &self.passes {
++            let view = |r: Resource| {
++                targets.view(r).ok_or_else(|| GpuError::Pass {
++                    pass: decl.name,
++                    message: "eng-gpu renders offscreen only; it opens no surface yet".into(),
++                })
++            };
++            let input = decl.reads.first().map(|&r| view(r)).transpose()?;
++            views.push((view(decl.writes[0])?, input));
++        }
++        gpu.scoped(|| {
++            let mut encoder = gpu
++                .device
++                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
++                    label: Some("frame"),
++                });
++            for ((decl, rec), (target, input)) in self.passes.iter().zip(&recorded).zip(&views) {
++                encode(gpu, &mut encoder, decl, rec, target, *input);
++            }
++            gpu.queue.submit([encoder.finish()]);
++        })
++        .map_err(GpuError::Wgpu)
++    }
++}
++
++fn encode(
++    gpu: &Gpu,
++    encoder: &mut wgpu::CommandEncoder,
++    decl: &PassDecl,
++    rec: &PassRecorder,
++    target: &wgpu::TextureView,
++    input: Option<&wgpu::TextureView>,
++) {
++    let clear = wgpu::Color {
++        r: f64::from(rec.clear.r),
++        g: f64::from(rec.clear.g),
++        b: f64::from(rec.clear.b),
++        a: f64::from(rec.clear.a),
++    };
++    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
++        label: Some(decl.name),
++        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
++            view: target,
++            depth_slice: None,
++            resolve_target: None,
++            ops: wgpu::Operations {
++                load: wgpu::LoadOp::Clear(clear),
++                store: wgpu::StoreOp::Store,
++            },
++        })],
++        depth_stencil_attachment: None,
++        timestamp_writes: None,
++        occlusion_query_set: None,
++        multiview_mask: None,
++    });
++    for Command::Fullscreen(pipeline) in &rec.commands {
++        // `check` made sure a fullscreen pass has its input.
++        let Some(input) = input else { continue };
++        let bind_group = gpu.shared.bind(&gpu.device, input);
++        pass.set_pipeline(&pipeline.pipeline);
++        pass.set_bind_group(0, &bind_group, &[]);
++        pass.draw(0..3, 0..1);
++    }
++}
++
++/// What every fullscreen pipeline shares: the vertex stage, the input's
++/// layout and its sampler.
++pub(crate) struct Shared {
++    vertex: wgpu::ShaderModule,
++    inputs: wgpu::BindGroupLayout,
++    layout: wgpu::PipelineLayout,
++    sampler: wgpu::Sampler,
++}
++
++impl Shared {
++    pub(crate) fn new(device: &wgpu::Device) -> Self {
++        let vertex = device.create_shader_module(wgpu::ShaderModuleDescriptor {
++            label: Some("fullscreen"),
++            source: wgpu::ShaderSource::Wgsl(FULLSCREEN_WGSL.into()),
++        });
++        let inputs = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
++            label: Some("fullscreen input"),
++            entries: &[
++                wgpu::BindGroupLayoutEntry {
++                    binding: 0,
++                    visibility: wgpu::ShaderStages::FRAGMENT,
++                    ty: wgpu::BindingType::Texture {
++                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
++                        view_dimension: wgpu::TextureViewDimension::D2,
++                        multisampled: false,
++                    },
++                    count: None,
++                },
++                wgpu::BindGroupLayoutEntry {
++                    binding: 1,
++                    visibility: wgpu::ShaderStages::FRAGMENT,
++                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
++                    count: None,
++                },
++            ],
++        });
++        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
++            label: Some("fullscreen"),
++            bind_group_layouts: &[Some(&inputs)],
++            immediate_size: 0,
++        });
++        // Nearest texel, clamped at the edges: a same-size pass copies texels
++        // exactly.
++        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
++            label: Some("fullscreen input"),
++            ..wgpu::SamplerDescriptor::default()
++        });
++        Self {
++            vertex,
++            inputs,
++            layout,
++            sampler,
++        }
++    }
++
++    pub(crate) fn pipeline(
++        &self,
++        device: &wgpu::Device,
++        desc: &FullscreenDesc<'_>,
++        format: wgpu::TextureFormat,
++    ) -> FullscreenPipeline {
++        let fragment = device.create_shader_module(wgpu::ShaderModuleDescriptor {
++            label: Some(desc.label),
++            source: wgpu::ShaderSource::Wgsl(desc.wgsl.into()),
++        });
++        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
++            label: Some(desc.label),
++            layout: Some(&self.layout),
++            vertex: wgpu::VertexState {
++                module: &self.vertex,
++                entry_point: Some("fullscreen_vertex"),
++                compilation_options: wgpu::PipelineCompilationOptions::default(),
++                buffers: &[],
++            },
++            primitive: wgpu::PrimitiveState::default(),
++            depth_stencil: None,
++            multisample: wgpu::MultisampleState::default(),
++            fragment: Some(wgpu::FragmentState {
++                module: &fragment,
++                entry_point: Some(desc.entry),
++                compilation_options: wgpu::PipelineCompilationOptions::default(),
++                targets: &[Some(wgpu::ColorTargetState {
++                    format,
++                    blend: None,
++                    write_mask: wgpu::ColorWrites::ALL,
++                })],
++            }),
++            multiview_mask: None,
++            cache: None,
++        });
++        FullscreenPipeline {
++            pipeline,
++            target: desc.target,
++        }
++    }
++
++    fn bind(&self, device: &wgpu::Device, input: &wgpu::TextureView) -> wgpu::BindGroup {
++        device.create_bind_group(&wgpu::BindGroupDescriptor {
++            label: Some("fullscreen input"),
++            layout: &self.inputs,
++            entries: &[
++                wgpu::BindGroupEntry {
++                    binding: 0,
++                    resource: wgpu::BindingResource::TextureView(input),
++                },
++                wgpu::BindGroupEntry {
++                    binding: 1,
++                    resource: wgpu::BindingResource::Sampler(&self.sampler),
++                },
++            ],
++        })
++    }
++}
+diff --git a/crates/eng-gpu/src/report.rs b/crates/eng-gpu/src/report.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..165f5dbdc8af7ddc72decfd516b911300d867f9c
+--- /dev/null
++++ b/crates/eng-gpu/src/report.rs
+@@ -0,0 +1,138 @@
++//! The capability report (spec 6.7, 6.13): which adapter renders, and what it
++//! could do beyond Tier 0. Plain data; reports carry it as their `gpu` object.
++
++/// The adapter a [`crate::Gpu`] runs on, and what it supports.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct GpuReport {
++    /// The adapter's name, such as `Apple M2 Pro` or
++    /// `llvmpipe (LLVM 19.1.7, 256 bits)`.
++    pub adapter: String,
++    pub backend: Backend,
++    pub device_type: DeviceType,
++    /// The backend's vendor and device ids: PCI ids where it has them, else
++    /// 0 (Metal).
++    pub vendor: u32,
++    pub device: u32,
++    /// The driver's name and its version text, as the backend gives them;
++    /// empty where it gives none (Metal).
++    pub driver: String,
++    pub driver_info: String,
++    /// The capability tier the device runs at. Level 1 uses only Tier 0,
++    /// WebGPU's default features and limits (spec 6.7), whatever the adapter
++    /// supports.
++    pub tier: u8,
++    /// What the adapter supports. Tier 0 enables none of it.
++    pub capabilities: Capabilities,
++}
++
++/// Optional adapter features that later tiers or pass timing would use
++/// (spec 6.7).
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub struct Capabilities {
++    /// GPU timestamp queries. Pass timing reports `null` without them.
++    pub timestamp_queries: bool,
++    /// Arrays of textures in one binding (bindless).
++    pub binding_arrays: bool,
++    /// Indirect draws whose count comes from a buffer.
++    pub multi_draw_indirect_count: bool,
++    /// Ray queries in shaders.
++    pub ray_query: bool,
++    /// Task and mesh shaders.
++    pub mesh_shaders: bool,
++}
++
++/// The graphics API under the adapter.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum Backend {
++    Vulkan,
++    Metal,
++    Dx12,
++    /// Anything else wgpu might report. Only the three above are built.
++    Other,
++}
++
++impl Backend {
++    /// `vulkan`, `metal`, `dx12` or `other`.
++    pub const fn as_str(self) -> &'static str {
++        match self {
++            Self::Vulkan => "vulkan",
++            Self::Metal => "metal",
++            Self::Dx12 => "dx12",
++            Self::Other => "other",
++        }
++    }
++}
++
++/// What kind of device the adapter is.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum DeviceType {
++    IntegratedGpu,
++    DiscreteGpu,
++    /// A virtual or hosted GPU, such as a CI runner's paravirtual device.
++    VirtualGpu,
++    /// Software rendering, such as lavapipe or WARP.
++    Cpu,
++    Other,
++}
++
++impl DeviceType {
++    /// `integrated-gpu`, `discrete-gpu`, `virtual-gpu`, `cpu` or `other`.
++    pub const fn as_str(self) -> &'static str {
++        match self {
++            Self::IntegratedGpu => "integrated-gpu",
++            Self::DiscreteGpu => "discrete-gpu",
++            Self::VirtualGpu => "virtual-gpu",
++            Self::Cpu => "cpu",
++            Self::Other => "other",
++        }
++    }
++}
++
++pub(crate) fn backend(backend: wgpu::Backend) -> Backend {
++    match backend {
++        wgpu::Backend::Vulkan => Backend::Vulkan,
++        wgpu::Backend::Metal => Backend::Metal,
++        wgpu::Backend::Dx12 => Backend::Dx12,
++        _ => Backend::Other,
++    }
++}
++
++pub(crate) fn device_type(device_type: wgpu::DeviceType) -> DeviceType {
++    match device_type {
++        wgpu::DeviceType::IntegratedGpu => DeviceType::IntegratedGpu,
++        wgpu::DeviceType::DiscreteGpu => DeviceType::DiscreteGpu,
++        wgpu::DeviceType::VirtualGpu => DeviceType::VirtualGpu,
++        wgpu::DeviceType::Cpu => DeviceType::Cpu,
++        wgpu::DeviceType::Other => DeviceType::Other,
++    }
++}
++
++/// One adapter in a message: `name (backend, device type)`.
++pub(crate) fn describe(info: &wgpu::AdapterInfo) -> String {
++    format!(
++        "{} ({}, {})",
++        info.name,
++        backend(info.backend).as_str(),
++        device_type(info.device_type).as_str()
++    )
++}
++
++pub(crate) fn report(info: &wgpu::AdapterInfo, features: wgpu::Features) -> GpuReport {
++    GpuReport {
++        adapter: info.name.clone(),
++        backend: backend(info.backend),
++        device_type: device_type(info.device_type),
++        vendor: info.vendor,
++        device: info.device,
++        driver: info.driver.clone(),
++        driver_info: info.driver_info.clone(),
++        tier: 0,
++        capabilities: Capabilities {
++            timestamp_queries: features.contains(wgpu::Features::TIMESTAMP_QUERY),
++            binding_arrays: features.contains(wgpu::Features::TEXTURE_BINDING_ARRAY),
++            multi_draw_indirect_count: features.contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT),
++            ray_query: features.contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY),
++            mesh_shaders: features.contains(wgpu::Features::EXPERIMENTAL_MESH_SHADER),
++        },
++    }
++}
+diff --git a/crates/eng-gpu/src/targets.rs b/crates/eng-gpu/src/targets.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..b55924dc3e9a92e764f48388573ff7dfdf1d154d
+--- /dev/null
++++ b/crates/eng-gpu/src/targets.rs
+@@ -0,0 +1,195 @@
++//! Offscreen targets and readback: the engine-owned textures a graph renders
++//! into, and the output's pixels read back for `shot`, `video` and goldens.
++
++use crate::Resource;
++use crate::error::GpuError;
++use crate::gpu::Gpu;
++
++/// The scene's format: linear, scene-referred HDR (spec 6.7).
++const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
++
++/// The output's format. The GPU encodes sRGB on write, so tone mapping
++/// writes linear values (plan decision 2).
++const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
++
++/// The longest side a target may have: Tier 0's largest 2D texture.
++pub(crate) const MAX_SIDE: u32 = 8192;
++
++/// The texture format of an engine-owned resource; `None` for the surface.
++pub(crate) fn format(resource: Resource) -> Option<wgpu::TextureFormat> {
++    match resource {
++        Resource::Scene => Some(SCENE_FORMAT),
++        Resource::Output => Some(OUTPUT_FORMAT),
++        Resource::Surface => None,
++    }
++}
++
++/// The engine-owned textures of one size that a graph renders into: the
++/// [`Resource::Scene`] and the [`Resource::Output`].
++pub struct Targets {
++    width: u32,
++    height: u32,
++    scene: wgpu::TextureView,
++    output_texture: wgpu::Texture,
++    output: wgpu::TextureView,
++}
++
++impl Targets {
++    /// Targets of `width` by `height` pixels, each from 1 to 8,192.
++    pub fn new(gpu: &Gpu, width: u32, height: u32) -> Result<Self, GpuError> {
++        let fits = |side: u32| (1..=MAX_SIDE).contains(&side);
++        if !fits(width) || !fits(height) {
++            return Err(GpuError::Size { width, height });
++        }
++        let create = |label: &str, format: wgpu::TextureFormat, usage: wgpu::TextureUsages| {
++            gpu.device.create_texture(&wgpu::TextureDescriptor {
++                label: Some(label),
++                size: wgpu::Extent3d {
++                    width,
++                    height,
++                    depth_or_array_layers: 1,
++                },
++                mip_level_count: 1,
++                sample_count: 1,
++                dimension: wgpu::TextureDimension::D2,
++                format,
++                usage,
++                view_formats: &[],
++            })
++        };
++        let drawn = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
++        let (scene, output_texture) = gpu
++            .scoped(|| {
++                (
++                    create("scene", SCENE_FORMAT, drawn),
++                    create(
++                        "output",
++                        OUTPUT_FORMAT,
++                        drawn | wgpu::TextureUsages::COPY_SRC,
++                    ),
++                )
++            })
++            .map_err(GpuError::Wgpu)?;
++        Ok(Self {
++            width,
++            height,
++            scene: scene.create_view(&wgpu::TextureViewDescriptor::default()),
++            output: output_texture.create_view(&wgpu::TextureViewDescriptor::default()),
++            output_texture,
++        })
++    }
++
++    /// Width and height in pixels.
++    pub fn size(&self) -> (u32, u32) {
++        (self.width, self.height)
++    }
++
++    /// The view a pass draws into or reads; `None` for the surface.
++    pub(crate) fn view(&self, resource: Resource) -> Option<&wgpu::TextureView> {
++        match resource {
++            Resource::Scene => Some(&self.scene),
++            Resource::Output => Some(&self.output),
++            Resource::Surface => None,
++        }
++    }
++
++    /// Copies the output back to the CPU, waiting for the GPU to finish the
++    /// frames submitted before.
++    pub fn read_output(&self, gpu: &Gpu) -> Result<Image, GpuError> {
++        let row = self.width * 4;
++        let stride =
++            row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
++        let buffer = gpu
++            .scoped(|| {
++                let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
++                    label: Some("readback"),
++                    size: u64::from(stride) * u64::from(self.height),
++                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
++                    mapped_at_creation: false,
++                });
++                let mut encoder =
++                    gpu.device
++                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
++                            label: Some("readback"),
++                        });
++                encoder.copy_texture_to_buffer(
++                    self.output_texture.as_image_copy(),
++                    wgpu::TexelCopyBufferInfo {
++                        buffer: &buffer,
++                        layout: wgpu::TexelCopyBufferLayout {
++                            offset: 0,
++                            bytes_per_row: Some(stride),
++                            rows_per_image: Some(self.height),
++                        },
++                    },
++                    wgpu::Extent3d {
++                        width: self.width,
++                        height: self.height,
++                        depth_or_array_layers: 1,
++                    },
++                );
++                gpu.queue.submit([encoder.finish()]);
++                buffer
++            })
++            .map_err(GpuError::Wgpu)?;
++        let (sender, receiver) = std::sync::mpsc::channel();
++        buffer.map_async(wgpu::MapMode::Read, .., move |mapped| {
++            // The receiver waits below, so a failed send cannot happen.
++            let _ = sender.send(mapped);
++        });
++        gpu.device
++            .poll(wgpu::PollType::wait_indefinitely())
++            .map_err(|e| GpuError::Wgpu(format!("waiting for the readback: {e}")))?;
++        receiver
++            .try_recv()
++            .map_err(|_| GpuError::Wgpu("the readback was not mapped after the wait".into()))?
++            .map_err(|e| GpuError::Wgpu(format!("mapping the readback: {e}")))?;
++        let mapped = buffer
++            .get_mapped_range(..)
++            .map_err(|e| GpuError::Wgpu(format!("reading the readback: {e}")))?;
++        let mut rgba8 = Vec::with_capacity(row as usize * self.height as usize);
++        for line in mapped.chunks_exact(stride as usize) {
++            rgba8.extend_from_slice(&line[..row as usize]);
++        }
++        drop(mapped);
++        buffer.unmap();
++        Ok(Image {
++            width: self.width,
++            height: self.height,
++            rgba8,
++        })
++    }
++}
++
++/// The output's pixels: RGBA8, sRGB-encoded as the output stores them, rows
++/// top first, with no padding.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct Image {
++    pub width: u32,
++    pub height: u32,
++    /// `width * height * 4` bytes.
++    pub rgba8: Vec<u8>,
++}
++
++impl Image {
++    /// The pixel in column `x` and row `y`; (0, 0) is the top left.
++    ///
++    /// # Panics
++    ///
++    /// Outside the image.
++    pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
++        assert!(
++            x < self.width && y < self.height,
++            "pixel ({x}, {y}) is outside a {}x{} image",
++            self.width,
++            self.height
++        );
++        let at = (y as usize * self.width as usize + x as usize) * 4;
++        [
++            self.rgba8[at],
++            self.rgba8[at + 1],
++            self.rgba8[at + 2],
++            self.rgba8[at + 3],
++        ]
++    }
++}
+diff --git a/crates/eng-gpu/tests/graph.rs b/crates/eng-gpu/tests/graph.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..b35a0708dcde02de05b43c6cef51485a32efe77d
+--- /dev/null
++++ b/crates/eng-gpu/tests/graph.rs
+@@ -0,0 +1,161 @@
++//! The fixed render graph's declarations (spec 6.3, 6.7; rung 1b plan,
++//! decision 1): what each pass reads and writes, and the checks that run when
++//! a graph is built. No GPU is needed.
++
++use eng_gpu::{DRAW, Graph, GraphError, PRESENT, PassDecl, Resource, TONEMAP, Target};
++
++fn names(graph: &Graph) -> Vec<&'static str> {
++    graph.passes().iter().map(|p| p.name).collect()
++}
++
++#[test]
++fn the_three_passes_declare_what_they_read_and_write() {
++    assert_eq!(DRAW.name, "draw");
++    assert_eq!(DRAW.reads, &[] as &[Resource]);
++    assert_eq!(DRAW.writes, &[Resource::Scene]);
++    assert_eq!(TONEMAP.name, "tonemap");
++    assert_eq!(TONEMAP.reads, &[Resource::Scene]);
++    assert_eq!(TONEMAP.writes, &[Resource::Output]);
++    assert_eq!(PRESENT.name, "present");
++    assert_eq!(PRESENT.reads, &[Resource::Output]);
++    assert_eq!(PRESENT.writes, &[Resource::Surface]);
++}
++
++#[test]
++fn the_fixed_graph_presents_only_to_a_surface() {
++    assert_eq!(
++        names(&Graph::fixed(Target::Surface)),
++        ["draw", "tonemap", "present"]
++    );
++    assert_eq!(names(&Graph::fixed(Target::Offscreen)), ["draw", "tonemap"]);
++    assert_eq!(Graph::fixed(Target::Offscreen).target(), Target::Offscreen);
++    assert_eq!(
++        Graph::new(&[DRAW, TONEMAP, PRESENT], Target::Surface),
++        Ok(Graph::fixed(Target::Surface))
++    );
++}
++
++#[test]
++fn a_read_must_follow_its_write() {
++    assert_eq!(
++        Graph::new(&[TONEMAP, DRAW], Target::Offscreen),
++        Err(GraphError::ReadBeforeWrite {
++            pass: "tonemap",
++            resource: Resource::Scene,
++        })
++    );
++    assert_eq!(
++        Graph::new(&[DRAW, PRESENT, TONEMAP], Target::Surface),
++        Err(GraphError::ReadBeforeWrite {
++            pass: "present",
++            resource: Resource::Output,
++        })
++    );
++}
++
++#[test]
++fn a_pass_writes_exactly_one_resource() {
++    let nothing = PassDecl {
++        name: "nothing",
++        reads: &[Resource::Scene],
++        writes: &[],
++    };
++    assert_eq!(
++        Graph::new(&[DRAW, nothing, TONEMAP], Target::Offscreen),
++        Err(GraphError::Writes {
++            pass: "nothing",
++            count: 0,
++        })
++    );
++    let both = PassDecl {
++        name: "both",
++        reads: &[],
++        writes: &[Resource::Scene, Resource::Output],
++    };
++    assert_eq!(
++        Graph::new(&[both], Target::Offscreen),
++        Err(GraphError::Writes {
++            pass: "both",
++            count: 2,
++        })
++    );
++}
++
++#[test]
++fn an_offscreen_graph_never_touches_the_surface() {
++    assert_eq!(
++        Graph::new(&[DRAW, TONEMAP, PRESENT], Target::Offscreen),
++        Err(GraphError::SurfaceOffscreen { pass: "present" })
++    );
++    // Reading it is as wrong as writing it.
++    let peek = PassDecl {
++        name: "peek",
++        reads: &[Resource::Surface],
++        writes: &[Resource::Output],
++    };
++    assert_eq!(
++        Graph::new(&[DRAW, peek], Target::Offscreen),
++        Err(GraphError::SurfaceOffscreen { pass: "peek" })
++    );
++}
++
++#[test]
++fn output_is_never_the_surface() {
++    // Tone mapping straight into the swapchain would leave screenshots
++    // nothing engine-owned to read (spec 6.7).
++    let direct = PassDecl {
++        name: "tonemap",
++        reads: &[Resource::Scene],
++        writes: &[Resource::Output, Resource::Surface],
++    };
++    assert_eq!(
++        Graph::new(&[DRAW, direct], Target::Surface),
++        Err(GraphError::OutputIsSurface { pass: "tonemap" })
++    );
++}
++
++#[test]
++fn output_must_be_written_and_a_surface_presented() {
++    assert_eq!(
++        Graph::new(&[DRAW], Target::Offscreen),
++        Err(GraphError::OutputNotWritten)
++    );
++    assert_eq!(
++        Graph::new(&[DRAW, TONEMAP], Target::Surface),
++        Err(GraphError::SurfaceNotWritten)
++    );
++}
++
++#[test]
++fn errors_name_the_pass_and_carry_the_tag() {
++    let e = Graph::new(&[TONEMAP, DRAW], Target::Offscreen).unwrap_err();
++    assert_eq!(
++        e.to_string(),
++        "[E-GRAPH] pass `tonemap` reads `scene` before any pass writes it"
++    );
++    let e = GraphError::PassMismatch {
++        index: 1,
++        expected: TONEMAP,
++        found: DRAW,
++    };
++    assert_eq!(
++        e.to_string(),
++        "[E-GRAPH] pass 1 is `draw`, but the graph declares `tonemap` there"
++    );
++    // The same name with other reads or writes.
++    let impostor = PassDecl {
++        name: "tonemap",
++        reads: &[Resource::Scene],
++        writes: &[Resource::Scene],
++    };
++    let e = GraphError::PassMismatch {
++        index: 1,
++        expected: TONEMAP,
++        found: impostor,
++    };
++    assert_eq!(
++        e.to_string(),
++        "[E-GRAPH] pass 1, `tonemap`, reads [scene] and writes [scene], \
++         but the graph declares it reading [scene] and writing [output]"
++    );
++}
+diff --git a/crates/eng-gpu/tests/offscreen.rs b/crates/eng-gpu/tests/offscreen.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..e1d715ea6fcb33f585176e273357b518a72cddb5
+--- /dev/null
++++ b/crates/eng-gpu/tests/offscreen.rs
+@@ -0,0 +1,319 @@
++//! Offscreen rendering on a real adapter (rung 1b, task T7): the fixed graph
++//! without a surface, a clear, a fullscreen pass and readback. Without an
++//! adapter each GPU test skips, unless `ENG_REQUIRE_GPU=1` (CI) makes it fail
++//! (plan decision 4).
++
++use eng_gpu::{
++    Backend, DRAW, DeviceType, FullscreenDesc, FullscreenPipeline, Gpu, GpuError, GpuOptions,
++    Graph, GraphError, Image, LinearRgba, Pass, PassDecl, PassRecorder, Resource, TONEMAP, Target,
++    Targets,
++};
++
++const CLAMP: &str = include_str!("wgsl/clamp.wgsl");
++const QUADRANTS: &str = include_str!("wgsl/quadrants.wgsl");
++const COPY_WGSL: &str = include_str!("wgsl/copy.wgsl");
++
++fn gpu() -> Option<Gpu> {
++    match Gpu::new(&GpuOptions::from_env()) {
++        Ok(gpu) => Some(gpu),
++        Err(e @ GpuError::NoAdapter { .. }) if !eng_gpu::gpu_required() => {
++            eprintln!("skipped: {e}");
++            None
++        }
++        Err(e) => panic!("{e}"),
++    }
++}
++
++/// A draw pass that only clears the scene.
++struct Clear(LinearRgba);
++
++impl Pass for Clear {
++    fn decl(&self) -> PassDecl {
++        DRAW
++    }
++    fn record(&mut self, rec: &mut PassRecorder) {
++        rec.clear(self.0);
++    }
++}
++
++/// Any pass that draws one fullscreen pipeline.
++struct Fullscreen(PassDecl, FullscreenPipeline);
++
++impl Pass for Fullscreen {
++    fn decl(&self) -> PassDecl {
++        self.0
++    }
++    fn record(&mut self, rec: &mut PassRecorder) {
++        rec.fullscreen(&self.1);
++    }
++}
++
++fn pipeline(gpu: &Gpu, wgsl: &str, entry: &str, target: Resource) -> FullscreenPipeline {
++    gpu.fullscreen_pipeline(&FullscreenDesc {
++        label: entry,
++        wgsl,
++        entry,
++        target,
++    })
++    .unwrap_or_else(|e| panic!("{e}"))
++}
++
++fn tonemap(gpu: &Gpu, wgsl: &str, entry: &str) -> Fullscreen {
++    Fullscreen(TONEMAP, pipeline(gpu, wgsl, entry, Resource::Output))
++}
++
++const BLACK: LinearRgba = LinearRgba {
++    r: 0.0,
++    g: 0.0,
++    b: 0.0,
++    a: 1.0,
++};
++
++#[test]
++fn a_cleared_scene_reads_back_tone_mapped_and_srgb_encoded() {
++    let Some(gpu) = gpu() else { return };
++    // The shot size of plan decision 3.
++    let targets = Targets::new(&gpu, 320, 240).unwrap_or_else(|e| panic!("{e}"));
++    // Linear and scene-referred. Red is above 1 and blue below 0, so both
++    // clamp; green 0.215861 is sRGB 128/255 decoded, half a step from either
++    // neighbour.
++    let mut draw = Clear(LinearRgba {
++        r: 4.0,
++        g: 0.215_861,
++        b: -1.0,
++        a: 1.0,
++    });
++    let mut map = tonemap(&gpu, CLAMP, "clamp_fragment");
++    Graph::fixed(Target::Offscreen)
++        .render(&gpu, &targets, &mut [&mut draw, &mut map])
++        .unwrap_or_else(|e| panic!("{e}"));
++    let image = targets.read_output(&gpu).unwrap_or_else(|e| panic!("{e}"));
++    assert_eq!((image.width, image.height), (320, 240));
++    assert_eq!(image.rgba8.len(), 320 * 240 * 4);
++    let (pixels, rest) = image.rgba8.as_chunks::<4>();
++    assert!(rest.is_empty());
++    assert!(
++        pixels.iter().all(|p| *p == [255, 128, 0, 255]),
++        "first pixel {:?}, last {:?}",
++        pixels.first(),
++        pixels.last()
++    );
++    assert_eq!(image.pixel(319, 239), [255, 128, 0, 255]);
++}
++
++#[test]
++fn readback_gives_rows_top_first_without_row_padding() {
++    let Some(gpu) = gpu() else { return };
++    // 100 pixels make a 400-byte row, which a copy pads to 512.
++    let targets = Targets::new(&gpu, 100, 60).unwrap_or_else(|e| panic!("{e}"));
++    let mut draw = Clear(BLACK);
++    let mut pattern = tonemap(&gpu, QUADRANTS, "quadrants_fragment");
++    Graph::fixed(Target::Offscreen)
++        .render(&gpu, &targets, &mut [&mut draw, &mut pattern])
++        .unwrap_or_else(|e| panic!("{e}"));
++    let image = targets.read_output(&gpu).unwrap_or_else(|e| panic!("{e}"));
++    assert_eq!(image.rgba8.len(), 100 * 60 * 4);
++    assert_pattern(&image);
++}
++
++/// What `quadrants.wgsl` draws: red on the left half, green on the top
++/// half, blue on alternate pixels.
++fn assert_pattern(image: &Image) {
++    let (width, height) = (image.width, image.height);
++    for y in 0..height {
++        for x in 0..width {
++            let on = |yes: bool| if yes { 255 } else { 0 };
++            let expected = [
++                on(x < width / 2),
++                on(y < height / 2),
++                on((x + y) % 2 == 1),
++                255,
++            ];
++            assert_eq!(image.pixel(x, y), expected, "pixel ({x}, {y})");
++        }
++    }
++}
++
++#[test]
++fn a_fullscreen_pass_samples_its_input_texel_for_texel() {
++    let Some(gpu) = gpu() else { return };
++    // An even size, so that no pixel centre lies on the pattern's halves.
++    let targets = Targets::new(&gpu, 90, 50).unwrap_or_else(|e| panic!("{e}"));
++    // The pattern goes into the output, is copied back into the scene by
++    // sampling, then tone mapped into the output again.
++    const PATTERN: PassDecl = PassDecl {
++        name: "pattern",
++        reads: &[Resource::Scene],
++        writes: &[Resource::Output],
++    };
++    const COPY: PassDecl = PassDecl {
++        name: "copy",
++        reads: &[Resource::Output],
++        writes: &[Resource::Scene],
++    };
++    let graph = Graph::new(&[DRAW, PATTERN, COPY, TONEMAP], Target::Offscreen)
++        .unwrap_or_else(|e| panic!("{e}"));
++    let mut draw = Clear(BLACK);
++    let mut pattern = Fullscreen(
++        PATTERN,
++        pipeline(&gpu, QUADRANTS, "quadrants_fragment", Resource::Output),
++    );
++    let mut copy = Fullscreen(
++        COPY,
++        pipeline(&gpu, COPY_WGSL, "copy_fragment", Resource::Scene),
++    );
++    let mut map = tonemap(&gpu, CLAMP, "clamp_fragment");
++    graph
++        .render(
++            &gpu,
++            &targets,
++            &mut [&mut draw, &mut pattern, &mut copy, &mut map],
++        )
++        .unwrap_or_else(|e| panic!("{e}"));
++    let image = targets.read_output(&gpu).unwrap_or_else(|e| panic!("{e}"));
++    assert_pattern(&image);
++}
++
++#[test]
++fn the_report_describes_the_adapter_at_tier_0() {
++    let Some(gpu) = gpu() else { return };
++    let report = gpu.report();
++    eprintln!("{report:?}");
++    assert_eq!(report.tier, 0);
++    assert!(!report.adapter.is_empty());
++    let native = if cfg!(target_os = "macos") {
++        Backend::Metal
++    } else if cfg!(windows) {
++        Backend::Dx12
++    } else {
++        Backend::Vulkan
++    };
++    assert_eq!(report.backend, native);
++    if report.adapter.contains("llvmpipe") {
++        assert_eq!(report.device_type, DeviceType::Cpu);
++    }
++    if let Some(wanted) = GpuOptions::from_env().adapter {
++        let name = report.adapter.to_lowercase();
++        assert!(name.contains(&wanted.to_lowercase()), "{name} for {wanted}");
++    }
++    assert_eq!(Backend::Metal.as_str(), "metal");
++    assert_eq!(DeviceType::DiscreteGpu.as_str(), "discrete-gpu");
++}
++
++#[test]
++fn an_adapter_name_that_matches_nothing_fails_with_e_no_adapter() {
++    let options = GpuOptions {
++        adapter: Some("no adapter is called this".into()),
++    };
++    match Gpu::new(&options) {
++        Err(e @ GpuError::NoAdapter { .. }) => {
++            let text = e.to_string();
++            assert!(text.starts_with("[E-NO-ADAPTER] "), "{text}");
++            assert!(text.contains("\"no adapter is called this\""), "{text}");
++        }
++        Err(e) => panic!("{e}"),
++        Ok(gpu) => panic!("picked {}", gpu.report().adapter),
++    }
++}
++
++#[test]
++fn a_broken_shader_is_an_error_not_a_panic() {
++    let Some(gpu) = gpu() else { return };
++    let broken = gpu.fullscreen_pipeline(&FullscreenDesc {
++        label: "broken",
++        wgsl: "@fragment fn broken( {",
++        entry: "broken",
++        target: Resource::Output,
++    });
++    match broken {
++        Err(e @ GpuError::Shader { .. }) => {
++            assert!(e.to_string().starts_with("[E-SHADER] broken: "), "{e}");
++        }
++        Err(e) => panic!("{e}"),
++        Ok(_) => panic!("a broken shader compiled"),
++    }
++    let missing = gpu.fullscreen_pipeline(&FullscreenDesc {
++        label: "missing entry",
++        wgsl: CLAMP,
++        entry: "no_such_entry",
++        target: Resource::Output,
++    });
++    assert!(
++        matches!(missing, Err(GpuError::Shader { .. })),
++        "{:?}",
++        missing.err()
++    );
++}
++
++#[test]
++fn passes_must_match_the_graph() {
++    let Some(gpu) = gpu() else { return };
++    let targets = Targets::new(&gpu, 8, 8).unwrap_or_else(|e| panic!("{e}"));
++    let graph = Graph::fixed(Target::Offscreen);
++    let mut draw = Clear(BLACK);
++    let mut map = tonemap(&gpu, CLAMP, "clamp_fragment");
++    assert_eq!(
++        graph.render(&gpu, &targets, &mut [&mut map, &mut draw]),
++        Err(GpuError::Graph(GraphError::PassMismatch {
++            index: 0,
++            expected: DRAW,
++            found: TONEMAP,
++        }))
++    );
++    assert_eq!(
++        graph.render(&gpu, &targets, &mut [&mut draw]),
++        Err(GpuError::Graph(GraphError::PassCount {
++            expected: 2,
++            found: 1,
++        }))
++    );
++}
++
++#[test]
++fn a_fullscreen_pass_needs_one_input_and_a_pipeline_for_its_target() {
++    let Some(gpu) = gpu() else { return };
++    let targets = Targets::new(&gpu, 8, 8).unwrap_or_else(|e| panic!("{e}"));
++    let graph = Graph::fixed(Target::Offscreen);
++    let mut map = tonemap(&gpu, CLAMP, "clamp_fragment");
++    // The draw pass reads nothing, so it has no input to draw from.
++    let mut no_input = Fullscreen(
++        DRAW,
++        pipeline(&gpu, CLAMP, "clamp_fragment", Resource::Scene),
++    );
++    match graph.render(&gpu, &targets, &mut [&mut no_input, &mut map]) {
++        Err(GpuError::Pass { pass: "draw", .. }) => {}
++        other => panic!("{other:?}"),
++    }
++    // A pipeline made for the scene's format cannot draw into the output.
++    let mut draw = Clear(BLACK);
++    let mut wrong = Fullscreen(
++        TONEMAP,
++        pipeline(&gpu, CLAMP, "clamp_fragment", Resource::Scene),
++    );
++    match graph.render(&gpu, &targets, &mut [&mut draw, &mut wrong]) {
++        Err(
++            e @ GpuError::Pass {
++                pass: "tonemap", ..
++            },
++        ) => {
++            assert!(e.to_string().starts_with("[E-GPU] pass `tonemap`: "), "{e}");
++        }
++        other => panic!("{other:?}"),
++    }
++}
++
++#[test]
++fn targets_have_a_tier_0_size() {
++    let Some(gpu) = gpu() else { return };
++    for (width, height) in [(0, 10), (10, 0), (8193, 1), (1, 8193)] {
++        assert!(
++            matches!(
++                Targets::new(&gpu, width, height),
++                Err(GpuError::Size { .. })
++            ),
++            "{width}x{height}"
++        );
++    }
++    let targets = Targets::new(&gpu, 8192, 1).unwrap_or_else(|e| panic!("{e}"));
++    assert_eq!(targets.size(), (8192, 1));
++}
+diff --git a/crates/eng-gpu/tests/shaders.rs b/crates/eng-gpu/tests/shaders.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..4261229493ccbbf1223110f1149e949db039c187
+--- /dev/null
++++ b/crates/eng-gpu/tests/shaders.rs
+@@ -0,0 +1,296 @@
++//! Shader checks (spec 6.7; rung 1b plan, decision 11; acceptance feature
++//! `shaders`): every WGSL file in the repo validates with naga and translates
++//! to SPIR-V, MSL and HLSL. A shader that only one backend accepts then fails
++//! on every runner, not only on the machines with that backend.
++//!
++//! The options are what eng-gpu's devices guarantee: Tier 0, which is
++//! WebGPU compliance (spec 6.7), on the lowest version of each backend.
++//! - Validation with the capabilities wgpu 30 gives naga for no features and
++//!   compliant downlevel flags (wgpu-naga-bridge's
++//!   `features_to_naga_capabilities`): naga's defaults plus half floats
++//!   packed in f32 (`quantizeToF16`, `pack2x16float`, `unpack2x16float`).
++//! - Pipeline-overridable constants take their defaults, as in a wgpu
++//!   pipeline that sets none.
++//! - SPIR-V 1.0, naga's default and the lowest a Vulkan device takes.
++//! - MSL 2.1: wgpu counts Metal below it as short of WebGPU compliance
++//!   (`DownlevelFlags::MSL2_1`).
++//! - HLSL shader model 5.1, the most FXC compiles. eng-gpu gives wgpu's DX12
++//!   backend FXC, which ships with Windows (decision 10).
++//!
++//! The rejected shaders below pin naga 30's behaviour, so a wgpu upgrade
++//! may need them changed too.
++
++use std::fs;
++use std::path::{Path, PathBuf};
++
++use naga::Module;
++use naga::back::{PipelineConstants, hlsl, msl, pipeline_constants, spv};
++use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
++
++fn repo_root() -> PathBuf {
++    Path::new(env!("CARGO_MANIFEST_DIR"))
++        .join("../..")
++        .canonicalize()
++        .expect("the crate sits two levels below the repo root")
++}
++
++/// Every `*.wgsl` file below `root`, in path order. At the root only, it
++/// skips `target` and hidden directories (`.git`, and `.claude`, which may
++/// hold other checkouts); deeper down it looks everywhere.
++fn wgsl_files(root: &Path, out: &mut Vec<PathBuf>) {
++    walk(root, root, out);
++}
++
++fn walk(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
++    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
++        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
++        .map(|entry| entry.expect("a directory entry").path())
++        .collect();
++    entries.sort();
++    for path in entries {
++        let name = path.file_name().unwrap_or_default().to_string_lossy();
++        if path.is_dir() {
++            if dir != root || (name != "target" && !name.starts_with('.')) {
++                walk(root, &path, out);
++            }
++        } else if path.extension().is_some_and(|ext| ext == "wgsl") {
++            out.push(path);
++        }
++    }
++}
++
++/// Tier 0's capabilities (see the top of this file).
++fn tier_0() -> Capabilities {
++    Capabilities::default() | Capabilities::SHADER_FLOAT16_IN_FLOAT32
++}
++
++fn validate(module: &Module, capabilities: Capabilities) -> Result<ModuleInfo, String> {
++    Validator::new(ValidationFlags::all(), capabilities)
++        .validate(module)
++        .map_err(|e| format!("validation: {e}"))
++}
++
++fn spirv(module: &Module, info: &ModuleInfo) -> Result<(), String> {
++    spv::write_vec(module, info, &spv::Options::default(), None)
++        .map(drop)
++        .map_err(|e| format!("SPIR-V: {e}"))
++}
++
++fn msl(module: &Module, info: &ModuleInfo) -> Result<(), String> {
++    let options = msl::Options {
++        lang_version: (2, 1),
++        ..msl::Options::default()
++    };
++    msl::write_string(module, info, &options, &msl::PipelineOptions::default())
++        .map(drop)
++        .map_err(|e| format!("MSL: {e}"))
++}
++
++fn hlsl(module: &Module, info: &ModuleInfo) -> Result<(), String> {
++    let options = hlsl::Options {
++        shader_model: hlsl::ShaderModel::V5_1,
++        ..hlsl::Options::default()
++    };
++    let mut source = String::new();
++    hlsl::Writer::new(&mut source, &options, &hlsl::PipelineOptions::default())
++        .write(module, info, None)
++        .map(drop)
++        .map_err(|e| format!("HLSL: {e}"))
++}
++
++/// Parses and validates `source`, gives its overridable constants their
++/// defaults, then translates it for each backend. The error starts with the
++/// step that failed: `WGSL`, `validation`, `overrides`, `SPIR-V`, `MSL` or
++/// `HLSL`.
++fn check(source: &str) -> Result<(), String> {
++    let module = naga::front::wgsl::parse_str(source)
++        .map_err(|e| format!("WGSL: {}", e.emit_to_string(source)))?;
++    let info = Validator::new(ValidationFlags::all(), tier_0())
++        .validate(&module)
++        .map_err(|e| format!("validation: {}", e.emit_to_string(source)))?;
++    let (module, info) =
++        pipeline_constants::process_overrides(&module, &info, None, &PipelineConstants::default())
++            .map_err(|e| format!("overrides: {e}"))?;
++    spirv(&module, &info)?;
++    msl(&module, &info)?;
++    hlsl(&module, &info)
++}
++
++/// The step `check` stopped at.
++fn failed_step(source: &str) -> String {
++    let error = check(source).expect_err("the shader should fail");
++    error.split(':').next().unwrap_or_default().to_string()
++}
++
++#[test]
++fn every_wgsl_file_validates_and_translates() {
++    let root = repo_root();
++    let mut files = Vec::new();
++    wgsl_files(&root, &mut files);
++    // The scan reaches the crates, where eng-gpu's own vertex stage lives.
++    assert!(
++        files.iter().any(|f| f.starts_with(root.join("crates"))),
++        "the scan of {} found no WGSL file under crates/: {files:?}",
++        root.display()
++    );
++    let failures: Vec<String> = files
++        .iter()
++        .filter_map(|file| {
++            let shown = file.strip_prefix(&root).unwrap_or(file).display();
++            match fs::read_to_string(file) {
++                Ok(source) => check(&source).err().map(|e| format!("{shown}: {e}")),
++                Err(e) => Some(format!("{shown}: {e}")),
++            }
++        })
++        .collect();
++    assert!(
++        failures.is_empty(),
++        "{} of {} WGSL files fail:\n{}",
++        failures.len(),
++        files.len(),
++        failures.join("\n")
++    );
++    eprintln!(
++        "shaders: {} WGSL files validate and translate to SPIR-V, MSL and HLSL",
++        files.len()
++    );
++}
++
++#[test]
++fn the_check_stops_at_the_step_that_rejects_a_shader() {
++    assert_eq!(failed_step("@fragment fn main( {"), "WGSL");
++    // Valid WGSL, but half floats are an optional feature, not Tier 0.
++    assert_eq!(
++        failed_step(
++            "enable f16;\n\
++             @fragment fn main() -> @location(0) vec4<f32> {\n\
++                 let x: f16 = 1.0h;\n\
++                 return vec4<f32>(f32(x));\n\
++             }"
++        ),
++        "validation"
++    );
++    // An overridable constant without a default needs a value from the
++    // pipeline, and a wgpu pipeline that sets none fails the same way.
++    assert_eq!(
++        failed_step(
++            "override scale: f32;\n\
++             @vertex fn main() -> @builtin(position) vec4<f32> {\n\
++                 return vec4<f32>(scale, 0.0, 0.0, 1.0);\n\
++             }"
++        ),
++        "overrides"
++    );
++    // Every step accepts these, which Tier 0 allows: instancing, an
++    // override with a default, `@invariant`, and half floats packed in f32.
++    assert_eq!(
++        check(
++            "override scale: f32 = 2.0;\n\
++             @vertex fn main(@builtin(instance_index) i: u32) -> @builtin(position) @invariant vec4<f32> {\n\
++                 let x = quantizeToF16(f32(i) * scale);\n\
++                 return vec4<f32>(x, unpack2x16float(pack2x16float(vec2<f32>(x))).x, 0.0, 1.0);\n\
++             }"
++        ),
++        Ok(())
++    );
++}
++
++/// A scratch tree outside the repo, removed when dropped.
++struct ScratchTree(PathBuf);
++
++impl ScratchTree {
++    fn new(files: &[&str]) -> Self {
++        let root = std::env::temp_dir().join(format!("eng-gpu-shader-scan-{}", std::process::id()));
++        let _ = fs::remove_dir_all(&root);
++        for file in files {
++            let path = root.join(file);
++            fs::create_dir_all(path.parent().expect("a parent")).expect("a scratch directory");
++            fs::write(&path, "").expect("a scratch file");
++        }
++        Self(root)
++    }
++}
++
++impl Drop for ScratchTree {
++    fn drop(&mut self) {
++        let _ = fs::remove_dir_all(&self.0);
++    }
++}
++
++#[test]
++fn the_scan_skips_only_the_build_and_hidden_directories_at_the_root() {
++    let tree = ScratchTree::new(&[
++        "top.wgsl",
++        "notes.txt",
++        "target/debug/built.wgsl",
++        ".git/kept-by-git.wgsl",
++        ".claude/worktrees/other/crates/a/src/other.wgsl",
++        "crates/a/src/pass.wgsl",
++        "crates/a/src/target/included.wgsl",
++        "crates/a/.shaders/hidden.wgsl",
++    ]);
++    let mut found = Vec::new();
++    wgsl_files(&tree.0, &mut found);
++    let found: Vec<String> = found
++        .iter()
++        .map(|f| {
++            f.strip_prefix(&tree.0)
++                .expect("inside")
++                .display()
++                .to_string()
++        })
++        .collect();
++    assert_eq!(
++        found,
++        [
++            "crates/a/.shaders/hidden.wgsl",
++            "crates/a/src/pass.wgsl",
++            "crates/a/src/target/included.wgsl",
++            "top.wgsl",
++        ]
++    );
++}
++
++#[test]
++fn each_backend_reports_what_it_cannot_translate() {
++    // `check` resolves overridable constants first, as wgpu does for each
++    // pipeline; each backend refuses one left unresolved.
++    let source = "override scale: f32 = 2.0;\n\
++                  @vertex fn main() -> @builtin(position) vec4<f32> {\n\
++                      return vec4<f32>(scale, 0.0, 0.0, 1.0);\n\
++                  }";
++    let module = naga::front::wgsl::parse_str(source).expect("valid WGSL");
++    let info = validate(&module, tier_0()).expect("valid at Tier 0");
++    for (backend, result) in [
++        ("SPIR-V", spirv(&module, &info)),
++        ("MSL", msl(&module, &info)),
++        ("HLSL", hlsl(&module, &info)),
++    ] {
++        let error = result.expect_err(backend);
++        assert!(error.starts_with(&format!("{backend}: ")), "{error}");
++    }
++    // The floors, with features beyond Tier 0 so that validation passes:
++    // views need HLSL shader model 6.1, and primitive indices MSL 2.3.
++    let beyond = |source: &str| {
++        let module = naga::front::wgsl::parse_str(source).expect("valid WGSL");
++        let info = validate(&module, Capabilities::all()).expect("valid with every capability");
++        (module, info)
++    };
++    let (views, info) = beyond(
++        "@fragment fn main(@builtin(view_index) view: u32) -> @location(0) vec4<f32> {\n\
++             return vec4<f32>(f32(view));\n\
++         }",
++    );
++    assert!(spirv(&views, &info).is_ok());
++    let error = hlsl(&views, &info).expect_err("shader model 5.1 has no views");
++    assert!(error.starts_with("HLSL: "), "{error}");
++    let (primitives, info) = beyond(
++        "enable primitive_index;\n\
++         @fragment fn main(@builtin(primitive_index) p: u32) -> @location(0) vec4<f32> {\n\
++             return vec4<f32>(f32(p));\n\
++         }",
++    );
++    assert!(spirv(&primitives, &info).is_ok());
++    let error = msl(&primitives, &info).expect_err("MSL 2.1 has no primitive index");
++    assert!(error.starts_with("MSL: "), "{error}");
++}
+diff --git a/crates/eng-gpu/tests/wgsl/clamp.wgsl b/crates/eng-gpu/tests/wgsl/clamp.wgsl
+new file mode 100644
+index 0000000000000000000000000000000000000000..83219455eaf278a2af5e63a636cb962449b4dfdc
+--- /dev/null
++++ b/crates/eng-gpu/tests/wgsl/clamp.wgsl
+@@ -0,0 +1,11 @@
++// A test tone map for eng-gpu's fullscreen passes: rung 1b's clamp to [0, 1]
++// (plan decision 2). The sRGB output target does the encoding.
++
++@group(0) @binding(0) var input: texture_2d<f32>;
++@group(0) @binding(1) var input_sampler: sampler;
++
++@fragment
++fn clamp_fragment(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
++    let colour = textureSample(input, input_sampler, uv);
++    return clamp(colour, vec4<f32>(0.0), vec4<f32>(1.0));
++}
+diff --git a/crates/eng-gpu/tests/wgsl/copy.wgsl b/crates/eng-gpu/tests/wgsl/copy.wgsl
+new file mode 100644
+index 0000000000000000000000000000000000000000..bd37fc3c44d79a38a93f30048f0f52f95ab07918
+--- /dev/null
++++ b/crates/eng-gpu/tests/wgsl/copy.wgsl
+@@ -0,0 +1,10 @@
++// A test copy for eng-gpu's fullscreen passes: each pixel takes the input's
++// texel at the same place.
++
++@group(0) @binding(0) var input: texture_2d<f32>;
++@group(0) @binding(1) var input_sampler: sampler;
++
++@fragment
++fn copy_fragment(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
++    return textureSample(input, input_sampler, uv);
++}
+diff --git a/crates/eng-gpu/tests/wgsl/quadrants.wgsl b/crates/eng-gpu/tests/wgsl/quadrants.wgsl
+new file mode 100644
+index 0000000000000000000000000000000000000000..1c37168410e4a3423cae86b7b39f28aeb4066fcb
+--- /dev/null
++++ b/crates/eng-gpu/tests/wgsl/quadrants.wgsl
+@@ -0,0 +1,16 @@
++// A test pattern for eng-gpu's fullscreen passes: red on the left half,
++// green on the top half and blue on alternate pixels, so a readback shows
++// whether each row and column lands where it should, to the pixel. It
++// ignores its input.
++
++@fragment
++fn quadrants_fragment(
++    @builtin(position) position: vec4<f32>,
++    @location(0) uv: vec2<f32>,
++) -> @location(0) vec4<f32> {
++    let red = select(0.0, 1.0, uv.x < 0.5);
++    let green = select(0.0, 1.0, uv.y < 0.5);
++    let pixel = vec2<u32>(position.xy);
++    let blue = select(0.0, 1.0, ((pixel.x + pixel.y) & 1u) == 1u);
++    return vec4<f32>(red, green, blue, 1.0);
++}
+diff --git a/crates/eng-math/src/lib.rs b/crates/eng-math/src/lib.rs
+index ddb8e27c9a744fd500200015c6c0c6838668c070..d48f412de31493c55680f2ff3b86822b13b9f6ec 100644
+--- a/crates/eng-math/src/lib.rs
++++ b/crates/eng-math/src/lib.rs
+@@ -1,8 +1,9 @@
+ //! The only math the simulation may use (spec 6.4).
+ //!
+ //! - Only IEEE basic operations plus the functions here, which wrap the
+-//!   pure-Rust `libm` pinned to `=0.2.16` with its `arch` feature off, so
+-//!   every target runs the same code.
++//!   pure-Rust `libm` pinned to `=0.2.16`, whose `arch` code stays off
++//!   (`force-soft-floats`, even where another crate turns the feature on),
++//!   so every target runs the same code.
+ //! - [`min`], [`max`] and [`clamp`] replace std's, which may return either
+ //!   signed zero.
+ //! - Never `mul_add`, `algebraic_*` or approximate reciprocals (clippy bans).
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index e8983a10b05a365fac28ee227e2df467d5fec43b..88813fd31913a8fe0ea5789206464c7b760b2120 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -14,7 +14,7 @@ L1  eng-ecs  eng-net-transport  eng-net-wire                   (core set)
+     eng-platform-api  eng-platform-winit*                      (std)
+ L2  eng-sim  eng-collision-api  kit-fps  game-testbed-sim      (core set)
+     eng-session                                                (core set)
+-L3  eng-gpu*  eng-render*                                      (std)
++L3  eng-gpu  eng-render*                                       (std)
+ L4  eng-cli  eng-app*                                          (std)
+ game  game-testbed (binary)        tool  xtask
+ ```
+@@ -27,7 +27,9 @@ A crate depends only on lower layers, or on same-layer crates declared in
+ plus the network codec, transport and session loops: `#![no_std]`, `#![forbid(unsafe_code)]`, only `libm` as a third-party
+ dependency (plus `eng-derive`'s build-time `syn`/`quote`), overflow checks
+ in release. `cargo xtask arch-check` enforces all of it over the transitive
+-dependency closure. The core set also builds for `wasm32-unknown-unknown`
++dependency closure. eng-math gives libm `force-soft-floats`, so libm's `arch`
++code stays off even in builds where wgpu's shader compiler turns the
++feature on. The core set also builds for `wasm32-unknown-unknown`
+ and is tested on RISC-V under QEMU.
+ 
+ L3 starts in rung 1b with GPU and render; audio and UI come later.
+@@ -205,13 +207,67 @@ then `Commands` up and a `Snapshot` down every tick.
+   bytes a peer should not have sent instead of failing; the one error from
+   the network is a snapshot the client's sim refuses.
+ 
++## The GPU layer
++
++`eng-gpu` (spec 6.7) is the only crate that imports wgpu, and no wgpu type
++appears in its API. Nothing calls it yet; `eng-render` will (rung 1b, T8).
++GPU work never feeds back into the simulation. The crate docs have the
++details.
++
++```
++Gpu::new(GpuOptions) ──adapter──▶ a Tier 0 device, and its GpuReport
++Graph::fixed(Offscreen):
++  draw ──▶ scene (Rgba16Float, linear) ──tonemap──▶ output (Rgba8UnormSrgb)
++                                    output ──Targets::read_output──▶ Image (RGBA8)
++Graph::fixed(Surface) adds present: output ──▶ surface (T8, T11)
++```
++
++- **Tier 0.** The device asks for WebGPU's default features and limits,
++  whatever the adapter supports. `GpuReport` records the adapter, backend,
++  device type, driver and tier, and what the adapter could do beyond Tier 0
++  (timestamp queries, binding arrays, indirect counts, ray queries, mesh
++  shaders).
++- **Adapters.** `ENG_GPU_ADAPTER` picks the first adapter whose name
++  contains it, ignoring case; otherwise wgpu chooses, software last. With
++  no adapter `Gpu::new` fails with `[E-NO-ADAPTER]`, and GPU tests skip
++  unless `ENG_REQUIRE_GPU=1` (CI) makes them fail. Each OS has one
++  backend, so machines agree: Metal on macOS, Vulkan on Linux, and DX12 on
++  Windows, which compiles shaders with FXC, part of Windows.
++- **Flags.** Debug builds use wgpu's release flags, as the game does;
++  `WGPU_DEBUG=1` and `WGPU_VALIDATION=1` add debug labels and the
++  backend's validation layer when debugging.
++- **The graph.** Passes declare what they read and write (`PassDecl`).
++  `Graph::new` checks that each read was written by an earlier pass, that a
++  pass writes exactly one resource, that the output is written but never as
++  the surface, and that only a surface graph uses the surface.
++  `Graph::render` takes one `Pass` per declaration, in order. Each records
++  into a `PassRecorder`: a clear, then fullscreen draws. Every recording is
++  checked against its declaration before the frame is encoded and
++  submitted.
++- **Fullscreen passes.** eng-gpu owns the vertex stage
++  (`src/fullscreen.wgsl`, one triangle over the target). The caller writes
++  the fragment stage, which gets `uv` and may bind the pass's one read as
++  `input`, with a sampler that takes the nearest texel.
++- **Errors.** wgpu's errors, validation included, are caught around each
++  call that returns a `Result` and come back as `GpuError` (`[E-GPU]`,
++  `[E-SHADER]`, `[E-GRAPH]`). Any other one panics, so validation errors
++  are fatal in tests.
++- **Shaders.** `tests/shaders.rs` validates every WGSL file in the repo at
++  Tier 0 with naga and translates it to SPIR-V 1.0, MSL 2.1 and HLSL
++  shader model 5.1, the lowest each backend runs at. Every shader is
++  therefore a `.wgsl` file, loaded with `include_str!`; WGSL inline in Rust
++  would escape the check.
++- Not built yet: the surface and the present pass (T8, T11), and the
++  per-frame counters (T8).
++
+ ## Invariants
+ 
+ 1. The simulation is a pure function of the initial state and the commands.
+    Nothing in the core set reads a clock, a file, the OS or unseeded randomness.
+ 2. Results are bit-identical on every target. Floats use only IEEE basic
+-   operations and `eng-math` (pure-Rust `libm`, pinned, `arch` off); no FMA,
+-   no std transcendentals, no `HashMap` iteration.
++   operations and `eng-math` (pure-Rust `libm`, pinned, its `arch` code off
++   by `force-soft-floats`); no FMA, no std transcendentals, no `HashMap`
++   iteration.
+ 3. State is always finite.
+ 4. A system's order depends only on stages, `before`/`after` and names.
+ 5. Third-party types never appear in an engine crate's public API. There

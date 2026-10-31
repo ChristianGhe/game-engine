@@ -2553,6 +2553,359 @@ passed it. Amendment 24 proposes protecting the suite.
   process-group timeout, and the re-planted review bugs took about 4
   minutes.
 
+## 2026-10-31, session 17 (continued): T7, `eng-gpu` (Claude Opus 5.5, subagent, owner away)
+
+The task: T7, the GPU layer. Its plan row asks for the adapter, the
+capability report, the fixed graph, offscreen targets, readback and the
+shader test; done when an offscreen clear plus readback works on Metal
+locally and on lavapipe in Docker, and the naga translation test passes.
+The owner approved G3 (crate batch 2) and G4 (ADR-0016) today. The G3
+change to `deny.toml` and `_typos.toml` is not applied yet, so cargo-deny
+and typos were run against copies of the approved policy. ADR-0016's traits
+are not used yet: T7 opens no surface.
+
+**Where the work is.** The worktree this subagent was given,
+`.claude/worktrees/agent-ab95aa25d8578f77d`, lies inside the main
+checkout's `.claude/`, which `protected.toml` covers (`.claude/**`). The
+guard therefore refused every write in it, by Edit, Write and Bash alike.
+The work was done in scratch clones instead, first of 13fcdaa, then
+rebased onto main at 31c3a8c (ADR-0016, T6, the G3 patch file, T3). It
+lands as three patch files, described under "The three patches" below:
+`t7-libm.patch`, `t7-eng-gpu.patch` and `t7-oracles.patch`.
+
+**What eng-gpu has** (the crate docs and `docs/ARCHITECTURE.md`, "The GPU
+layer", have the rest). No wgpu type appears in its public API, it has no
+`unsafe`, and nothing in it reaches the simulation.
+
+```rust
+Gpu::new(&GpuOptions) -> Result<Gpu, GpuError>   // GpuOptions::from_env(): ENG_GPU_ADAPTER
+gpu.report() -> &GpuReport                       // adapter, backend, device type, ids, driver, tier 0, Capabilities
+gpu.fullscreen_pipeline(&FullscreenDesc) -> Result<FullscreenPipeline, GpuError>
+Graph::new(&[PassDecl], Target) / Graph::fixed(Target)   // DRAW, TONEMAP, PRESENT; Resource::{Scene, Output, Surface}
+graph.render(&gpu, &targets, &mut [&mut dyn Pass]) -> Result<(), GpuError>
+trait Pass { fn decl(&self) -> PassDecl; fn record(&mut self, rec: &mut PassRecorder); }  // rec.clear(..), rec.fullscreen(..)
+Targets::new(&gpu, w, h)?.read_output(&gpu) -> Result<Image, GpuError>   // RGBA8 as stored, rows top first
+gpu_required() // ENG_REQUIRE_GPU=1
+```
+
+**Decisions** (proposals; the owner can overrule any):
+1. **Tier 0, strictly.** The device asks for `Limits::default()` and no
+   features, whatever the adapter has. `GpuReport::capabilities` records
+   what the adapter supports beyond that: timestamp queries, and spec 6.7's
+   later-tier features (binding arrays, indirect counts, ray queries, mesh
+   shaders). Timestamp queries are reported, not enabled; pass timing comes
+   later (open question 3).
+2. **One backend per OS:** Metal on macOS, Vulkan on Linux, DX12 on
+   Windows, the backends of spec 8.3's adapters. wgpu tries Vulkan first
+   and sorts adapters only by device type, so offered all three, a Windows
+   PC with a Vulkan driver would render through Vulkan (the reviewer's
+   catch). Vulkan is still compiled on Windows (decision 5), unused.
+3. **Adapter choice** (decision 4). `ENG_GPU_ADAPTER` picks the first
+   adapter, in wgpu's order, whose name contains the text, ignoring case.
+   Without it wgpu chooses with `HighPerformance`: discrete, integrated,
+   other, virtual, then software. No adapter is `[E-NO-ADAPTER]`, listing
+   each adapter seen. Tests skip then, unless `ENG_REQUIRE_GPU=1`.
+4. **DX12 uses FXC** (decision 10). wgpu 30's default is `Auto`: static DXC
+   if built in, else a `dxcompiler.dll` found on the PATH, else FXC, so two
+   Windows machines could compile shaders differently. FXC ships with
+   Windows, so no DLL goes next to the binary; its ceiling is shader model
+   5.1, which the shader test uses. eng-gpu type-checks for both Windows
+   targets (in a container), but nothing ran on Windows.
+5. **Errors are values; anything else is fatal.** The wgpu work in each
+   call that returns a `Result` runs inside error scopes (validation,
+   internal, out of memory), so a bad shader comes back as `[E-SHADER]` and
+   a bad frame as `[E-GPU]`. Errors outside those calls reach the
+   uncaptured-error handler, which panics with `[E-GPU]`: validation errors
+   are fatal in tests (spec 6.7).
+6. **Passes record, the graph encodes.** A pass records into a
+   `PassRecorder`; each recording is checked against its declaration (a
+   fullscreen draw needs exactly one read, and a pipeline made for the
+   resource the pass writes) before anything is encoded, and the frame is
+   one submission. T8's counters can then count recorded commands exactly.
+7. **Fullscreen passes.** eng-gpu owns the vertex stage
+   (`src/fullscreen.wgsl`, one triangle) and the input layout (the pass's
+   read at binding 0, a nearest-texel sampler at 1); callers write only the
+   fragment stage. T8's tone map (decision 2's clamp) and present blit are
+   fullscreen passes. The top-down pass needs buffers and instanced draws,
+   which T8 adds to `PassRecorder` with the counters. A pass's target
+   starts transparent black unless it clears.
+8. **Graph checks.** The plan's two (each read follows its write; the
+   output is never the surface), plus: a pass writes exactly one resource;
+   the output is written; only a surface graph uses the surface, and it
+   must write it. A later pass may write a resource again. A surface graph
+   builds, but rendering one fails until eng-gpu opens surfaces (T8, T11).
+9. **Readback** returns the output's bytes as stored, sRGB-encoded RGBA8,
+   rows top first and unpadded: the "decoded RGBA8 pixels" of decision 3.
+10. **The shader test checks Tier 0 on each backend's floor.** Every
+    `*.wgsl` file is parsed, validated with the capabilities wgpu 30 gives
+    naga at Tier 0 (naga's defaults plus half floats packed in f32, as
+    wgpu-naga-bridge maps no features and compliant downlevel flags),
+    given its overridable constants' defaults, and translated to SPIR-V
+    1.0, MSL 2.1 and HLSL shader model 5.1. MSL 2.1 is the floor of wgpu's
+    WebGPU compliance (`DownlevelFlags::MSL2_1`). The scan skips `target`
+    and hidden directories at the repo root only (`.claude` can hold other
+    checkouts).
+11. **Every shader is a `.wgsl` file**, loaded with `include_str!`; WGSL
+    written inline in Rust would escape the check. The crate docs, the
+    `FullscreenDesc::wgsl` docs and `docs/ARCHITECTURE.md` say so.
+12. **Versions.** Resolving today picked `log` 0.4.35, `ordered-float`
+    5.5.1 and `unicode-width` 0.2.3, all released after the plan's table.
+    `cargo update --precise` put them back at the table's 0.4.34, 5.5.0 and
+    0.2.2, so nothing in the build graph is outside the approved list.
+13. **Debug builds use wgpu's release flags.** The instance asks only for
+    indirect-call validation, in every build; `WGPU_DEBUG=1` and
+    `WGPU_VALIDATION=1` add debug labels and the backend's validation layer
+    when someone is debugging. With wgpu's default, debug builds name every
+    Vulkan object through `VK_EXT_debug_utils`, and on Debian 13's Vulkan
+    loader with its lavapipe (arm64) the offscreen tests, which open
+    devices on several threads at once, then hung or segfaulted in about
+    one run in five: a thread spun inside the loader's
+    `vkSetDebugUtilsObjectNameEXT` while the others waited in
+    `vkCreateDevice` and `vkDestroyDevice` (gdb). Counts: with the labels,
+    16 of 20 runs passed (2 segfaults, 2 hangs); without them, 30 of 30,
+    and 20 of 20 in release. One device per process, as the game has, never
+    meets it. It may be worth a report upstream (Vulkan-Loader or Mesa).
+
+**The blocker: libm's `arch` feature.** With wgpu in the workspace,
+`cargo xtask arch-check` fails:
+
+```
+[E-ARCH-PIN] core dependency libm resolved to 0.2.16 ... with features {"arch", "default"}; architecture.toml pins 0.2.16 from crates.io with {}
+```
+
+naga depends on `half` with its `num-traits` feature, `half` turns on
+num-traits' `libm` feature, and num-traits takes libm with default
+features, which include `arch`. Cargo unifies features across the
+workspace, so every workspace build compiles the simulation's libm with
+`arch`. Session 3's scratch project held wgpu without the engine, so the
+batch-2 check could not see it. No crate choice avoids it: naga requires
+that `half` feature. libm 0.2.16's `force-soft-floats` feature switches
+the `arch` code off whatever turns the feature on (`configure.rs`:
+`arch_enabled` is `arch` and not `force-soft-floats`). So eng-math asks for
+it (the root `Cargo.toml`, in `t7-eng-gpu.patch`), and `architecture.toml`
+pins the workspace's resulting set, `["arch", "default",
+"force-soft-floats"]` (`t7-libm.patch`, the owner's). Builds of the core
+set alone (RISC-V, wasm32) resolve to `force-soft-floats` only. Both
+compile the same libm code as today's empty set, and the hash streams do
+not change; the reviewer checked this independently. Without
+`t7-libm.patch`, T7 cannot be committed with `quick` green (amendment 25).
+
+**Tests** (21 in 3 files, plus 3 test shaders):
+- `tests/graph.rs`, 8, no GPU: the three declarations; the fixed lists;
+  each check with its error; three messages word for word, one of them a
+  pass with the right name and the wrong reads.
+- `tests/offscreen.rs`, 9, on the adapter (skip without one):
+  - a 320x240 scene cleared to linear (4.0, 0.215861, -1.0, 1.0), tone
+    mapped by a clamp shader, reads back as (255, 128, 0, 255) in every
+    pixel: HDR in the scene, clamping, sRGB encoding, readback;
+  - a 100x60 pattern (halves in red and green, alternate pixels in blue)
+    reads back pixel for pixel: rows top first, 400-byte rows padded to 512
+    in the copy;
+  - a custom four-pass graph draws the pattern into the output, copies it
+    back into the scene by sampling, and tone maps it again: a fullscreen
+    pass samples its input the right way up, texel for texel (added after
+    the review);
+  - the report: tier 0, the OS's backend, `llvmpipe` as a CPU device, and
+    `ENG_GPU_ADAPTER` honoured;
+  - an adapter name matching nothing gives `[E-NO-ADAPTER]` (runs without
+    a GPU too);
+  - a broken shader and a missing entry point come back as `[E-SHADER]`,
+    not a panic;
+  - passes out of order or missing give `[E-GRAPH]`; a fullscreen draw
+    without an input, or with another target's pipeline, gives `[E-GPU]`;
+  - target sizes from 1 to 8,192.
+- `tests/shaders.rs`, 4 (to be protected): every WGSL file passes; each
+  step stops a shader it should (a syntax error, `f16`, an override
+  without a default) and passes what Tier 0 allows (instancing, an
+  override with a default, `@invariant`, `quantizeToF16` and the
+  `pack2x16float` pair); each backend reports what it cannot translate (an
+  unresolved override), and the HLSL and MSL floors apply (views need
+  shader model 6.1, primitive indices MSL 2.3); the scan skips only the
+  root's `target` and hidden directories, checked on a scratch tree in the
+  temp directory. Its rejected cases pin naga 30, so a wgpu upgrade may
+  need them edited.
+- Mutation checks, each reverted: 29 planted bugs, 28 caught. Before the
+  review, 20: readback (padding kept, rows reversed), the output format
+  without sRGB, the recording check, two graph checks, the adapter filter,
+  the error scope, the clear colour, a flipped vertex stage, and in the
+  shader test each backend's error dropped, each floor raised, overrides
+  unresolved and Tier 0 widened. The survivor then, scanning hidden
+  directories, is caught now, with 8 more after the review: the scan's
+  root rule both ways, Tier 0 without half floats in f32, the MSL floor
+  at 1.2 and 2.3, the input bound to the wrong resource, the copy flipped
+  or off by one pixel, and the mismatch message by name only.
+
+**Review** (the `reviewer` subagent, fresh context, read-only; 19 min, 261k
+tokens, 103 tool calls): changes needed in the shader test; the code
+sound; the libm fix correct and result-neutral. Its blockers, all fixed:
+Tier 0's capabilities missed half floats in f32, so `quantizeToF16` and
+the `pack2x16float` pair failed; MSL 1.2 was below WebGPU compliance and
+banned `@invariant`; the scan skipped `target` and hidden directories at
+every depth, so a shader in a nested `target/` would escape. It also asked
+for proof on the final code, which the runs below give. Its other points,
+all taken up: one backend per OS (decision 2); the docs that say libm's
+`arch` is off (now in `t7-eng-gpu.patch`); a test of sampling an input;
+the `.wgsl` rule; reporting the lock-only crates (amendment 26); a clearer
+mismatch message; a comment on why `OutputIsSurface` is checked before
+the write count.
+
+**Linux: lavapipe in Docker.** Mesa 25.2.7 from gfx-rs/ci-build build26,
+the pinned version, sha256 `629bb3ce...5809` checked. The release has an
+x86_64 asset only, and its lavapipe links Ubuntu 24.04's LLVM 18, so the
+image is `ubuntu:24.04` for linux/amd64 (emulated on this arm64 Mac), with
+Rust 1.99.1 copied from the official image, the Vulkan loader
+(`libvulkan1`), lavapipe's libraries (`libllvm18`, `libdrm2`, `libexpat1`),
+`git` for xtask's tests, and an ICD file pointing at `libvulkan_lvp.so`
+(the tarball's own points into its build machine). `vulkaninfo`:
+`llvmpipe (LLVM 18.1.3, 256 bits)`, driver `Mesa 25.2.7 (LLVM 18.1.3)`, a
+CPU device. With `ENG_REQUIRE_GPU=1 ENG_GPU_ADAPTER=llvmpipe`, on the final
+T7 code before the rebase onto 31c3a8c (the eng-gpu crate is byte for
+byte the same after it):
+- the whole workspace's tests: 211 pass, none fail, eng-gpu's 21 among
+  them (the 9 GPU tests in parallel threads, about 3 s);
+- wgpu built with no system development packages, only `gcc` and
+  `libc6-dev` to link; decision 5 holds for wgpu (winit is T10's);
+- `LP_NATIVE_VECTOR_WIDTH` was left at its default (256 under emulation);
+  CI's value is X6's.
+
+The offscreen tests also passed 10 runs out of 10 there, in parallel
+threads.
+
+Also natively on arm64, with Debian 13's own lavapipe (Mesa 25.0.7, LLVM
+19.1.7, 128 bits), as the arm64 runner will use: eng-gpu's 21 tests pass,
+the same bytes included, and the offscreen tests pass 30 runs out of 30 in
+parallel threads (decision 13 has the runs before it). The Dockerfiles are
+`scratchpad/t7/docker/Dockerfile` (x86_64, pinned; `docker-git/` adds
+`git`) and `scratchpad/t7/docker-arm64/Dockerfile`.
+
+**Checks** (aarch64-apple-darwin, fresh scratch clones of main at
+31c3a8c, every patch applied with `git apply --check` first, then `git
+apply`):
+- `t7-libm.patch` then `t7-eng-gpu.patch`: `cargo xtask quick` green (71
+  s); `cargo xtask ci --job test` 7 of 7; `CI=1 cargo xtask ci --job wasm`
+  green; `cargo xtask selftest` 17 of 17; `cargo xtask replay`: hash
+  streams match `crates/game-testbed/hashes/`, no `--regen`; eng-gpu's 21
+  tests pass on Metal (`ENG_REQUIRE_GPU=1`); `RUSTDOCFLAGS=-Dwarnings cargo
+  doc -p eng-gpu --no-deps` clean. The tree equals the rebase clone's.
+- The two G3 commands on that tree: cargo-deny with `g3-policy.toml`,
+  advisories, bans, licences and sources ok (warnings only: duplicate
+  `hashbrown` and `syn`, wrappers not built yet, unused licences); typos
+  with `g3-typos-config.toml`, clean.
+- Then `t6-oracles.patch` and `t7-oracles.patch`: `cargo xtask ci --job
+  test` 9 of 9, `wire-session` and `shaders` included; `cargo xtask quick`
+  green; selftest 17 of 17; wasm green.
+- The owner's whole order in one more clone (the G3 patch, `t7-libm.patch`,
+  `t7-eng-gpu.patch`, `t6-oracles.patch`, `t7-oracles.patch`) applies
+  cleanly, and the repo's own `cargo deny check` and `typos`, as G3 leaves
+  them, pass. `t7-libm.patch` also applies on top of the G3 patch and
+  `t6-oracles.patch`: it touches `architecture.toml` only.
+- typos with `g3-typos-config.toml` on the three patch files themselves,
+  which will sit under `docs/`: clean.
+- Before the rebase, on 13fcdaa: `cargo clippy --workspace --all-targets --
+  -D warnings` clean; eng-gpu's tests pass in release; `cargo check -p
+  eng-gpu --all-targets` for `x86_64-pc-windows-msvc` and
+  `aarch64-pc-windows-msvc`, in a Linux container, clean.
+- With T7 alone and no pin (the state before `t7-libm.patch`),
+  arch-check fails `[E-ARCH-PIN]`, as above; with the pin and no T7, it
+  fails the other way, so the two go in one commit.
+
+**Batch 2 against the real lock** (cargo-deny's graph for the seven
+targets of proposal 4, with the approved policy; the same on the lock
+rebased onto 31c3a8c, where T3 had already added `raw-window-handle`
+0.6.2):
+- 101 third-party names, 103 versions: 36 batch-1 names (38 versions:
+  `hashbrown` 0.16.1 and 0.17.1, `syn` 2.0.119 and 3.0.9, both duplicates
+  the plan expected) and 65 batch-2 names, one version each.
+- No crate outside batch 1 and batch 2. Every batch-2 version is the
+  table's, after decision 12's three pins.
+- 71 batch-2 names are not in the graph yet: winit and its platform
+  crates, `png`, `nv-flip`, and what they bring (T9, T10, T12). `r-efi`
+  (batch 1) is unused on these targets, as proposal 4 foresaw.
+- 23 registry packages are locked but outside the graph: no build for
+  the seven targets uses them, so cargo-deny never checks them (like the
+  plan's `zlib-rs`). They are `android_system_properties`, `bumpalo`,
+  `crunchy`, `dispatch2`, `futures-core`, `futures-task`, `futures-util`,
+  `js-sys`, `objc2-io-surface`, `pin-project-lite`, `portable-atomic`,
+  `portable-atomic-util`, `r-efi`, `redox_syscall`, `rustversion`, `slab`,
+  `tokio`, `wasm-bindgen` and its four helper crates, and `web-sys`. Of
+  these, `pin-project-lite` and `slab` are batch-2 names that winit will
+  build and `r-efi` is batch 1; the other 20 are on neither list
+  (amendment 26).
+
+**The three patches** (`docs/rungs/1b/patches/`), rebased onto main at
+31c3a8c:
+- `t7-libm.patch`, the owner's: `architecture.toml` only, the libm pin
+  with a comment. It applies to 31c3a8c directly, with or without the G3
+  patch or `t6-oracles.patch`. Its header says why: naga, half and
+  num-traits turn on libm's `arch`, `force-soft-floats` keeps the
+  soft-float code, the hash streams are unchanged, and the reviewer
+  confirmed it.
+- `t7-eng-gpu.patch`, the orchestrator's, nothing protected: the eng-gpu
+  crate; the root `[workspace.dependencies]` (wgpu, naga and libm's
+  `force-soft-floats`, next to T3's `raw-window-handle` line); `Cargo.lock`
+  at the table's versions; `docs/ARCHITECTURE.md`, `AGENTS.md` and
+  eng-math's crate docs. 21 files.
+- `t7-oracles.patch`, a G5 item: `crates/eng-gpu/tests/shaders.rs` joins
+  `protected.toml` and `.github/CODEOWNERS`; `("shaders", &[("eng-gpu",
+  "shaders")])` joins `HARNESSES` in the form `t6-oracles.patch` gives it;
+  `docs/ARCHITECTURE.md` names the step. Its base is 31c3a8c with
+  `t6-oracles.patch` applied, and it needs T7's test file.
+
+Apply order: `t7-libm.patch` (owner) and `t7-eng-gpu.patch` together, in
+one commit; at G5, `t6-oracles.patch`, then `t7-oracles.patch`. Each was
+made by a script in a scratch clone (`scratchpad/t7/scripts/`:
+`rebase_docs.py`, `make-t7-oracles.sh`, `test-final-1.sh`,
+`test-final-g3.sh`) and tested as under "Checks".
+
+**`budgets.toml [gpu]`** (proposal 6, amendment 28; in no patch). T7 gives part of
+a basis: the fixed passes cost one draw, one pipeline and one bind group
+each and upload nothing, so 2, 2, 2 and 0 bytes a frame with a surface (1,
+1, 1, 0 offscreen); the top-down pass's share is T8's. Proposal 6's 8, 4, 8
+and 16,384 leave room for it. One catch: `budgets.toml` cannot get a
+`[gpu]` table before eng-cli reads it. `BudgetFile` denies unknown
+fields, so `run --budgets` exits 64 (`[E-LOAD] ... unknown field gpu`,
+checked), and `cargo xtask replay` passes `--budgets budgets.toml`. The
+table should land with T9, which checks it.
+
+**The guard and T6.** During one of this session's calls, a failing
+proptest in the main checkout (T6's `crates/eng-session/tests/hostile.rs`)
+wrote `crates/eng-session/tests/hostile.proptest-regressions`. The guard
+checks the whole main checkout after every call, so it put the file back
+(deleted it) and kept what was written in the main checkout's
+`target/guard-quarantine/1793447645-toolu_01D9dEAN4m9YQhdFxqwTsahe/`
+(11,114 bytes). It is T6's candidate, not this session's.
+
+The proposals for the owner are amendments 25 to 29, in the block after
+this entry.
+
+**Open questions**
+1. **The libm fix** blocks T7 (amendment 25): approve `t7-libm.patch`'s
+   approach, or choose another, such as accepting `arch` (it only swaps in
+   hardware `sqrt`, `fma` and `rint`, which IEEE rounds exactly) and
+   changing the rule in AGENTS.md.
+2. **Agent worktrees under `.claude/`** cannot be written while the guard
+   protects `.claude/**` (amendment 29).
+3. **Timestamp queries.** Strict Tier 0 leaves them off; spec 6.13's GPU
+   pass times would need them on where the adapter has them. Decide when
+   pass timing arrives.
+4. **Windows.** FXC and the DX12 path only type-checked here; T13's WARP
+   runs will be their first real test.
+5. **Debug labels** (decision 13) are off unless `WGPU_DEBUG=1`. If GPU
+   debugging should have them by default, the tests that open devices on
+   several threads need a lock instead.
+
+**Costs and timings**
+- Session 17's T7 subagent, from about 13:03 to 14:50 EET: reading and
+  design to 13:15, the scratch clone and code to 13:35, Docker and checks
+  to 14:00, the review to 14:12, its fixes, the arm64 hang (decision 13)
+  and the final runs after. Then, from about 15:20 to 15:55, the rebase
+  onto 31c3a8c, the split into three patches and their tests.
+- Reviewer subagent: 19 minutes, 261k tokens, 103 tool calls.
+- Builds: wgpu cold on this Mac in 34 s; `quick` in the scratch clones 40
+  s to 2 min 18 s. Docker (emulated x86_64): image 1 min; eng-gpu's tests
+  built in 2 min 13 s, the workspace's in 1 min 24 s more; arm64 natively
+  in 1 min 28 s.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1
@@ -2562,7 +2915,10 @@ and `**/*.proptest-regressions` (e14b533); amendment 18's oracle patch,
 which protects eng-net-wire's `golden.rs` and `never_panic.rs`
 (2026-10-31); and proposal 5 (G4) as ADR-0016 (75e444f). Proposal 4 (G3)
 is approved and waits as `docs/rungs/1b/patches/g3-crate-batch-2.patch`.
-Nothing else below is applied. Each item is what an agent would
+T7 waits as `t7-libm.patch` (the owner's, amendment 25) together with
+`t7-eng-gpu.patch` (nothing protected; an agent applies it in the same
+commit). For G5, `t6-oracles.patch` and then `t7-oracles.patch` are
+ready. Nothing else below is applied. Each item is what an agent would
 otherwise have to change; the owner applies it, or unlocks the path.
 
 1. **`docs/rungs/1b/acceptance.json`** (G1). Make it from the table in
@@ -3107,3 +3463,68 @@ otherwise have to change; the owner applies it, or unlocks the path.
     - Described only; no patch yet. `cargo xtask docs-check` wants a
       CODEOWNERS line for each new pattern, so the two files change
       together.
+
+25. **Amendment from session 17, T7** (to proposals 2 and 4; gate G3's
+    companion). Crate batch 2 turns on libm's `arch` feature in every
+    workspace build: naga depends on `half` with `num-traits`, `half` turns
+    on num-traits' `libm` feature, and num-traits takes libm with its
+    default features. `cargo xtask arch-check` then fails `[E-ARCH-PIN]`.
+    The fix keeps libm's soft-float code whatever turns `arch` on:
+    - `docs/rungs/1b/patches/t7-libm.patch` (protected, the owner's):
+      `architecture.toml` pins libm 0.2.16 with `["arch", "default",
+      "force-soft-floats"]`, the workspace's set once wgpu is in it;
+    - `t7-eng-gpu.patch` (not protected): eng-math's libm dependency gains
+      `force-soft-floats` in the root `[workspace.dependencies]`.
+
+    libm compiles its `arch` code only for `arch` without
+    `force-soft-floats` (`configure.rs`), so it compiles exactly as today;
+    the hash streams are unchanged, and T7's reviewer confirmed it from
+    libm's source. Apply both in one commit, before or after the G3 patch:
+    arch-check fails with either alone. The alternative is to allow `arch`
+    (hardware `sqrt`, `fma` and `rint`, which round exactly) and change the
+    rule in AGENTS.md.
+
+26. **Amendment from session 17, T7** (to proposal 4 and "Crate batch 2").
+    Recomputed against the real lock (main at 31c3a8c plus T7): cargo-deny's
+    graph for the seven targets holds 101 third-party names, 103 versions,
+    all on batch 1 or batch 2, every batch-2 version the table's (with
+    `log` 0.4.34, `ordered-float` 5.5.0 and `unicode-width` 0.2.2 held there
+    by `cargo update --precise`; newer releases came out after the table).
+    The lock also holds 20 names on neither list, outside that graph, so
+    cargo-deny never checks them and the approved policy needs no entry:
+    `android_system_properties`, `bumpalo`, `crunchy`, `dispatch2`,
+    `futures-core`, `futures-task`, `futures-util`, `js-sys`,
+    `objc2-io-surface`, `portable-atomic`, `portable-atomic-util`,
+    `redox_syscall`, `rustversion`, `tokio`, `wasm-bindgen`,
+    `wasm-bindgen-futures`, `wasm-bindgen-macro`,
+    `wasm-bindgen-macro-support`, `wasm-bindgen-shared` and `web-sys`. As
+    with `zlib-rs`, "only these crates may appear in Cargo.lock" would not
+    hold; proposal 4's "in the dependency graph of these targets" does.
+
+27. **Amendment from session 17, T7** (to proposals 7 and 8, and amendment
+    11; G5). `docs/rungs/1b/patches/t7-oracles.patch`, after
+    `t6-oracles.patch`: protect `crates/eng-gpu/tests/shaders.rs`
+    (criterion 10's harness) in `protected.toml` and
+    `.github/CODEOWNERS`, and add the X7 `shaders` step to `cargo xtask ci
+    --job test`. Once protected, its Tier 0 floors (naga's capabilities
+    with half floats in f32, SPIR-V 1.0, MSL 2.1, HLSL shader model 5.1)
+    and its rejected cases, which pin naga 30, change only with the owner,
+    as at the next wgpu upgrade.
+
+28. **Amendment from session 17, T7** (to proposal 6). Apply `budgets.toml
+    [gpu]` with T9, together with eng-cli reading it, not before:
+    `BudgetFile` denies unknown fields, so `run --budgets budgets.toml`
+    exits 64 with `[E-LOAD] ... unknown field gpu` (checked), and `cargo
+    xtask replay` passes that file. T7's basis for the values: the fixed
+    passes cost one draw, one pipeline switch and one bind-group switch
+    each and upload nothing (2, 2, 2, 0 a frame with a surface); proposal
+    6's 8, 4, 8 and 16,384 leave the top-down pass room. Also (to amendment
+    11): `.config/nextest.toml` needs no serial GPU group for T7's tests.
+
+29. **Amendment from session 17, T7** (to `.claude/**`, the owner's).
+    Claude Code puts isolated agent worktrees in `.claude/worktrees/`,
+    inside the main checkout, where the guard protects every path
+    (`.claude/**`): T7's subagent could not write a file in its worktree
+    and worked in scratch clones instead. Worktrees outside the checkout,
+    or a guard rule that treats `.claude/worktrees/<name>/` as a checkout
+    of its own, would let isolated agents work in place.

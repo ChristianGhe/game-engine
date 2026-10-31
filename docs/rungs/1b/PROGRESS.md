@@ -4554,6 +4554,155 @@ it only widens one assertion about identical images.
   build about 2 minutes, later ones under a minute. The 38 planted bugs
   ran in about 2 minutes on Metal.
 
+## 2026-10-31, session 17 (continued): second window while the owner is away, wrap-up (Claude Opus 5.5)
+
+The owner asked for five hours of autonomous work at 16:34 EET ("run
+autonomously for 5h", then "cannot answer anymore"). The rules for the
+window: commit locally, push nothing, record decisions as proposals here.
+
+- **Commits on `main`** since the owner pushed 15747b2, none of them
+  pushed:
+  - df96332, G5: T6's and T7's oracles (the owner applied the patches);
+  - 462feb5, T8 (eng-render);
+  - 7775f60, T10 (eng-platform-winit);
+  - 4129956, amendment 24 as `t3-oracles.patch`, and the oracle patches
+    stacked;
+  - 14ca032, T9 (`shot` and `video`);
+  - 0b8196d, T11 (eng-app's frame loop and `play`);
+  - 710cf94, T12 (the golden-shot harness);
+  - a3b0c98, fixes from the integration review (below);
+  - and this one.
+- **How each task ran:** one subagent per task in a scratch clone of
+  main, tests first. Each had a fresh-context `reviewer` subagent review
+  its diff and acted on the points before handing back a patch, its entry
+  and its oracle patch. The orchestrator applied the patch to main with
+  `git apply --3way`, ran `quick`, the lint job and the GPU tests on
+  Metal, merged the entry and committed. T11 and T12 were built side by
+  side; T12 landed on T11 with no conflict.
+- **Checks on main at 710cf94**, and again after a3b0c98 where it says
+  so (each task's own checks are in its entry):
+  - `quick` 7 of 7 and `CI=1 cargo xtask ci --job lint` 7 of 7 after each
+    commit, cargo-deny included;
+  - the GPU tests of eng-gpu, eng-render, eng-cli, eng-app and the testbed
+    on Metal with `ENG_REQUIRE_GPU=1`: 159 tests, among them the shot
+    harness's 13 (four shots, "no golden yet"). The four Metal shots are
+    byte-identical to T12's candidates from the pinned lavapipe;
+  - the winit harness and `play` in real windows, inside `quick`. No frame
+    is presented while the screen is locked (T11, decision 13);
+  - CI's test and riscv jobs on Linux arm64 in Docker, on a fresh clone
+    of 710cf94:
+    - the test job: 9 of 9 steps and 396 tests. It ran on T10's image
+      plus `g++`, with no display and no GPU, as GitHub's runner has it;
+    - the riscv job: 3 of 3 steps, with the packages the workflow
+      installs. The testbed binary, which now holds wgpu and winit,
+      builds for riscv64, and its replays under QEMU equal the committed
+      streams.
+  - a fresh `reviewer` pass over T11 and T12 together, and over the six
+    oracle patches. Its verdict was approve, with no blockers and one
+    should-fix:
+    - the problem: the Esc test found its window by the title
+      `game-testbed`, but the windowed hash-stream test runs at the same
+      time with the same title, so Escape could reach the wrong window;
+    - the fix, in a3b0c98: the test finds its window by the child's PID;
+    - the check: under Xvfb on lavapipe in Docker, with the tests run in
+      parallel (libtest threads and nextest, three rounds each), 4 of 4
+      every time;
+    - the nits went into the same commit (wording, `t9-oracles.patch`'s
+      header, AGENTS.md), and the rest into amendment 61. `quick` and
+      the lint job pass on a3b0c98.
+- **The owner's queue, in order:**
+  1. Push `main`. CI runs the PR-tier jobs.
+  2. G5, the oracle patches, which the owner applies and an agent
+     commits. All six apply in one command:
+     ```sh
+     git apply docs/rungs/1b/patches/t10-oracles.patch \
+       docs/rungs/1b/patches/t3-oracles.patch \
+       docs/rungs/1b/patches/t9-oracles.patch \
+       docs/rungs/1b/patches/t11-oracles.patch \
+       docs/rungs/1b/patches/t12-oracles.patch \
+       docs/rungs/1b/patches/t8-oracles.patch
+     cargo xtask quick
+     ```
+     They protect:
+     - the conformance suite and its two harnesses (amendments 24 and 35);
+     - `budgets.toml [gpu]` and `shot_video.rs` (40 and 41);
+     - `play.rs` and `twin.rs`, and they add the `play` half of
+       `crash_json.rs` (45);
+     - `shots.rs` and `shots/`, and they add a proposed
+       `golden/thresholds.toml` (55 and 56);
+     - `counters.rs` (31).
+
+     `t8` must come after `t10` and `t3`, because it stacks on them; the
+     rest apply in any order. The six were tested on fresh clones of
+     a3b0c98: one command, and two separate orders, gave the same files.
+     With all six applied, these pass: docs-check, `quick`, the lint job,
+     selftest (17 of 17) and `run --budgets` with the `[gpu]` table. Each
+     newly protected harness also passes on Metal with `ENG_REQUIRE_GPU=1`,
+     the crash harness also with `ENG_REQUIRE_DISPLAY=1`.
+  3. Decisions:
+     - amendments 20 to 61. Numbers 44 and 49 to 54 are unused: they were
+       kept for tasks built side by side;
+     - whether the 30-session budget counts the 16 sessions before
+       approval.
+  4. Next for agents:
+     - T13, patches X2 to X7. Amendments 42, 46, 57 and 58 give the
+       native jobs' commands;
+     - then T14 and T15;
+     - T16 collects the candidates from the first CI run after G5.
+- **What acceptance can see after the push** (from the review; CI
+  computes `passes`):
+  - criteria 10, 11, 14 and 17 can pass now;
+  - criteria 6 and 18 can pass their test-job halves now;
+  - criteria 1, 2, 3, 7, 8, 9, 13 and 15 have code ready, but wait on
+    T13's steps (X2 to X6) and on G5;
+  - criteria 4 and 5, the shots, also wait for the goldens (T16, then
+    G6);
+  - criterion 12 waits on X5 and on lavapipe in the selftest job
+    (amendment 58);
+  - criterion 16 waits on the owner's sitting (G7).
+- **Lessons for the next agent:**
+  - When two changes both touched `Cargo.lock`, merge them like this:
+    take main's lock, add the new `[workspace.dependencies]` line, and run
+    `cargo update --offline --workspace`. Then check that cargo added
+    the same packages at the same versions as the agent's lock.
+  - Make task patches with `--full-index`, so `git apply --3way` can merge
+    two tasks built side by side. Afterwards, check the lock with
+    `cargo metadata --locked --offline`.
+  - The guard refuses an edit to `Cargo.toml` while it holds conflict
+    markers: the file is not TOML then, so the guard cannot tell which
+    table changed. Restore main's version from the merge
+    (`git show :2:Cargo.toml`) and edit that.
+  - The guard refuses `git apply` of a patch that touches protected
+    paths, even with `--stat`. Read such a patch as text, and test it in
+    a scratch clone from a script.
+  - A plain `cargo test` running at the same time as `cargo xtask quick`
+    (the Stop hook's, for one) in one checkout fails `game-testbed --test
+    version` at random. xtask stamps the testbed's version and plain cargo
+    doesn't, and both share `target/`. Run them one after the other.
+  - Oracle patches that add lines at the same place in `protected.toml`
+    conflict. Anchor each task's lines at least three lines apart, or
+    stack the patches.
+  - xtask's replay step runs `<repo>/target/debug/game-testbed`, so
+    `CARGO_TARGET_DIR` breaks it (seen in Docker; CI uses the default).
+  - On macOS, a locked or sleeping screen makes every window occluded, and
+    wgpu then presents nothing. Checks that need frames must run with the
+    screen unlocked, or on CI.
+  - nv-flip-sys compiles C++, so a Docker image built from `rust:*-slim`
+    needs `g++`. GitHub's runner images already have it.
+  - Tests in one file run at the same time, and under nextest each runs
+    in its own process. So a windowed test must find its own window by
+    the child's PID (`xdotool search --pid`), not by a title other tests
+    share. A local check run with `--test-threads 1` hides such races.
+- **Costs** (approximate: each builder's time and tokens as the harness
+  reported them, then its reviewer's as the builder reported them):
+  - T8: 68 min, 540k tokens, reviewer 11 min and 186k;
+  - T10: 76 min, 497k tokens, reviewer 18 min and 231k;
+  - T9: 59 min, 482k tokens, reviewer 17 min and 236k;
+  - T11: 63 min, 524k tokens, reviewer 15 min and 266k;
+  - T12: 69 min, 519k tokens, reviewer 18 min and 213k, then 6 min to
+    check the fixes;
+  - the integration reviewer: 15 min, 233k tokens.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1

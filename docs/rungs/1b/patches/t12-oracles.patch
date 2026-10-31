@@ -1,0 +1,77 @@
+Patch T12 oracles (rung 1b, task T12; gates G5 and G6): protect the shot
+harness, and propose its FLIP thresholds.
+
+- crates/game-testbed/tests/shots.rs and its modules in
+  crates/game-testbed/tests/shots/ (`compare.rs`, the comparison, and
+  `parts.rs`, its GPU-free tests; `#[path]` modules, so a pattern of their
+  own) join protected.toml and .github/CODEOWNERS (proposal 8, the G5 row
+  "Protect the new harnesses: `shots.rs`, ..."; criteria 4 `shot-exact`
+  and 5 `shot-flip`). The lines sit right after `**/golden/**`, so this
+  applies in any order with the queued patches that add lines after
+  `known_answers.rs`, `version.rs` and `shaders.rs`.
+- crates/game-testbed/golden/thresholds.toml, the FLIP limits off the
+  pinned configuration: the plan's proposed values (G6 row: mean at most
+  0.01, 99th percentile at most 0.2) and a third, the 99.9th percentile at
+  most 0.5, without which a missing dot passes (mean 0.007, p99 0.10,
+  p999 0.98). Before any golden exists the harness reports "no golden yet"
+  with or without this file, so it can land at G5 or wait for G6 with the
+  golden images.
+
+Base: main with T12's commit, which adds the harness. At the repo root,
+run `git apply` with this file, then `cargo xtask quick`.
+Session 17's T12 entry in PROGRESS.md says how it was tested.
+Text before the first `diff --git` line is ignored by `git apply`.
+
+diff --git a/.github/CODEOWNERS b/.github/CODEOWNERS
+index e665280b86ba69e23ef0cbdb2b7da0280bdbfc17..8a3faba703190195a1d066c8c82a857bf1e9722d 100644
+--- a/.github/CODEOWNERS
++++ b/.github/CODEOWNERS
+@@ -19,6 +19,8 @@
+ /crates/game-testbed/scenarios/scenarios.toml @ChristianGhe
+ /crates/*/tests/golden.rs @ChristianGhe
+ **/golden/ @ChristianGhe
++/crates/game-testbed/tests/shots.rs @ChristianGhe
++/crates/game-testbed/tests/shots/ @ChristianGhe
+ **/snapshots/ @ChristianGhe
+ **/proptest-regressions/ @ChristianGhe
+ **/*.proptest-regressions @ChristianGhe
+diff --git a/crates/game-testbed/golden/thresholds.toml b/crates/game-testbed/golden/thresholds.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..33ec324fde3dc080fed16982803b168aea098dca
+--- /dev/null
++++ b/crates/game-testbed/golden/thresholds.toml
+@@ -0,0 +1,21 @@
++# FLIP limits for the testbed's golden shots (rung 1b, plan decision 3).
++# PROTECTED: the owner sets them (G6).
++#
++# `crates/game-testbed/tests/shots.rs` compares each shot with its golden
++# exactly on the pinned configuration (Linux x64, Mesa 25.2.7's lavapipe)
++# and with FLIP, at 67 pixels per degree, everywhere else. There a shot
++# passes when its FLIP error against the golden is within all three limits
++# (errors run from 0, the same, to 1):
++# - `mean`: the mean error over the image;
++# - `p99`: the 99th percentile of the per-pixel errors (unweighted);
++# - `p999`: the 99.9th percentile, the 77th-worst of a shot's 76,800
++#   pixels, which sees a small area that is wrong. A missing dot (about
++#   314 pixels, 0.4% of the image) gives mean 0.007 and p99 0.10, within
++#   the first two, but p999 0.98; a dot that lost 12 edge pixels, as
++#   another rasterizer might draw it, gives p999 0.25.
++version = 1
++
++[flip]
++mean = 0.01
++p99 = 0.2
++p999 = 0.5
+diff --git a/protected.toml b/protected.toml
+index f4a63c753c564deeb8e81fee640809eb57549dc0..c5432c2ea13d6b29c13e95e255fea9b42f1911f3 100644
+--- a/protected.toml
++++ b/protected.toml
+@@ -31,6 +31,8 @@ paths = [
+   "crates/game-testbed/scenarios/scenarios.toml",
+   "crates/*/tests/golden.rs",
+   "**/golden/**",
++  "crates/game-testbed/tests/shots.rs",
++  "crates/game-testbed/tests/shots/**",
+   "**/snapshots/**",
+   # proptest writes `<test>.proptest-regressions` beside a test in tests/.
+   "**/proptest-regressions/**",

@@ -59,6 +59,10 @@ winit = { version = "=0.30.13", default-features = false, features = ["rwh_06", 
 # PNG and APNG for eng-cli's `shot` and `video` (plan difference 5), and for
 # decoding them in tests. It has no default features.
 png = "=0.18.1"
+# FLIP (NVIDIA's perceptual image difference) for the testbed's golden shots
+# off the pinned configuration (plan decision 3). Tests only: nv-flip-sys
+# compiles FLIP's C++ through `cc`.
+nv-flip = "=0.1.2"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

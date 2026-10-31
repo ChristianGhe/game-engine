@@ -4196,6 +4196,364 @@ code, one after another):
   first time and 12 s after; RISC-V check 29 s.
 - Reviewer subagent: 15 minutes, 266k tokens, 80 tool calls.
 
+## 2026-10-31, session 17 (continued): T12, the shot harness (Claude Opus 5.5, subagent, owner away)
+
+The task: T12, the golden-image harness. Its plan row asks for
+`crates/game-testbed/tests/shots.rs`: exact pixels on the pinned
+configuration, FLIP elsewhere, and candidates under
+`target/golden-candidates/` when a golden is missing; done when candidates
+from the Mac (Metal) and from Docker (lavapipe) are produced and compared.
+It builds on T9's `shot` and its report's `gpu` object. It adds the one
+crate batch 2 kept for it, `nv-flip =0.1.2` (tests only), writes nothing
+into `golden/`, edits no protected path and regenerates no hash stream. A
+subagent built it test first in a scratch clone of main at 14ca032 while
+the owner was away, and left it uncommitted: `t12.patch` (below). T11 was
+being built at the same time in another clone; T12 touches none of its
+crates.
+
+**What the harness does** (`docs/ARCHITECTURE.md`, "The frame", has the
+rest; the module docs of `shots.rs` list the environment):
+
+```text
+crates/game-testbed/tests/shots.rs           the shots, the configuration, rendering, judging the run
+crates/game-testbed/tests/shots/compare.rs   one shot against its golden: exact or FLIP, what is saved
+crates/game-testbed/tests/shots/parts.rs     the GPU-free tests of both
+crates/game-testbed/golden/<name>.png        the goldens (the owner's, G6; none yet)
+crates/game-testbed/golden/thresholds.toml   FLIP limits (the owner's; proposed in t12-oracles.patch)
+target/golden-candidates/                    <name>.png candidates, flip/<name>.png error maps, shots.json
+```
+
+For each of four shots it runs the real binary's `shot` at 320x240 with
+its report, reads the adapter from the report's `gpu` object, decodes the
+PNG to RGBA8 and compares it with `golden/<name>.png`:
+- the pinned configuration compares exactly: every pixel equal;
+- any other compares with FLIP: the mean error and the 99th and 99.9th
+  percentiles of the per-pixel errors must be within `thresholds.toml`;
+- while `golden/` holds no golden, each shot is saved as a candidate and
+  reported as "no golden yet" (`[W-NO-GOLDEN]`); FLIP without
+  `thresholds.toml` is measured and reported as `[W-NO-THRESHOLDS]`;
+  neither fails the test, and `shots.json` tells them from a pass;
+- once one golden exists every shot needs its own, a golden that no shot
+  names fails, and so does a shot of the wrong size, one not opaque, or a
+  golden of the wrong size or that does not decode;
+- a failure saves the shot, every FLIP comparison its error map, and the
+  run writes `shots.json`: the configuration, the machine (OS version,
+  CPU), the mode, the golden directory, and each shot's status,
+  differing pixels and FLIP numbers;
+- without an adapter it skips, unless `ENG_REQUIRE_GPU=1`.
+
+**Decisions** (proposals; the owner can overrule any):
+1. **The shots** are T9's suggestion, dot-square seed 1 at ticks 0, 120 and
+   240 (`dot-square-0`, `-120`, `-240`), plus T9's ten dots at tick 0
+   (`ten-dots-0`), which shows every slot colour. T9 hoped that no pixel
+   centre lies near a dot's edge at those ticks; measured from `dump-world`
+   (`scripts/margins.py`), the nearest centres are 0.032, 0.006, 0.005 and
+   0.0009 px from an edge, thinner than hoped. All four are byte-identical
+   on Metal and on the pinned lavapipe all the same (below), so they stay;
+   open question 1 has the alternative.
+2. **The pinned configuration** is what the shot's report says, not what
+   the runner is meant to be: Linux x86_64, backend `vulkan`, device type
+   `cpu`, driver `llvmpipe`, adapter exactly `llvmpipe (LLVM 18.1.3, 256
+   bits)` and driver info exactly `Mesa 25.2.7 (LLVM 18.1.3)` (the strings
+   gfx-rs/ci-build build26's lavapipe gives in T7's image). LLVM's version
+   is part of the pin because it compiles the shaders, and Ubuntu's
+   libLLVM, which the tarball links, is not pinned by anything else; the
+   vector width is, because it is the spec's example of the llvmpipe
+   environment.
+3. **The fixed llvmpipe environment**: the harness passes
+   `LP_NATIVE_VECTOR_WIDTH=256` to every shot it runs, on every platform
+   (only llvmpipe reads it), and removes every other `LP_*` and
+   `GALLIVM_*` variable it inherits, so the environment is fixed in one
+   protected place rather than in each workflow. The pin above checks that
+   it took effect.
+4. **`ENG_SHOT_MODE=exact`** makes any configuration but the pinned one
+   fail with `[E-GOLDEN]`, naming what was found. CI's `shot-exact` step
+   should set it, so a runner that drifts (another Mesa, another LLVM, the
+   distro's lavapipe) fails instead of quietly comparing with FLIP. Unset,
+   the configuration decides. There is no way to ask for FLIP: on the
+   pinned runner it would only weaken the check (review).
+5. **`ENG_GOLDEN_DIR`** compares with another directory of goldens and
+   thresholds. Criterion 12's selftest needs it, since it can edit a copy
+   of `golden/` but never the protected directory itself, and so do
+   cross-machine comparisons such as this task's. Set and not empty, it
+   must exist, must lie outside `golden-candidates/` (which each run
+   empties first, before rendering), and must hold every shot's golden;
+   empty counts as unset, as for the other variables. The workflow and
+   xtask, both protected, decide when it is set; `shots.json` records the
+   directory used.
+6. **Decoded pixels, and alpha.** Exact compares all four channels; FLIP
+   compares RGB at its default 67 pixels per degree, and every shot must be
+   opaque (alpha 255 everywhere, plan decision 3), so nothing is lost.
+   Percentiles are unweighted. FLIP filters spatially, so a changed patch
+   spreads a little error to its neighbours.
+7. **Three limits, not two.** The plan proposes mean 0.01 and p99 0.2. A
+   dot is about 314 pixels, 0.4% of the image, under p99's 1%: a shot
+   with its dot missing gives mean 0.007 and p99 0.10 and passes both
+   (the review found it on a real shot; the test reproduces it). The
+   99.9th percentile, the 77th-worst pixel, gives 0.98 for it and 0.03,
+   0.08 and 0.25 for a dot that lost 1, 4 or 12 edge pixels, which is
+   what another rasterizer might do; one edge pixel's own error peaks
+   near 0.45. So the proposal adds `p999 = 0.5`.
+   `thresholds.toml` is strict: `version = 1` and a `[flip]` table with
+   `mean`, `p99` and `p999`, each from 0 to 1; anything else is
+   `[E-GOLDEN]` and fails the shot (with the measured numbers) instead of
+   skipping its limits. One set of limits for every shot (open question
+   3).
+8. **Candidates are the probe's own files**, byte for byte, so a candidate
+   can be committed as the golden as it is. The FLIP maps go in `flip/`,
+   so the top of `golden-candidates/` holds nothing but proposed goldens
+   and `shots.json`. Nothing is ever written into the golden directory
+   (tested for every path).
+9. **"No golden yet" is not a pass** for acceptance (plan decision 3: it
+   stays false until G6). The test exits 0 so `main` stays green, the
+   messages carry `[W-NO-GOLDEN]` or `[W-NO-THRESHOLDS]`, and `shots.json`
+   has each shot's status (`pass`, `fail`, `no-golden`, `no-thresholds`)
+   and `configuration.pinned`, which X2's steps should read to record a
+   pending result (amendment 57).
+10. **The golden set is all or nothing.** Only a directory with no golden
+    at all is "no golden yet"; once one exists, a missing golden fails (a
+    deleted golden would otherwise pass after G6), and so does a golden
+    that no shot names, as `replay` fails on an unreferenced assertion.
+    Adding a shot is then the owner's change, with its golden.
+11. **Three files.** One file came to 773 lines after rustfmt, over the
+    500-line warning: `shots.rs` (385 lines) keeps the shots and the run,
+    `shots/compare.rs` (248) the comparison and `shots/parts.rs` (467) the
+    GPU-free tests, `#[path]` modules that cargo does not take as test
+    targets. `t12-oracles.patch` protects `shots.rs` and `shots/**`.
+12. **Messages** carry `[E-GOLDEN]` (or the two `[W-...]` tags) and the
+    shot's name, one line each, so CI's log can be grepped as the rest of
+    the probe's can. `shots.json` also records the OS version and CPU
+    (spec 8.3 records OS and driver versions, and Metal names no driver).
+
+**Tests** (13; all need no GPU except the run, so 12 run in CI's test job
+too). Six were written first and watched failing against stubs that gave
+wrong answers; the run came with the code; three were added after the
+first planted-bug run (below); the unreferenced-golden and golden-directory
+cases were written first and watched failing; the review's fixes (p999,
+the all-or-nothing set, the stricter directory, the inherited variables)
+came with their tests, and the planted bugs show each test fails without
+its code.
+- `compare` (in `parts.rs`), 6: a missing golden saves the shot's own file
+  and passes, in both modes; one level of one channel of one pixel fails
+  exactly, and a pass saves nothing; a shot of the wrong size or not
+  opaque fails with and without a golden, and so does a golden of the
+  wrong size; FLIP holds a shot to each of its three limits on its own,
+  and without thresholds it measures, saves the shot and the map, and
+  passes; the proposed thresholds pass a dot that lost 1, 4 or 12 edge
+  pixels and fail a missing dot, which only p999 sees; the thresholds file
+  is strict (nine bad files), and a broken one fails the shot. Each test
+  checks that the reference directory is left as it was.
+- `shots` (in `parts.rs` and `shots.rs`), 7: only the pinned configuration
+  compares exactly (seven departures from it, each refused in exact mode
+  with the adapter named; `flip` is refused); every shot's command asks
+  for 320x240 at seed 1 with `LP_NATIVE_VECTOR_WIDTH=256` and removes
+  inherited llvmpipe variables; without an adapter the harness skips, and
+  fails with `ENG_REQUIRE_GPU=1` (through the real binary, with an
+  `ENG_GPU_ADAPTER` that matches nothing); a failing shot fails the run,
+  `shots.json` says so and names the machine, and a golden that no shot
+  names fails; only a directory with no golden is "no golden yet", and
+  one asked for must have them all; the golden directory defaults to
+  `golden/`, empty is unset, and it must exist outside the candidates; and
+  the run itself, `shots_match_their_goldens`, which renders the four
+  shots (skipped without an adapter).
+- Planted bugs (`scripts/mutate.py`, in a separate clone, each alone, then
+  reverted, with the GPU run on Metal; the brief's four among them): 38,
+  all caught, the review's fixes switched off among them (`p999` ignored
+  or measured as p99, a partial set or an asked-for directory without
+  goldens passing, `ENG_GOLDEN_DIR` empty, missing or in the candidates,
+  inherited llvmpipe variables kept, `flip` accepted, the machine left
+  out). The first run, of 26, caught 23: `ENG_REQUIRE_GPU`
+  ignored, the run's failures dropped, and `LP_NATIVE_VECTOR_WIDTH` left
+  out survived, because only the GPU run touched that code, and it passes
+  either way on a Mac with goldens missing. The command, no-adapter and
+  failing-run tests were added for them.
+
+**Candidates, and the comparison** (`scratchpad/t12/candidates/`, outside
+the repo; the owner decides at G6):
+- `metal/`: Apple M2 Pro, Metal, `ENG_REQUIRE_GPU=1`: 4 candidates, "no
+  golden yet", mode `flip`.
+- `lavapipe/`: T7's pinned image plus `g++` for nv-flip-sys
+  (`eng-t12-lavapipe:25.2.7-gxx`, Mesa 25.2.7 from gfx-rs/ci-build build26,
+  Ubuntu 24.04, emulated x86_64 under Rosetta, which offers AVX2, FMA and
+  F16C but no AVX-512), `ENG_REQUIRE_GPU=1 ENG_SHOT_MODE=exact`: the
+  report names the pinned configuration, mode `exact`, 4 candidates, the
+  same bytes in each of three runs.
+- Compared: the four pairs are byte-identical, PNG files included
+  (`cmp`), so 0 of 76,800 pixels differ in each.
+- Through the harness itself (`ENG_GOLDEN_DIR`, each directory with the
+  proposed thresholds): Metal against lavapipe's candidates, FLIP mean,
+  p99, p999 and max 0 for all four, pass (`metal-vs-lavapipe/`, with the
+  four all-black maps); lavapipe against Metal's, exact, pass
+  (`lavapipe-vs-metal/`).
+- An edited golden (criterion 12): one level of one pixel changed in
+  `dot-square-120` fails exactly on lavapipe (`[E-GOLDEN] 1 of 76800
+  pixels differ from the golden`) but passes FLIP on Metal (mean 0.000002,
+  p999 0.0003), as FLIP should; a 64x64 square brightened by 80 levels
+  fails both (FLIP mean 0.031, p99 0.555); the reviewer's shot with its
+  dot painted out fails both, on Metal through p999 alone (0.980; mean
+  0.0069, p99 0.10). `refs/` holds the edited copies.
+- `arm64-distro/`: natively on arm64 with Debian 13's own lavapipe (T7's
+  image plus `g++`; adapter `llvmpipe (LLVM 19.1.7, 256 bits)`, the width
+  set by the harness, driver info `Mesa 25.0.7-2+deb13u1 (LLVM 19.1.7)`),
+  the kind of adapter the `ubuntu-24.04-arm` runner compares with FLIP:
+  13 of 13, and its four candidates are byte-identical to the pinned
+  lavapipe's too; against them (`arm64-distro-vs-lavapipe/`), FLIP passes
+  with 0 differing pixels. That run found a real bug in a test: nv-flip
+  built by g++ for arm64 Linux reports about 1e-7 (p999 up to 4e-6) for
+  identical images where the Mac and x86-64 Linux report 0, and a test
+  expected exactly 0. It now allows FLIP's rounding (below 1e-4); CI's
+  arm64 test job would have failed on it.
+
+**Batch 2 against the real lock.** The lock gains 2 registry packages,
+`nv-flip` 0.1.2 and `nv-flip-sys` 0.1.1, at the table's versions. `cc`
+1.10.0, `find-msvc-tools` 0.1.15 and `shlex` 2.0.1 were locked already
+(T10, for `wayland-backend` on Linux). `cargo tree -e normal,build,dev`
+shows all five in game-testbed's graph on each of the seven targets, as the
+table's "all seven" says; all 136 batch-2 names are now in the graph (T10
+counted 127, T9 added png's seven). The lint job's `cargo deny check`
+passes with the repo's policy. No difference from the table (amendment
+59). nv-flip-sys compiles C++ with the host's compiler (clang on this Mac;
+`g++` had to be added to T7's image): the test, lint (clippy
+`--all-targets`) and native jobs build it, and GitHub's images have
+compilers; the riscv job builds only the core set's tests and the testbed
+binary, and wasm only the core set, so neither does.
+
+**Review** (the `reviewer` subagent, fresh context, read-only, in its own
+clone; 18 min, 213k tokens, 60 tool calls): approve with fixes, no
+blockers. It ran `quick` (7 of 7), the lint job, clippy and the tests on
+Metal, and checked the FLIP call's order (the golden is the reference),
+the unweighted percentile, the strict thresholds file, the skip, and the
+lock. Its five should-fix points, all taken:
+1. The proposed limits passed a missing dot (it painted out a real shot's
+   dot: mean 0.0069, p99 0.10): decision 7's `p999`, with the numbers
+   above for G6.
+2. `ENG_GOLDEN_DIR` could switch the oracle off without failing: empty
+   meant the working directory, a directory that did not exist passed,
+   and one under `golden-candidates/` was emptied before the comparison:
+   decision 5.
+3. A deleted golden passed after G6 as "no golden yet": decision 10.
+4. Criterion 12's selftest fails only in exact mode, and acceptance runs
+   `golden-edit` in the selftest job, which has no lavapipe: said in
+   `docs/ARCHITECTURE.md` and amendment 58, for T13.
+5. "No golden yet" exits 0 like a pass: the `[W-...]` tags, `shots.json`
+   and amendment 57 (X2 records it as pending; `shot-exact` sets
+   `ENG_SHOT_MODE=exact`).
+Its nits, all taken: the candidates are emptied before rendering, so a
+skipped run leaves no stale `shots.json`; `ENG_SHOT_MODE=flip` is gone;
+inherited `LP_*` and `GALLIVM_*` variables are removed, and `shots.json`
+records the OS version and CPU; `docs/ARCHITECTURE.md` names the modules
+and LLVM 18.1.3; the tests moved to `parts.rs`, under 500 lines. The thin
+margin of `ten-dots-0` stays an open question (1).
+The same reviewer then checked the fixes (6 min, 17 tool calls, at tree
+91f12be): all verified, its own reference sets included (the painted-out
+dot fails at p999 0.98; an empty, missing or in-candidates
+`ENG_GOLDEN_DIR` fails, and leaves the candidates' files alone; a partial
+set fails and an extra `old-name.png` is "no shot's golden"), `quick` and
+the lint job green, no new point. Its one remark: arm64 Linux has no
+"model name" in `/proc/cpuinfo`, so `cpu` is `null` there (seen in the
+arm64 run; left as it is). The arm64 run's test fix came after its check;
+it only widens one assertion about identical images.
+
+**Checks** (aarch64-apple-darwin, in the work clone, on the final code):
+- `cargo xtask quick`: 7 of 7 (52 s; the size check sees no file over 500
+  lines).
+- `CI=1 cargo xtask ci --job lint`: 7 of 7, cargo-deny and typos on the
+  repo's own configs.
+- `CI=1 cargo xtask ci --job test`: 9 of 9 (50 s).
+- `CI=1 cargo xtask ci --job wasm`: ok. `cargo xtask selftest`: 17 of 17.
+- `cargo xtask replay`: 5 runs, assertions and budgets ok, hash streams
+  match `crates/game-testbed/hashes/`, no `--regen`; `git status` shows
+  them unchanged. `game-testbed-sim` is unchanged.
+- `RUSTDOCFLAGS=-Dwarnings cargo doc -p eng-cli --no-deps`: clean.
+- The harness on Metal with `ENG_REQUIRE_GPU=1`: 13 of 13. With an
+  `ENG_GPU_ADAPTER` that matches nothing, as in CI's test job: 13 of 13,
+  the run skipped; add `ENG_REQUIRE_GPU=1` and it fails with
+  `[E-NO-ADAPTER]`.
+- The harness in Docker on the pinned lavapipe, `ENG_REQUIRE_GPU=1
+  ENG_SHOT_MODE=exact`: 13 of 13 (3.5 s of tests, emulated). FLIP's own
+  numbers match the Mac's to the fourth significant digit (nv-flip-sys
+  built by g++ on x86_64 there, clang on arm64 here). On arm64 with
+  Debian's lavapipe: 13 of 13.
+- typos with the repo's config on this entry, the harness and both
+  patches: clean.
+
+**The patches** (`scratchpad/t12/`):
+- `t12.patch`, the orchestrator's, nothing protected: 8 files, the three
+  harness files, `Cargo.toml` (`nv-flip` in `[workspace.dependencies]`),
+  `Cargo.lock`, game-testbed's `Cargo.toml` (`nv-flip` and `toml` as
+  dev-dependencies), eng-cli's crate docs and `docs/ARCHITECTURE.md`.
+  Made with `git add -A` and `git diff --cached --full-index 14ca032` in
+  the work clone. On a fresh clone at 14ca032 it passes `git apply
+  --check`, applies, and gives the work clone's tree (`git write-tree`
+  612c708).
+- `t12-oracles.patch`, the owner's (G5, with G6's thresholds; amendments
+  55 and 56): `protected.toml` and `.github/CODEOWNERS` gain
+  `crates/game-testbed/tests/shots.rs` and
+  `crates/game-testbed/tests/shots/**`, right after `**/golden/**`, so it
+  applies in any order with the queued oracle patches that add lines after
+  `known_answers.rs`, `version.rs` and `shaders.rs`; and
+  `crates/game-testbed/golden/thresholds.toml` with the plan's two values
+  and `p999 = 0.5`. The thresholds file is staged straight into the
+  scratch clone's index from a copy outside the repo, so nothing was
+  written into a golden directory to make it. Made by
+  `scripts/make-t12-oracles.sh` on a fresh clone with `t12.patch` applied
+  and committed; tested by `scripts/test-oracles.sh` on another, with
+  `t12.patch` then `t12-oracles.patch`, each checked first: `cargo xtask
+  quick` 7 of 7 (docs-check sees CODEOWNERS cover the new patterns),
+  `selftest` 17 of 17, and the harness on Metal 13 of 13 with the
+  thresholds file present (still "no golden yet").
+- Scripts: `scratchpad/t12/scripts/` (`docker-run.sh`, `lvp-probe.sh`,
+  `lvp-shots.sh`, `lvp-compare.sh`, `metal-compare.sh`, `final-metal.sh`,
+  `collect-lvp.sh`, `make-refs.sh`, `edit-pixel.py`, `margins.py`,
+  `mutate.py`, `make-clone.sh`, `verify-t12-patch.sh`,
+  `make-t12-oracles.sh`, `test-oracles.sh`, `checks.sh`); the Dockerfile
+  in `scratchpad/t12/docker/`.
+
+**Open questions**
+1. **Thin margins** (decision 1). `ten-dots-0` has a pixel centre 0.0009 px
+   from a dot's edge, and dot-square at 120 and 240 about 0.005 px, near a
+   rasterizer's 1/256-pixel snapping. Metal and lavapipe agree today; WARP
+   or the paravirtual Metal device may flip a few edge pixels, which the
+   proposed limits absorb (12 lost edge pixels: p999 0.25 against 0.5). If
+   the owner wants exact equality off the pinned configuration too, pick
+   ticks and seeds with margins of 0.05 px or more before G6
+   (`margins.py` measures them).
+2. **The goldens for G6.** These candidates come from emulated x86_64.
+   They match Metal byte for byte, but the plan makes CI's run after G5
+   (T16) the source of the goldens, and that stands: a real runner's CPU
+   cannot be ruled out as a difference from here.
+3. **Per-shot thresholds** (decision 7). If a later shot needs its own
+   limits, `thresholds.toml` would need a per-shot table, which is a
+   change to the protected harness.
+4. **FLIP's maximum** for identical images is the smallest normal f32
+   (1.2e-38), FLIP's own starting value, not 0; `shots.json` shows it as
+   it is.
+5. **Criterion 12 without a GPU.** If the selftest job is to stay without
+   lavapipe, the harness could also pin a digest of each golden's pixels
+   (a GPU-free check that an edit fails), but the digests would be the
+   owner's to update with every golden, in the protected harness.
+
+**Costs and timings**
+- Session 17's T12 subagent, from 18:55 EET: reading and design to 19:01;
+  the Docker image (T7's plus `g++`) and lavapipe's report, which named
+  the pin, at 19:03; the six tests against stubs at 19:05; the harness
+  green on Metal at 19:07 and on lavapipe at 19:09; the split, the margins
+  and the cross-machine runs to 19:16; docs, the review clone and the
+  reviewer from 19:17; the checks and the planted bugs from 19:20; the
+  tests for the three survivors and decision 10's unreferenced golden to
+  19:33; the review at 19:36 and its fixes to 19:44; the final checks,
+  Docker runs, comparisons, patches and their tests to 19:53; the arm64
+  run, its test fix and the last round of checks, planted bugs and patch
+  tests to about 20:05, beside the reviewer's check of the fixes; this
+  entry.
+- Reviewer subagent: 18 minutes, 213k tokens, 60 tool calls; then 6
+  minutes and 17 tool calls for the check of the fixes.
+- Builds: the seeded `target/` made wgpu free, and nv-flip-sys's C++
+  compiled in seconds. `quick` 52 s to 2 min 7 s; `ci --job test` 50 s to
+  2 min. Docker (emulated x86_64, T9's target cache): the first harness
+  build about 2 minutes, later ones under a minute. The 38 planted bugs
+  ran in about 2 minutes on Metal.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1
@@ -5022,3 +5380,81 @@ otherwise have to change; the owner applies it, or unlocks the path.
     is not visible (`NSWindow.occlusionState`, its fix for gfx-rs/wgpu#8309),
     which matches "no surface acquisition while minimised or occluded" and
     means a locked or sleeping screen presents nothing.
+
+55. **Amendment from session 17, T12** (to proposal 8; G5).
+    `docs/rungs/1b/patches/t12-oracles.patch`, on top of T12's commit,
+    protects the shot harness, which
+    criteria 4 (`shot-exact`) and 5 (`shot-flip`) rely on:
+    `protected.toml` gains `crates/game-testbed/tests/shots.rs` and
+    `crates/game-testbed/tests/shots/**` (its two modules, files of their
+    own because of the 500-line warning), `.github/CODEOWNERS`
+    `/crates/game-testbed/tests/shots.rs` and
+    `/crates/game-testbed/tests/shots/`, each right after the `golden`
+    lines. The G5 row's "`shots.rs`" is these two paths.
+56. **Amendment from session 17, T12** (to proposal 9, G6). The same patch
+    adds `crates/game-testbed/golden/thresholds.toml`: `version = 1`,
+    `[flip] mean = 0.01, p99 = 0.2, p999 = 0.5`. The first two are the
+    plan's; the third is new, because a missing dot passes the first two
+    (mean 0.007, p99 0.10; p999 0.98), while a dot short of 12 edge pixels
+    stays at p999 0.25. Before any golden exists the harness reports "no
+    golden yet" with or without the file, so it can land at G5 or wait for
+    G6 with the images. Measured today: Metal against lavapipe, all zero
+    on the four shots; one edited pixel, mean 0.000002. The golden images
+    themselves stay G6's, from T16's CI run.
+57. **Amendment from session 17, T12** (to proposal 7, X2 and X6;
+    replaces amendment 42's third bullet). The native jobs' shot steps,
+    from the repo root:
+    - `shot-exact` (ubuntu-24.04 x64, the pinned Mesa):
+      `ENG_REQUIRE_GPU=1 ENG_SHOT_MODE=exact cargo test -p game-testbed
+      --test shots`, so a runner whose adapter is not the pinned one
+      fails.
+    - `shot-flip` (the other four): `ENG_REQUIRE_GPU=1 cargo test -p
+      game-testbed --test shots`.
+    - Both read `target/golden-candidates/shots.json` afterwards: exit 0
+      is a pass only if every shot's status is `pass` (and, for
+      `shot-exact`, `configuration.pinned` is true); `no-golden` or
+      `no-thresholds` records the step as pending, so acceptance stays
+      false until G6, as plan decision 3 says. The log also carries
+      `[W-NO-GOLDEN]` and `[W-NO-THRESHOLDS]`.
+    - Each uploads `target/golden-candidates/` as an artifact: the
+      candidates, the FLIP maps and `shots.json`. The harness sets the
+      llvmpipe variables itself; the workflow needs only the pinned Mesa
+      and `VK_DRIVER_FILES` (or the ICD path).
+    - Optional, for G6's sitting: if the four other jobs wait for
+      ubuntu-24.04's artifact and set `ENG_GOLDEN_DIR` to a copy of it
+      (outside `target/golden-candidates/`, with the thresholds copied in),
+      the first run after G5 already gives FLIP numbers and maps for each
+      runner against the would-be goldens, which T16 then collects.
+58. **Amendment from session 17, T12** (to proposal 7, X5 and X6;
+    criterion 12, `cargo xtask selftest golden-edit`). The edited-golden
+    case: copy `crates/game-testbed/golden/` outside `target/`, change one
+    level of one pixel of one golden, run `cargo test -p game-testbed
+    --test shots` with `ENG_GOLDEN_DIR` set to the copy, `ENG_REQUIRE_GPU=1`
+    and `ENG_SHOT_MODE=exact`, and expect a failure with `[E-GOLDEN] ...
+    pixels differ from the golden`. It needs the pinned lavapipe, since
+    FLIP passes a one-pixel edit by design, and acceptance runs it in the
+    selftest job, which has none: X6 installs the pinned Mesa there (as in
+    the native ubuntu-24.04 job), or the case moves to that job, or the
+    owner takes open question 5's digests. A 64x64 square brightened by
+    80 levels fails FLIP on any adapter, but still needs one. Before G6
+    there is no golden to edit, so the case can edit a candidate the job
+    renders first.
+59. **Amendment from session 17, T12** (to proposal 4 and "Crate batch
+    2"). Recomputed against the real lock (main at 14ca032 plus T12): the
+    lock gains `nv-flip` 0.1.2 and `nv-flip-sys` 0.1.1, at the table's
+    versions; `cc` 1.10.0, `find-msvc-tools` 0.1.15 and `shlex` 2.0.1 were
+    locked already. All five are in game-testbed's graph on the seven
+    targets, as the table says, so every one of the 136 batch-2 names is
+    now in the graph. `cargo deny check` passes with the approved policy.
+    No difference from the table.
+60. **Amendment from session 17, T12** (to `plan.md`, which is not
+    protected: decisions 3 and 4, criteria 4 and 5, the G6 and T12 rows).
+    Suggested text: the harness is `tests/shots.rs` with `tests/shots/`;
+    "a fixed llvmpipe environment" is `LP_NATIVE_VECTOR_WIDTH=256` and no
+    other `LP_*` or `GALLIVM_*` variable, set by the harness; the pinned
+    configuration is recognised from the shot's report (adapter `llvmpipe
+    (LLVM 18.1.3, 256 bits)`, driver info `Mesa 25.2.7 (LLVM 18.1.3)`),
+    so an Ubuntu update of LLVM 18 shows up as a configuration change, not
+    as pixels; the FLIP limits are three (amendment 56); and
+    `ENG_SHOT_MODE` and `ENG_GOLDEN_DIR` join `ENG_GPU_ADAPTER` and
+    `ENG_REQUIRE_GPU` in decision 4's list.

@@ -33,7 +33,10 @@
 //! capabilities and the per-frame counters), and `budgets.toml [gpu]` holds
 //! every frame (exit 13, `[E-BUDGET]`). Without an adapter they exit 64
 //! with `[E-NO-ADAPTER]`, writing nothing (plan decision 4); a frame that
-//! fails once the GPU is open is a bug and panics (exit 12).
+//! fails once the GPU is open is a bug and panics (exit 12). Golden tests
+//! compare a shot's decoded pixels, not its file's bytes, and read the
+//! report's `gpu` object to know which adapter drew it (the testbed's
+//! `tests/shots.rs`).
 //!
 //! `play` is the game: a window, live input and Esc to quit. Its frame loop
 //! is eng-app's ([`main_with_play`]); eng-cli parses its flags and gives it

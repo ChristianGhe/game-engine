@@ -368,6 +368,36 @@ Renderer::render_to: the same three passes, into a window's SurfaceFrame
   `sRGB` chunk and nothing else, so the same pixels give the same bytes.
   A frame that fails once the GPU is open (`[E-SCENE]`, `[E-GPU]`) is a
   bug: it panics, and the hook writes `crash.json` (exit 12).
+- **Golden shots** (plan decision 3, spec 8.3) are the testbed's harness,
+  `crates/game-testbed/tests/shots.rs` (with `shots/compare.rs` and the
+  GPU-free tests in `shots/parts.rs`). It runs `shot` for four 320x240
+  pictures of seed 1, dot-square at ticks 0, 120 and 240 and ten dots at
+  tick 0, and compares each with `crates/game-testbed/golden/<name>.png`
+  as decoded RGBA8 pixels, never as PNG bytes.
+  - On the pinned configuration the pixels must be equal: Linux x64 with
+    Mesa 25.2.7's lavapipe (gfx-rs/ci-build build26), LLVM 18.1.3 and
+    256-bit vectors, as the report's `gpu` object names them. The harness
+    passes `LP_NATIVE_VECTOR_WIDTH=256`, and no other `LP_*` or
+    `GALLIVM_*` variable, to every shot.
+  - Elsewhere FLIP's mean and its 99th and 99.9th percentiles must stay
+    within `golden/thresholds.toml`; the 99.9th sees a dot that is
+    missing, which the other two do not.
+  - `golden/` is the owner's, and the harness never writes there. While it
+    holds no golden, each shot is saved as a candidate in
+    `target/golden-candidates/` and reported as `[W-NO-GOLDEN]`, and a
+    FLIP comparison without thresholds as `[W-NO-THRESHOLDS]`. Neither
+    fails the test, and neither is a pass for acceptance: the run's
+    summary, `shots.json`, gives each shot's status. Once one golden
+    exists, every shot needs its own, and a golden that no shot names
+    fails. A failure saves the shot there too, and a FLIP comparison its
+    error map (`flip/`).
+  - `ENG_SHOT_MODE=exact` fails on any configuration but the pinned one.
+    `ENG_GOLDEN_DIR` compares with another directory, which must exist
+    outside `golden-candidates/` and hold every shot's golden: another
+    machine's candidates, or an edited copy. An edited copy fails only in
+    exact mode, as FLIP passes a single changed pixel by design, so
+    criterion 12's selftest needs the pinned lavapipe.
+  - Without an adapter the test skips, unless `ENG_REQUIRE_GPU=1`.
 
 ### `play`: the frame loop
 
@@ -438,6 +468,7 @@ eng-platform-winit (or headless) ──▶ App callbacks on eng-app's Frames
 | Cross-architecture equality | `cargo xtask compare-hashes` in CI's summary job | never changes |
 | `eng-math` known answers | `crates/eng-math/tests/known_answers.txt` | the owner |
 | Golden vectors | `crates/*/tests/golden.rs` | the owner |
+| Golden images and FLIP thresholds | `crates/game-testbed/golden/`, compared by `crates/game-testbed/tests/shots.rs` and `tests/shots/` | the owner |
 | Semantic assertions | `crates/game-testbed/scenarios/*.assert.toml` | the owner |
 | Budgets | `budgets.toml` | the owner |
 | Hash streams (change detectors) | `crates/game-testbed/hashes/` | the PR, with a reason; the reviewer approves |

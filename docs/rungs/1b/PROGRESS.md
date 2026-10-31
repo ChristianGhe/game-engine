@@ -3802,6 +3802,400 @@ image. Nothing ran on Windows; the testbed type-checks for RISC-V.
   Metal and is 239 KB. Docker (emulated x86_64, T8's target cache): the
   four crates' tests in about 3 minutes.
 
+## 2026-10-31, session 17 (continued): T11, `eng-app` and `play` (Claude Opus 5.5, subagent, owner away)
+
+The task: T11, the app. Its plan row asks for `eng-app`'s frame loop,
+composition and `play`, with the testbed entering through it; done when
+the windowed hash stream equals the headless one, dropped ticks are
+reported, Esc quits, and `crash_json.rs` also covers `play`. It composes
+T3's contract and T10's `WinitPlatform`, T6's session over Memory, T4's
+live input, T7's and T8's eng-gpu and eng-render, T9's extraction and
+report `gpu` object, and T2's panic hook. Built test first in a scratch
+clone of main at 14ca032 while another subagent built T12 in its own. No
+protected path edited, no hash stream regenerated, `game-testbed-sim`
+unchanged and nothing new registered in the sim's World (the protocol is
+still `0x69fd4996880a6508`); the conformance suite is untouched. It is left
+uncommitted, as `t11.patch`, with `t11-oracles.patch` for the owner.
+
+**What was built** (the crate docs and `docs/ARCHITECTURE.md`, "`play`:
+the frame loop", have the rest):
+
+```text
+<game> play [--ticks N] [--input script.toml] [--bindings bindings.toml] [--seed S]
+            [--hashes hashes.txt] [--record out.rec] [--report report.json]
+```
+
+```rust
+eng_app::main(&GameDef) -> ExitCode                  // the probe plus `play`; the testbed's main
+eng_app::run_args(&GameDef, &[String]) -> Exit
+eng_app::play_on(&mut dyn Platform, PlayRun) -> Exit // the frame loop on any platform (the twin)
+eng_app::{TickClock, Due, MAX_TICKS_PER_WAKE}        // at most 5 ticks a wake, the rest dropped
+eng_cli::{main_with_play, run_args_with_play, Play}  // the probe, handing `play` to a frame loop
+eng_cli::PlayRun { start, step, frame, observe_frame, dropped, refuse, finish, .. }
+eng_cli::{Step, PlayStats, PlayGpu}
+eng_gpu::Gpu::with_window(&GpuOptions, window, w, h) -> (Gpu, WindowSurface)
+eng_gpu::WindowSurface { acquire, present, resize, size, format }, SurfaceFrame
+eng_gpu::Graph::render_to(&Gpu, &Targets, &SurfaceFrame, passes)
+eng_render::Renderer::render_to(&Gpu, &Targets, &SurfaceFrame, &TopDownScene)
+```
+
+- **eng-cli** keeps the probe and gains what `play` shares with `run`:
+  `play`'s flags in its parser (one `help`), one per-tick step for every
+  mode (`Session::tick`: send, server step, snapshot back, record), and
+  `PlayRun`, the session with the script, the hash stream, the recording
+  and the report. `main_with_play` installs the hook, opens the log and
+  builds the run as for every command, then hands it to the frame loop.
+  Plain `eng_cli::main` refuses `play` with exit 64: a game gets its window
+  through eng-app.
+- **eng-app** has the frame loop (`Frames`, an `App` on T3's contract),
+  `TickClock`, and `View`: the GPU on the window's surface, engine-owned
+  targets kept at the window's size, nothing acquired while minimised or
+  occluded. `main` is `eng_cli::main_with_play` with `play` on
+  `WinitPlatform`, titled with the game's name.
+- **eng-gpu** keeps the instance's adapter, opens a device on one that can
+  present to the window (`Gpu::with_window`, the rwh traits as ADR-0016
+  allows; eng-gpu now depends on `raw-window-handle` directly, as the
+  wrapper ban lists it), and adds `WindowSurface` and `Graph::render_to`.
+  `Graph::render` is unchanged, so T8's `counters.rs` and the queued
+  `t8-oracles.patch` need nothing.
+- **The testbed** calls `eng_app::main`.
+
+**Decisions** (proposals; the owner can overrule any):
+1. **eng-cli parses `play`, eng-app runs it.** The probe already owns the
+   flags, the session, the files, the report and the hook (plan
+   difference 9), and eng-app depends on eng-cli, so eng-cli builds a
+   `PlayRun` and calls the frame loop through `&dyn Fn(PlayRun) -> Exit`.
+   `run` and `play` share `Session::tick`, the script iterator and the
+   writers, so `play --input` gives `run`'s stream by construction, and
+   the tests check it. Rejected: making eng-cli's internals public for
+   eng-app (a larger API), or moving the session and writers to eng-app
+   (two copies of `run`).
+2. **One tick per due period, at most 5 a wake** (`MAX_TICKS_PER_WAKE`). The
+   clock counts whole nanoseconds from the first frame, 1/60 s rounded
+   down as `run`'s headless pace. Ticks past 5 are dropped: the clock
+   moves past them, the simulation never skips one (tick N+1 always
+   follows N), the run just falls behind real time. Each drop is logged
+   (`[W-TICK-DROP] N tick(s) dropped before tick T`), and the total is the
+   report's `dropped_ticks` and a console line.
+3. **Input is sampled once per tick**, before that tick's step. `quit`
+   ends the run before stepping the tick whose sample saw it; a close
+   request ends it at once. Both exit 0 with the files written. With
+   `--input`, keys still go to `LiveInput` but only `quit` is read.
+4. **Frames at the tick rate.** The loop wakes for the next tick, runs the
+   ticks due, then draws once at the clock's alpha (`TopDownFrame`'s
+   `previous` and `current`: `PlayRun` keeps the previous state by
+   restoring the client's snapshot into a second sim before each step, 451
+   bytes). So at 60 Hz one frame per tick, with alpha near 0; a display
+   faster than the tick rate gets no extra frames yet (rung 2 can wake for
+   frames too). Rejected for now: waking at once after each present,
+   which under Xvfb, with no vsync, would spin.
+5. **Outputs in `stop`.** `PlayRun::finish` runs from the platform's
+   `stop`, so on macOS, where Quit ends the process right after it
+   (amendment 39, option a), the files are saved. The window and its
+   surface are dropped there first (surface, then window).
+6. **Surface format** (T8 decision 7 and open question 1): `Bgra8UnormSrgb`
+   if offered, else `Bgra8Unorm` with a `Bgra8UnormSrgb` view format and
+   view, else `[E-GPU]` naming the formats offered. Alpha mode `Opaque`
+   when offered, else `Auto`; colour space `Auto` (sRGB for these formats);
+   Fifo; at most 2 frames in flight. Each side is clamped to 1..=8,192
+   (Tier 0). Seen: Metal and lavapipe on X11 both offer `Bgra8UnormSrgb`.
+7. **Acquire outcomes.** `Timeout` and `Occluded` skip the frame;
+   `Outdated` reconfigures and skips; `Suboptimal` draws, presents and
+   reconfigures; `Lost` and `Validation` are `[E-GPU]` errors, which `play`
+   treats as bugs (a panic and `crash.json`, as T9 does after the GPU
+   opens). Recreating a lost surface is left for when a runner shows one.
+   Before each frame the view compares the window's size with the
+   surface's, so a resize whose event never came is caught (from the
+   review).
+8. **Failures before the first tick write nothing and exit 64**, as `shot`
+   does (plan decision 4): no display (`[E-NO-DISPLAY]` with winit's
+   reason), no adapter (`[E-NO-ADAPTER]`), a surface without BGRA
+   (`[E-GPU]`), a game without a top-down view (`[E-USAGE]`), bad flags or
+   files (`[E-USAGE]`, `[E-BINDINGS]`). No new exit code.
+9. **`play`'s flags** are the plan's, plus `--panic-at-tick` (test-only,
+   as `run`'s). `--players`, `--budgets`, `--assert` and `--events` stay
+   off: `play` is one player at the keyboard. Without `--ticks` the run
+   lasts until `quit` (at most `MAX_TICKS`, 46 hours), and the report's
+   `ticks_requested` is `null`.
+10. **The report stays at version 2**, keys only added: `platform` is the
+    platform's name (`winit`, `headless`), `dropped_ticks` is new in every
+    report (0 for the headless commands), and `play`'s `gpu` object is
+    T9's with the window's last size, the frames presented and
+    `surface_format`, the format the window's surface got (from the
+    review: T8's open question 1 asks each runner to show it); `per_frame`
+    is the peaks over the frames, measured `3, 3, 2, 96` with the present
+    pass. The console's first line names the platform instead of the fixed
+    `headless`, and `play` adds a `dropped ticks: N` line.
+11. **The headless twin is `play_on` on `HeadlessPlatform`**, scripted
+    keys and all: the same `Frames`, the same `PlayRun`, no window and so
+    no GPU. A tiny platform in the test that sends frames late checks the
+    drops, since the headless clock never runs late.
+12. **The windowed tests are a child process** (plan, risk table):
+    `crates/game-testbed/tests/play.rs` runs the binary. They skip on
+    `[E-NO-DISPLAY]` unless `eng_platform_winit::display_required()`
+    (amendment 36) and on `[E-NO-ADAPTER]` unless `ENG_REQUIRE_GPU=1`. The
+    Esc test runs on Linux where X11 and `xdotool` are, with amendment
+    37's path: `search --onlyvisible --name game-testbed` polled for 30 s
+    while watching the child (a `play` that exits first, without an
+    adapter, never shows a window), then `windowfocus --sync` and `key
+    Escape`. Every xdotool call is killed after 10 s, the child loses the
+    Wayland variables (xdotool sees X11 windows only, and winit takes
+    Wayland when it can), and with `ENG_REQUIRE_DISPLAY=1` on Linux a
+    missing display or xdotool fails instead of skipping (all from the
+    review: `search --sync` could hang for ever).
+13. **A window that is never visible presents nothing.** wgpu 30 itself
+    refuses to acquire on macOS while `NSWindow.occlusionState` is not
+    visible (its workaround for the one-second hang), and `play` skips
+    occluded windows anyway. So the windowed test asks for presented
+    frames only with `ENG_REQUIRE_DISPLAY=1` (CI's native jobs); locally,
+    with the screen locked or asleep, it checks the hash stream and the
+    report and notes that nothing was shown.
+14. **`args.rs`'s unit tests moved to `args/tests.rs`**, as `version.rs`'s
+    are, keeping `args.rs` at 333 lines.
+15. **The twin lives in the testbed** (`crates/game-testbed/tests/twin.rs`,
+    from the review): it needs a game (`game-testbed-sim`, the committed
+    hash stream), and no engine crate's tests depend on one. eng-app keeps
+    only the clock's tests and has no dev-dependencies.
+16. **The script is leaked once per run** (`Box::leak` in `PlayRun::new`):
+    `iter_commands` borrows the script and `PlayRun` keeps the iterator. A
+    process runs one command, so the binary leaks one small script; the
+    twin's tests leak a few. Kept rather than a cursor that restarts the
+    iterator (quadratic) or a second copy of the script's rules in eng-cli.
+    An owning `InputScript::into_commands` in eng-input would remove it
+    (open question 4).
+
+**Tests** (written before the code except where said; 25 new, and the
+`play` half of `crash_json.rs` in the oracle patch):
+- `crates/eng-app/tests/clock.rs`, 6: the first tick a period after the
+  start; each due tick runs once; at most 5 a wake, the rest dropped, a
+  second-long stall (5 run, 55 dropped, the clock goes on from after it);
+  alpha in [0, 1], exact at quarters; 30 Hz; a zero tick rate refused.
+  The clock was written with them, so the planted bugs below are what
+  shows they bite.
+- `crates/game-testbed/tests/twin.rs`, 12 (the headless twin): `play --input`
+  gives the committed `dot-square.seed1.txt` byte for byte, with keys that
+  would move the dot pressed meanwhile; Escape at 0.5 s ends after tick 30
+  with exit 0, the report's `ticks_requested` `null` and 31 hashes; a tap
+  of Escape between two ticks quits; Escape quits a scripted run; a close
+  request quits; `--ticks 12` stops at 12; live keys give one command per
+  tick (held W for ticks 4 to 6, a sub-tick tap of ArrowUp for tick 10,
+  S then focus lost for tick 13 only, read back from `--record`); a
+  bindings file replaces the defaults (Escape unbound, Q quits); a bad
+  bindings file is a usage error before anything runs; a frame a second
+  late runs 5 ticks and reports 55 dropped (`platform` `late`); a frame
+  reads the previous tick and the newest (added for the planted bug that
+  stopped keeping the previous state); a platform that cannot run
+  (`Unavailable`, nothing called) exits 64 and writes nothing (added after
+  the review). Red first against a stub `play_on`: 9 of the first 10
+  failed; the bad-bindings one passed, since eng-cli refuses the file
+  before the loop.
+- `crates/game-testbed/tests/play.rs`, 4, the binary in a real window:
+  `play --ticks 240 --seed 1 --input dot-square --hashes --report` equals
+  the committed stream, its report says `winit`, 240 ticks, exit ok, a
+  `surface_format` of `Bgra8UnormSrgb` or `Bgra8Unorm`, and with frames
+  presented `per_frame` is 3 draws, 3 pipeline switches, 2 bind-group
+  switches and 96 bytes; Escape from the keyboard (X11 and
+  xdotool) exits 0 within 5 s with the report written; without a display
+  (Linux and the BSDs) exit 64 with `[E-NO-DISPLAY]` and no file; bad
+  flags exit 64 before a window opens (`[E-BINDINGS]` for a bad file).
+- eng-cli `args`, 2: `play` with every flag and its defaults; 15 bad
+  command lines (other commands' flags, `--players`, `--bindings` on
+  `run` and `shot`).
+- eng-gpu `surface.rs`, 1 (in the crate, wgpu's types are private): the
+  format choice, sRGB first, then `Bgra8Unorm` with an sRGB view, else
+  none.
+- `crash_json.rs`'s `play` half is in `t11-oracles.patch` (the file is
+  protected): `play --ticks 5 --seed 7 --panic-at-tick 3` in a window exits
+  12 and writes every field, as `run` does, with the panic in `play.rs`
+  and `eng_app::` frames in the backtrace, on the main thread. It skips
+  without a display or adapter unless required. The run half is the same
+  code, moved into a shared `check_crash`.
+- eng-cli `play.rs`, 1 (in the crate, for the log's tail): dropped ticks
+  are counted and logged with `[W-TICK-DROP]` and the tick.
+- Planted bugs, each reverted exactly, in a copy of the clone
+  (`scratchpad/t11/scripts/mutate.py`, `mutate2.py`, `mutate3.py`): 30,
+  all caught. The
+  clock (6 a wake, nothing dropped, catching up, the first tick at the
+  start, alpha unclamped); the frame loop (quit ignored, quit after its
+  tick, a close request ignored, keys never reaching live input, drops not
+  reported); `PlayRun` (the script ignored, the previous state not kept,
+  one tick past `--ticks`, every other tick hashed, no recording, drops
+  not counted, the bindings file ignored, the drop log without its tag);
+  the report (`platform` always `headless`, `ticks_requested` never
+  `null`, `dropped_ticks` always 0); the parser (`--players` taken, no
+  `--ticks` ending at once); `Session::tick` recording twice; the surface
+  format preferring `Bgra8Unorm`; and, against the oracle patch's `play`
+  half, `--panic-at-tick` ignored, the crash context without the tick, and
+  no panic hook for `play`; after the review, the surface format left out
+  of the report, and an unavailable platform that still writes the files.
+  The previous-state bug passed until the twin
+  got its frame test (above), added for it before the round. Not covered
+  by any test that runs without a visible window: drawing while occluded,
+  skipping the present, and the size check of `render_to`.
+
+**Runs**
+- This Mac (aarch64-apple-darwin, Metal, Apple M2 Pro): `play --ticks 240
+  --seed 1 --input dot-square --hashes h.txt --record r.rec` exits 0, `h.txt`
+  equals the committed stream (`cmp`), and `replay verify r.rec` passes
+  (241 hashes). The window opened at 1600 x 1200 pixels, but no frame was
+  presented: the display is asleep and the session locked while the owner
+  is away (`system_profiler`: "Display Asleep: Yes"), so macOS reports
+  every window occluded and wgpu refuses to acquire (decision 13);
+  `caffeinate -u` woke the display but not the lock. For the same reason
+  Escape could not be sent through the real OS path here: keystrokes would
+  reach the lock screen, not the window. The surface got
+  `Bgra8UnormSrgb`. With `ENG_REQUIRE_DISPLAY=1 ENG_REQUIRE_GPU=1` the
+  oracle clone's crash harness passes, `play`'s half included (the panic
+  needs ticks, not a visible window).
+- Linux, Xvfb in Docker, natively on arm64: T10's Xvfb image plus the
+  distro's Vulkan loader and Mesa lavapipe (`llvmpipe (LLVM 19.1.7, 128
+  bits)`; `scratchpad/t11/docker/`), with `ENG_REQUIRE_DISPLAY=1
+  ENG_REQUIRE_GPU=1`, on the final code: `play.rs` 4 of 4, the Esc test
+  through XTEST (`windowfocus --sync`, `key Escape`) included; and by hand
+  `play --ticks 240 --seed 1 --input dot-square --hashes h.txt` equal to
+  the committed stream (`cmp`), 233 frames of 800x600 presented, the
+  surface `Bgra8UnormSrgb`, `per_frame` 3, 3, 2, 96, no tick dropped. On
+  the oracle clone (both patches), the same image: the crash harness 3 of
+  3 (`play`'s half in a real window), the twin 12 of 12, `play.rs` 4 of 4.
+  An earlier run, before the review, passed the same and presented 214
+  frames of 240.
+- RISC-V (the coordinator's check; CI's riscv job builds the testbed,
+  which now links winit through eng-app): `cargo check --locked -p
+  game-testbed --all-targets --target riscv64gc-unknown-linux-gnu` passes
+  in the same arm64 container (29 s cold; again on the final code).
+- Windows and the Intel Mac: `cargo clippy --locked -p eng-app -p
+  eng-gpu -p eng-render -p eng-cli -p game-testbed --all-targets` with `-D
+  warnings` for `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc` and
+  `x86_64-apple-darwin`, in the container: clean. Not run: Windows, and
+  Wayland (T10 ran the platform there).
+
+**Review** (the `reviewer` subagent, fresh context, read-only; 15 min,
+266k tokens, 80 tool calls): approve with changes, no blockers. It ran
+`quick` twice (7 of 7 each) and checked the shared tick path, the clock's
+arithmetic and alpha, interpolation across several ticks in one wake, the
+run's endings and `stop`, the no-display and no-adapter paths, the
+surface's handling, the public API (ADR-0016's bound on `Gpu::with_window`
+is the only third-party name; eng-app does not depend on
+`raw-window-handle`), the protected paths, the report's added keys,
+AGENTS.md's length and the oracle patch's `play` half. Three of its points
+were fixed while it read: `args.rs` over 500 lines, and no test for the
+`[W-TICK-DROP]` line or for the previous state. Its should-fix points, all
+taken:
+- the Esc test could hang for ever in `xdotool search --sync` (a `play`
+  that exits before showing its window, or a Wayland desktop): now polled
+  with a deadline, every xdotool call bounded, Wayland removed (decision
+  12);
+- with `ENG_REQUIRE_DISPLAY=1` on Linux, a missing display or xdotool
+  skipped silently there: now it fails;
+- nothing recorded which format the window's surface got: now
+  `gpu.surface_format` in `play`'s report, asserted by `play.rs`
+  (decision 10).
+Its nits:
+- the twin depended on a game from an engine crate: moved to the testbed
+  (decision 15);
+- the leaked script: kept, with the reasons (decision 16);
+- an outdated surface was configured again at its old size: the view now
+  checks the window's size every frame, and a lost surface is documented
+  as a bug in 1b (exit 12);
+- a platform that fails after `stop` prints "exit 0 (ok)" before the
+  `[E-PLATFORM]` panic: left, cosmetic;
+- untested branches: `play_on` with `Unavailable` now has a twin test;
+  plain `eng_cli::run_args` refusing `play` has none (open question 5);
+- this entry.
+
+**Checks** (this Mac, aarch64-apple-darwin, the work clone, the final
+code, one after another):
+- `cargo xtask quick`: 7 of 7 (49 s).
+- `CI=1 cargo xtask ci --job lint`: 7 of 7, `cargo deny check` and
+  `typos` on the repo's configs (eng-gpu's new direct
+  `raw-window-handle` edge is inside the wrapper ban's list).
+- `CI=1 cargo xtask ci --job test`: 9 of 9 (117 s); its `crash-json` step
+  runs the unprotected file, so only the `run` half.
+- `CI=1 cargo xtask ci --job wasm`: ok. `cargo xtask selftest`: 17 of 17.
+- `RUSTDOCFLAGS=-Dwarnings cargo doc --no-deps` for eng-app, eng-cli,
+  eng-gpu and eng-render: clean.
+- `cargo xtask replay`: 5 runs, assertions and budgets ok, the hash
+  streams equal to the committed ones; `git status` shows
+  `crates/game-testbed/hashes/` and `game-testbed-sim` unchanged; no
+  `--regen`.
+- AGENTS.md: 145 lines (the `play` command, and `[E-NO-DISPLAY]` beside
+  `[E-NO-ADAPTER]` in the exit-code note). `typos` with the repo's config:
+  clean on this entry and both patches.
+
+**The patches** (`scratchpad/t11/`):
+- `t11.patch`, the orchestrator's, nothing protected: 31 files (eng-app,
+  eng-cli, eng-gpu, eng-render, game-testbed, `Cargo.lock`, `AGENTS.md`,
+  `docs/ARCHITECTURE.md`). Made with `git add -A` and `git diff --cached
+  --full-index 14ca032` in the work clone; on a fresh clone at 14ca032 it
+  passes `git apply --check`, applies, and gives the work clone's tree
+  (`git write-tree` 9890799). The lock gains only edges between our crates.
+- `t11-oracles.patch`, the owner's (G5; amendment 45): `protected.toml`,
+  `.github/CODEOWNERS` and `crates/game-testbed/tests/crash_json.rs`.
+  Made by `scripts/make-t11-oracles.sh` on a fresh clone with `t11.patch`
+  applied and committed. There `quick` (7 of 7), the lint job (7 of 7),
+  `selftest` (17 of 17) and the crash harness with both variables set (3
+  of 3) pass, and docs-check fails with `[E-DOCS]` when one new
+  CODEOWNERS line is removed. It applies before or after the queued
+  `t10-`, `t3-`, `t8-` and `t9-oracles.patch` (checked both ways).
+- Scripts: `scratchpad/t11/scripts/` (`make-t11-patch.sh`,
+  `make-t11-oracles.sh`, `test-oracles.sh`, `stack-check.sh`, `checks.sh`,
+  `mutate.py`, `mutate2.py`) and `scratchpad/t11/docker/` (the Dockerfile
+  and the in-container scripts).
+
+**What is left** (T11's own scope is done; these are its loose ends):
+- Frames on Metal in a visible window, and Escape through macOS's own
+  input, were not seen: the display slept and the session was locked
+  throughout. The owner's G7 sitting (criterion 16) is the first look;
+  CI's `macos-26` job, with `ENG_REQUIRE_DISPLAY=1`, requires presented
+  frames.
+- Windows is only type-checked (clippy with `-D warnings` for both
+  Windows targets and `x86_64-apple-darwin`, in the container).
+- The native job's `window`, `esc` and `crash-json` steps are T13's
+  (amendment 46).
+
+**Open questions**
+1. **A runner's window that counts as occluded** (decision 13): if
+   `macos-26`'s session reports windows occluded (a locked or headless
+   runner), the windowed test fails with `ENG_REQUIRE_DISPLAY=1`; the
+   owner then decides between skipping presentation there and another
+   check.
+2. **Frames above the tick rate** (decision 4): 1b draws once per tick;
+   rung 2's first-person view will want frames paced by the display.
+3. **A lost surface** (decision 7) is a panic in 1b; recreating it from the
+   kept window is a small change once a runner shows one.
+4. **The leaked script** (decision 16): an owning
+   `InputScript::into_commands` in eng-input would remove it, at the cost
+   of a second form of the script's iteration, which the replays then
+   cover.
+5. **Plain `eng_cli::main` refusing `play`** has no test: every game binary
+   in the repo enters through eng-app, and a unit test would have to
+   install the process-wide panic hook. An integration test file in
+   eng-cli (its own process) could cover it.
+6. **Merging with T12**, built alongside: both may touch
+   `crates/game-testbed/Cargo.toml`'s `[dev-dependencies]` and
+   `Cargo.lock`; the second to land may need its hunks applied by hand
+   and `cargo update --offline --workspace`, as at T9's integration.
+
+**Costs and timings**
+- Session 17's T11 subagent, from 18:55 to about 20:00 EET: reading and
+  design to 19:03; eng-gpu's surface, eng-render's `render_to`, eng-cli's
+  `Session::tick`, flags, `PlayRun` and report to 19:13; the twin and clock
+  tests, red at 19:15, and the frame loop, green at 19:17; the testbed
+  through eng-app and the windowed test to 19:19, then the macOS occlusion
+  finding; the Docker image and the Xvfb run, green at 19:23; `quick`
+  green at 19:25 (the first run failed on `fmt` and on clippy's
+  `disallowed-methods`, `f64::min` in the clock's alpha); docs; the review
+  from 19:26 to 19:41 alongside the oracle patch (19:29), the planted bugs
+  (24 caught by 19:33, 4 more by 19:39, 2 after the review), the CI
+  jobs in a copy of the clone and the RISC-V and cross-target checks; the
+  review's changes to 19:45; the final checks, patches and this entry to
+  about 20:00.
+- Builds: the seeded `target/` made wgpu and winit free; `quick` 48 to
+  55 s warm; `ci --job test` about 130 s. Docker (arm64, native): the
+  image from T10's in seconds, the windowed tests built in 1 min 44 s the
+  first time and 12 s after; RISC-V check 29 s.
+- Reviewer subagent: 15 minutes, 266k tokens, 80 tool calls.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1
@@ -4574,3 +4968,57 @@ otherwise have to change; the owner applies it, or unlocks the path.
     `cargo update --offline --workspace`. Cargo added these 9 packages at
     these versions and changed nothing else; the lint job's `cargo deny
     check` passes on the merged lock.
+
+45. **Amendment from session 17, T11** (to proposal 8 and the G5 row
+    "the windowed-run and Esc tests"; G5). `t11-oracles.patch`, after
+    T11's commit: protect `crates/game-testbed/tests/play.rs` (criteria 2
+    and 3: the window's hash stream, Escape through XTEST, no display)
+    and `crates/game-testbed/tests/twin.rs` (criterion 3's headless twin:
+    Escape, a close request, `--ticks`, live input, dropped ticks, `play
+    --input`'s stream) in `protected.toml` and `.github/CODEOWNERS`, and
+    add the `play` half of `crates/game-testbed/tests/crash_json.rs`
+    (criterion 6):
+    `play --ticks 5 --seed 7 --panic-at-tick 3` in a window exits 12 with
+    every field, the panic in `play.rs` and `eng_app::` frames in its
+    backtrace; it skips without a display or an adapter unless
+    `ENG_REQUIRE_DISPLAY=1` or `ENG_REQUIRE_GPU=1`. The run half is
+    unchanged in substance, moved into a shared `check_crash`. The new
+    lines sit right after `known_answers.rs`'s, so the patch applies in
+    any order with the queued oracle patches that add lines after
+    `version.rs`, `shaders.rs` and `**/golden/**`. No xtask step: the
+    native jobs' `tests` run all three files, and the test job's
+    `crash-json` step runs the file, where `play` skips (no display).
+46. **Amendment from session 17, T11** (to proposal 7, X2 and X6). Commands
+    for the native job's steps, run from the repo root, with
+    `ENG_REQUIRE_DISPLAY=1 ENG_REQUIRE_GPU=1` and, on Linux, under
+    `xvfb-run -a -s "-screen 0 1280x1024x24"`:
+    - `window` (criterion 2): `game-testbed play --ticks 240 --seed 1
+      --input crates/game-testbed/scenarios/dot-square.input.toml --hashes
+      target/ci/window.txt --report target/ci/window.json`, exit 0, then
+      `target/ci/window.txt` byte-equal to
+      `crates/game-testbed/hashes/dot-square.seed1.txt`; the step can record
+      the report's `gpu.frames` and `dropped_ticks`.
+    - `esc` (criterion 3, ubuntu-24.04): start `game-testbed play --report
+      target/ci/esc.json` in the background; `xdotool search --sync
+      --onlyvisible --name game-testbed`; `xdotool windowfocus --sync <id>`;
+      `xdotool key Escape`; the process exits 0 within 5 s. The window's
+      title is the game's name. `play.rs`'s Esc test does exactly this
+      where X11 and xdotool are, so the step may simply be that test with
+      the variables set.
+    - `crash-json` (criterion 6): `cargo test -p game-testbed --test
+      crash_json` with both variables set, so `play`'s half cannot skip.
+47. **Amendment from session 17, T11** (to amendment 39 and the platform
+    contract's `Platform::run` docs, `crates/eng-platform-api/src/app.rs`,
+    not part of the suite). T11 took option (a): `play` writes its files in
+    `stop`. Proposed sentence for the docs of `run`: "On macOS a desktop's
+    quit command (Cmd+Q, the Dock, logging out) may end the process right
+    after [`App::stop`]: save what must be saved there." Not edited here,
+    as the contract is the owner's to word.
+48. **Amendment from session 17, T11** (to `plan.md`'s "One frame"; the
+    plan is not protected, but its text is the owner's). Two precisions:
+    frames come at the tick rate in 1b (decision 4: the loop wakes for
+    each tick and draws once, so interpolation's alpha stays near 0 at
+    60 Hz); and on macOS wgpu 30 itself refuses to acquire while the window
+    is not visible (`NSWindow.occlusionState`, its fix for gfx-rs/wgpu#8309),
+    which matches "no surface acquisition while minimised or occluded" and
+    means a locked or sleeping screen presents nothing.

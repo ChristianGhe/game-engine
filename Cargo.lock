@@ -391,6 +391,14 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 [[package]]
 name = "eng-app"
 version = "0.1.0"
+dependencies = [
+ "eng-cli",
+ "eng-gpu",
+ "eng-input",
+ "eng-platform-api",
+ "eng-platform-winit",
+ "eng-render",
+]
 
 [[package]]
 name = "eng-cli"
@@ -451,6 +459,7 @@ name = "eng-gpu"
 version = "0.1.0"
 dependencies = [
  "naga",
+ "raw-window-handle",
  "wgpu",
 ]
 
@@ -664,11 +673,15 @@ dependencies = [
 name = "game-testbed"
 version = "0.1.0"
 dependencies = [
+ "eng-app",
  "eng-cli",
  "eng-collision-api",
  "eng-core",
  "eng-input",
  "eng-math",
+ "eng-platform-api",
+ "eng-platform-headless",
+ "eng-platform-winit",
  "eng-render",
  "eng-schema-json",
  "eng-sim",

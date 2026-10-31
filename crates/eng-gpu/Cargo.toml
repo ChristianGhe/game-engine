@@ -8,6 +8,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# The window seam (ADR-0016): a window's surface is made from anything with
+# the two handle traits. Never re-exported.
+raw-window-handle.workspace = true
 wgpu.workspace = true
 
 [dev-dependencies]

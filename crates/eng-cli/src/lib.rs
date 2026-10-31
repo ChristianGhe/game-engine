@@ -12,6 +12,8 @@
 //!             [--input script.toml] [--budgets budgets.toml] [--report report.json]
 //! <game> video --ticks N --out proof.apng [--every K] [--size 320x240] [--seed S] [--players P]
 //!              [--input script.toml] [--budgets budgets.toml] [--report report.json]
+//! <game> play [--ticks N] [--input script.toml] [--bindings bindings.toml] [--seed S]
+//!             [--hashes hashes.txt] [--record out.rec] [--report report.json]
 //! <game> --version [--json]
 //! ```
 //!
@@ -33,6 +35,13 @@
 //! with `[E-NO-ADAPTER]`, writing nothing (plan decision 4); a frame that
 //! fails once the GPU is open is a bug and panics (exit 12).
 //!
+//! `play` is the game: a window, live input and Esc to quit. Its frame loop
+//! is eng-app's ([`main_with_play`]); eng-cli parses its flags and gives it
+//! a [`PlayRun`], the same session, tick, files and report as `run`, so
+//! `play --input` gives `run`'s hash stream tick for tick. Its report adds
+//! the platform, the ticks the frame loop dropped and the window's `gpu`
+//! object.
+//!
 //! `--version` prints the version stamp (spec 6.13) on one line and
 //! `--version --json` prints all of it; see the `version` module and
 //! `docs/ARCHITECTURE.md`, "The version stamp".
@@ -51,6 +60,7 @@ mod capture;
 mod exit;
 mod image_file;
 mod log;
+mod play;
 mod replay;
 mod report;
 mod run;
@@ -64,6 +74,7 @@ use eng_render::TopDownScene;
 use eng_sim::{ScheduleError, Sim, SimConfig};
 
 pub use exit::Exit;
+pub use play::{PlayGpu, PlayRun, PlayStats, Step};
 pub use version::{ENGINE_SHA, ENGINE_VERSION, PROFILE, RUSTC_VERSION, TARGET, UNKNOWN};
 
 /// What a game binary tells the probe about itself.
@@ -97,7 +108,11 @@ pub struct TopDownFrame<'a> {
     pub height: u32,
 }
 
-/// Runs the probe with the process arguments.
+/// What runs `play`: eng-app's frame loop, given the run eng-cli built.
+pub type Play<'a> = &'a dyn Fn(PlayRun<'_>) -> Exit;
+
+/// Runs the probe with the process arguments. `play` exits 64 here: a game
+/// gets its window through eng-app ([`main_with_play`]).
 pub fn main(game: &GameDef) -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     run_args(game, &args).into()
@@ -105,6 +120,22 @@ pub fn main(game: &GameDef) -> ExitCode {
 
 /// Runs the probe with explicit arguments (without the program name).
 pub fn run_args(game: &GameDef, args: &[String]) -> Exit {
+    run_command(game, args, None)
+}
+
+/// [`main`] with `play`: eng-cli parses the command line, installs the
+/// panic hook and builds the [`PlayRun`], and `play` runs it in a window.
+pub fn main_with_play(game: &GameDef, play: Play<'_>) -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    run_args_with_play(game, &args, play).into()
+}
+
+/// [`run_args`] with `play`, as [`main_with_play`].
+pub fn run_args_with_play(game: &GameDef, args: &[String], play: Play<'_>) -> Exit {
+    run_command(game, args, Some(play))
+}
+
+fn run_command(game: &GameDef, args: &[String], play: Option<Play<'_>>) -> Exit {
     exit::install_panic_hook(game);
     exit::begin(args);
     let command = match args::parse(args) {
@@ -119,6 +150,20 @@ pub fn run_args(game: &GameDef, args: &[String]) -> Exit {
             println!("{}", args::USAGE.replace("<game>", game.name));
             Exit::Ok
         }
+        args::Command::Run(run_args) if run_args.play.is_some() => match play {
+            Some(play) => match PlayRun::new(game, *run_args) {
+                Ok(run) => play(run),
+                Err(exit) => exit,
+            },
+            None => exit::usage(
+                game.name,
+                &format!(
+                    "play needs a window, and {} links only the probe; a game gets one \
+                     through eng-app",
+                    game.name
+                ),
+            ),
+        },
         args::Command::Run(run_args) => run::run(game, &run_args),
         args::Command::ReplayVerify { recording, report } => {
             replay::verify(game, &recording, report.as_deref())

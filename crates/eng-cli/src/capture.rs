@@ -27,7 +27,10 @@ pub(crate) struct CaptureSummary {
     pub width: u32,
     pub height: u32,
     pub frames: u64,
-    pub out: PathBuf,
+    /// The file the frames go to; `None` for `play`'s window.
+    pub out: Option<PathBuf>,
+    /// The window surface's format (`play`); `None` offscreen.
+    pub surface_format: Option<&'static str>,
 }
 
 enum Sink {
@@ -129,7 +132,8 @@ impl Capture {
             width: self.args.width,
             height: self.args.height,
             frames: self.frames,
-            out: self.args.out.clone(),
+            out: Some(self.args.out.clone()),
+            surface_format: None,
         }
     }
 

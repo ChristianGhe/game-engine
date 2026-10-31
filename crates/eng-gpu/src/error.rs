@@ -32,6 +32,9 @@ pub enum GpuError {
     /// A surface graph, or a surface readback, on targets without a surface.
     /// `[E-GPU]`
     NoSurface,
+    /// A window's surface could not be made, set up or drawn into, or
+    /// offers neither BGRA format. `[E-GPU]`
+    Surface(String),
 }
 
 impl fmt::Display for GpuError {
@@ -61,6 +64,7 @@ impl fmt::Display for GpuError {
                 "[E-GPU] target size {width}x{height}: each side must be 1 to {MAX_SIDE} (Tier 0)"
             ),
             Self::NoSurface => f.write_str("[E-GPU] the targets have no surface to present into"),
+            Self::Surface(message) => write!(f, "[E-GPU] {message}"),
         }
     }
 }

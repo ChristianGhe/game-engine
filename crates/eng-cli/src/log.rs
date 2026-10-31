@@ -80,6 +80,13 @@ pub(crate) fn open(game: &str, command: &str) {
     state.tail.clear();
 }
 
+/// The last records kept in memory, oldest first.
+#[cfg(test)]
+pub(crate) fn tail() -> Vec<JsonValue> {
+    let state = CURRENT.lock().unwrap_or_else(PoisonError::into_inner);
+    state.tail.iter().cloned().collect()
+}
+
 /// Appends one line. `message` keeps its `[E-...]` tag for grepping.
 pub(crate) fn line(level: &str, message: &str) {
     CURRENT

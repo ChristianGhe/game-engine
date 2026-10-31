@@ -3,7 +3,7 @@
 use eng_gpu::{
     Attribute, DRAW, FrameCounters, FullscreenDesc, FullscreenPipeline, Gpu, GpuError, Graph,
     InstancedDesc, InstancedPipeline, LinearRgba, PRESENT, Pass, PassDecl, PassRecorder, Resource,
-    TONEMAP, Target, Targets,
+    SurfaceFrame, TONEMAP, Target, Targets,
 };
 
 use crate::{LinearRgb, Quad, RenderError, TopDownScene};
@@ -98,6 +98,35 @@ impl Renderer {
                 .render(gpu, targets, &mut [&mut draw, &mut tonemap])?
         };
         Ok(counters)
+    }
+
+    /// Renders one frame of `scene` into `targets` and a window's image
+    /// (eng-gpu's [`SurfaceFrame`], the targets' size), through all three
+    /// passes, and returns the frame's counters. The caller presents the
+    /// image afterwards (`WindowSurface::present`). As with
+    /// [`Renderer::render`], a scene that cannot be drawn fails first.
+    pub fn render_to(
+        &self,
+        gpu: &Gpu,
+        targets: &Targets,
+        frame: &SurfaceFrame,
+        scene: &TopDownScene,
+    ) -> Result<FrameCounters, RenderError> {
+        let (width, height) = targets.size();
+        let quads = scene.quads(width, height)?;
+        let mut draw = TopDown {
+            pipeline: &self.top_down,
+            background: scene.background,
+            instances: instances(&quads),
+        };
+        let mut tonemap = Fullscreen(TONEMAP, &self.tonemap);
+        let mut present = Fullscreen(PRESENT, &self.present);
+        Ok(self.surface.render_to(
+            gpu,
+            targets,
+            frame,
+            &mut [&mut draw, &mut tonemap, &mut present],
+        )?)
     }
 }
 

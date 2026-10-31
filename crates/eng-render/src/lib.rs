@@ -30,6 +30,9 @@
 //!     the golden images read the output;
 //!   - present (`present.wgsl`), when the targets have a surface: the output
 //!     drawn texel for texel into the surface's format.
+//!
+//!   [`Renderer::render_to`] draws the same three passes into a window's
+//!   image (eng-gpu's `SurfaceFrame`), which `play` then presents.
 //! - **[`FrameCounters`]** come back from every frame: draws, pipeline and
 //!   bind-group switches, and uploaded bytes, counted by eng-gpu from what
 //!   it encodes, so they are exact and the same on every adapter. Offscreen

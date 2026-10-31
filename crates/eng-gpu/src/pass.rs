@@ -7,8 +7,9 @@ use crate::counters::FrameCounters;
 use crate::error::GpuError;
 use crate::fullscreen::FullscreenPipeline;
 use crate::gpu::Gpu;
-use crate::graph::{Graph, GraphError, PassDecl, Resource};
+use crate::graph::{Graph, GraphError, PassDecl, Resource, Target};
 use crate::instanced::InstancedPipeline;
+use crate::surface::SurfaceFrame;
 use crate::targets::Targets;
 
 /// A colour in linear, scene-referred units (AGENTS.md conventions). The
@@ -147,6 +148,41 @@ impl Graph {
         targets: &Targets,
         passes: &mut [&mut dyn Pass],
     ) -> Result<FrameCounters, GpuError> {
+        self.encode(gpu, targets, None, passes)
+    }
+
+    /// Like [`Graph::render`], with a window's image as the
+    /// [`Resource::Surface`]: a [`Target::Surface`] graph's present pass
+    /// draws into `frame`, which the caller then presents
+    /// ([`crate::WindowSurface::present`]). `frame` must be the targets' size.
+    pub fn render_to(
+        &self,
+        gpu: &Gpu,
+        targets: &Targets,
+        frame: &SurfaceFrame,
+        passes: &mut [&mut dyn Pass],
+    ) -> Result<FrameCounters, GpuError> {
+        if self.target() != Target::Surface {
+            return Err(GpuError::Surface(
+                "a window's image needs a surface graph, and this one renders offscreen".into(),
+            ));
+        }
+        if frame.size() != targets.size() {
+            let ((fw, fh), (tw, th)) = (frame.size(), targets.size());
+            return Err(GpuError::Surface(format!(
+                "the window's image is {fw}x{fh}, but the targets are {tw}x{th}"
+            )));
+        }
+        self.encode(gpu, targets, Some(&frame.view), passes)
+    }
+
+    fn encode(
+        &self,
+        gpu: &Gpu,
+        targets: &Targets,
+        surface: Option<&wgpu::TextureView>,
+        passes: &mut [&mut dyn Pass],
+    ) -> Result<FrameCounters, GpuError> {
         if passes.len() != self.passes.len() {
             return Err(GraphError::PassCount {
                 expected: self.passes.len(),
@@ -174,7 +210,10 @@ impl Graph {
         // Each pass writes exactly one resource (Graph::new).
         let mut views = Vec::with_capacity(recorded.len());
         for decl in &self.passes {
-            let view = |r: Resource| targets.view(r).ok_or(GpuError::NoSurface);
+            let view = |r: Resource| match (r, surface) {
+                (Resource::Surface, Some(window)) => Ok(window),
+                _ => targets.view(r).ok_or(GpuError::NoSurface),
+            };
             let input = decl.reads.first().map(|&r| view(r)).transpose()?;
             views.push((view(decl.writes[0])?, input));
         }

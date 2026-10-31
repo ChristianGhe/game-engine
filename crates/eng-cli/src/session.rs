@@ -2,6 +2,8 @@
 //! that owns the authoritative sim and player 0's client, over Memory,
 //! every message encoded to bytes.
 
+use std::time::Instant;
+
 use eng_core::{PlayerCommand, Tick};
 use eng_net_transport::memory::{MemoryEndpoint, MemoryNetwork};
 use eng_session::{Client, Server, SessionError};
@@ -41,6 +43,45 @@ impl Session {
     pub fn sim(&self) -> &Sim {
         self.client.sim()
     }
+
+    /// One tick, the same in every mode (`run`, `shot`, `video`, `play`):
+    /// player 0's `command` to the server, the server's step, and its
+    /// snapshot back into the client. The commands the server applied are
+    /// appended to `recorded`, if given. Returns the step's time in
+    /// nanoseconds.
+    pub fn tick(
+        &mut self,
+        command: PlayerCommand,
+        recorded: Option<&mut Vec<PlayerCommand>>,
+    ) -> Result<u64, TickStop> {
+        let tick = command.tick;
+        self.client
+            .send(command)
+            .unwrap_or_else(|e| session_bug(&e, tick));
+        self.server.poll().unwrap_or_else(|e| session_bug(&e, tick));
+        let started = Instant::now();
+        let applied = self
+            .server
+            .step()
+            .map_err(|e| TickStop::Limit(snapshot_limit(e, tick)))?;
+        let step_ns = started.elapsed().as_nanos() as u64;
+        if let Some(recorded) = recorded {
+            recorded.extend_from_slice(applied);
+        }
+        self.client.poll().unwrap_or_else(|e| session_bug(&e, tick));
+        restored(self.client.latest(), tick).map_err(TickStop::Desync)?;
+        Ok(step_ns)
+    }
+}
+
+/// Why a tick ended the run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TickStop {
+    /// The snapshot outgrew a datagram (`[E-SNAPSHOT-SIZE]`): the run stops
+    /// as a budget stops it, its outputs written (exit 13).
+    Limit(String),
+    /// The client lost the snapshot (`[E-DESYNC]`, exit 11).
+    Desync(String),
 }
 
 /// A snapshot that outgrows a datagram stops the run as a budget does (exit

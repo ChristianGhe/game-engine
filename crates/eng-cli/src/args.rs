@@ -12,6 +12,8 @@ pub(crate) const USAGE: &str = "\
             [--input script.toml] [--budgets budgets.toml] [--report report.json]
 <game> video --ticks N --out proof.apng [--every K] [--size 320x240] [--seed S] [--players P]
              [--input script.toml] [--budgets budgets.toml] [--report report.json]
+<game> play [--ticks N] [--input script.toml] [--bindings bindings.toml] [--seed S]
+            [--hashes hashes.txt] [--record out.rec] [--report report.json]
 <game> --version [--json]
 <game> help
 
@@ -34,6 +36,15 @@ pub(crate) enum Frames {
     /// `video`: tick 0 and every this many ticks after it, up to the last
     /// multiple not past the run's last tick.
     Every(u64),
+}
+
+/// `play`'s own flags: the window, the keyboard, and Esc to quit.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct PlayFlags {
+    /// Replaces the default bindings (`eng-input`'s `default.bindings.toml`).
+    pub bindings: Option<PathBuf>,
+    /// No `--ticks`: the run goes on until `quit` (at most [`MAX_TICKS`]).
+    pub open_ended: bool,
 }
 
 /// `shot` and `video`: what to render and where it goes.
@@ -64,11 +75,16 @@ pub(crate) struct RunArgs {
     pub dump: Option<(u64, PathBuf)>,
     /// `shot` and `video`: render frames offscreen and write them.
     pub capture: Option<CaptureArgs>,
+    /// `play`: a window, live input and Esc to quit (eng-app).
+    pub play: Option<PlayFlags>,
 }
 
 impl RunArgs {
-    /// `run`, `dump-world`, `shot` or `video`.
+    /// `run`, `dump-world`, `shot`, `video` or `play`.
     pub fn command(&self) -> &'static str {
+        if self.play.is_some() {
+            return "play";
+        }
         match (&self.dump, self.capture.as_ref().map(|c| c.frames)) {
             (Some(_), _) => "dump-world",
             (None, Some(Frames::Last)) => "shot",
@@ -145,6 +161,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Command, String> {
         "dump-world" => parse_run(&mut flags, Mode::DumpWorld).map(|a| Command::Run(Box::new(a))),
         "shot" => parse_run(&mut flags, Mode::Shot).map(|a| Command::Run(Box::new(a))),
         "video" => parse_run(&mut flags, Mode::Video).map(|a| Command::Run(Box::new(a))),
+        "play" => parse_run(&mut flags, Mode::Play).map(|a| Command::Run(Box::new(a))),
         "replay" => parse_replay(&mut flags),
         other => Err(format!("unknown command {other:?}")),
     }
@@ -157,6 +174,7 @@ enum Mode {
     DumpWorld,
     Shot,
     Video,
+    Play,
 }
 
 fn parse_run(flags: &mut Flags<'_>, mode: Mode) -> Result<RunArgs, String> {
@@ -166,11 +184,12 @@ fn parse_run(flags: &mut Flags<'_>, mode: Mode) -> Result<RunArgs, String> {
         ..RunArgs::default()
     };
     let run = mode == Mode::Run;
+    let play = mode == Mode::Play;
     // `dump-world` and `shot` stop at a tick; `run` and `video` run N ticks.
     let at_a_tick = matches!(mode, Mode::DumpWorld | Mode::Shot);
     let renders = matches!(mode, Mode::Shot | Mode::Video);
     let (mut ticks, mut at_tick, mut out) = (None, None, None);
-    let (mut size, mut every) = ((320, 240), 1);
+    let (mut size, mut every, mut bindings) = ((320, 240), 1, None);
     while let Some(flag) = flags.rest.next() {
         let flag = flag.as_str();
         match flag {
@@ -178,18 +197,19 @@ fn parse_run(flags: &mut Flags<'_>, mode: Mode) -> Result<RunArgs, String> {
             "--headless" if run => {}
             "--ticks" if !at_a_tick => ticks = Some(flags.number(flag)?),
             "--at-tick" if at_a_tick => at_tick = Some(flags.number(flag)?),
-            "--out" if !run => out = Some(flags.path(flag)?),
+            "--out" if !run && !play => out = Some(flags.path(flag)?),
             "--seed" => a.seed = flags.number(flag)?,
-            "--players" => a.players = flags.number(flag)?,
+            "--players" if !play => a.players = flags.number(flag)?,
             "--input" => a.input = Some(flags.path(flag)?),
             "--assert" if run => a.assert = Some(flags.path(flag)?),
             "--budgets" if run || renders => a.budgets = Some(flags.path(flag)?),
-            "--report" if run || renders => a.report = Some(flags.path(flag)?),
+            "--report" if run || renders || play => a.report = Some(flags.path(flag)?),
             "--events" if run => a.events = Some(flags.path(flag)?),
-            "--hashes" if run => a.hashes = Some(flags.path(flag)?),
+            "--hashes" if run || play => a.hashes = Some(flags.path(flag)?),
             "--hash-every" if run => a.hash_every = flags.number(flag)?,
-            "--record" if run => a.record = Some(flags.path(flag)?),
-            "--panic-at-tick" if run => a.panic_at_tick = Some(flags.number(flag)?),
+            "--record" if run || play => a.record = Some(flags.path(flag)?),
+            "--panic-at-tick" if run || play => a.panic_at_tick = Some(flags.number(flag)?),
+            "--bindings" if play => bindings = Some(flags.path(flag)?),
             "--size" if renders => size = parse_size(flags.value(flag)?)?,
             "--every" if mode == Mode::Video => every = flags.number(flag)?,
             other => return Err(format!("unknown flag {other:?}")),
@@ -214,13 +234,23 @@ fn parse_run(flags: &mut Flags<'_>, mode: Mode) -> Result<RunArgs, String> {
         Mode::DumpWorld => "dump-world",
         Mode::Shot => "shot",
         Mode::Video => "video",
+        Mode::Play => "play",
     };
     a.ticks = if at_a_tick {
         at_tick.ok_or(format!("{name} needs --at-tick N"))?
+    } else if play {
+        ticks.unwrap_or(MAX_TICKS)
     } else {
         ticks.ok_or(format!("{name} needs --ticks N"))?
     };
     if run {
+        return Ok(a);
+    }
+    if play {
+        a.play = Some(PlayFlags {
+            bindings,
+            open_ended: ticks.is_none(),
+        });
         return Ok(a);
     }
     let out = out.ok_or(format!("{name} needs --out FILE"))?;
@@ -300,166 +330,4 @@ fn parse_replay(flags: &mut Flags<'_>) -> Result<Command, String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn args(s: &str) -> Vec<String> {
-        s.split_whitespace().map(String::from).collect()
-    }
-
-    #[test]
-    fn parses_run_and_dump_world() {
-        let Command::Run(run) =
-            parse(&args("run --headless --ticks 5 --seed 2 --hash-every 3")).unwrap()
-        else {
-            panic!("expected run");
-        };
-        assert_eq!(
-            (run.ticks, run.seed, run.hash_every, run.players),
-            (5, 2, 3, 1)
-        );
-        let Command::Run(dump) = parse(&args("dump-world --at-tick 9 --out w.json")).unwrap()
-        else {
-            panic!("expected dump-world");
-        };
-        assert_eq!(dump.dump, Some((9, PathBuf::from("w.json"))));
-        assert_eq!(dump.ticks, 9);
-    }
-
-    #[test]
-    fn parses_version() {
-        assert_eq!(
-            parse(&args("--version")),
-            Ok(Command::Version { json: false })
-        );
-        assert_eq!(
-            parse(&args("--version --json")),
-            Ok(Command::Version { json: true })
-        );
-    }
-
-    #[test]
-    fn parses_shot() {
-        let command = parse(&args(
-            "shot --at-tick 120 --out s.png --seed 1 --players 2 --input i.toml \
-             --report r.json --budgets b.toml",
-        ))
-        .unwrap();
-        assert_eq!(command.name(), "shot");
-        let Command::Run(shot) = command else {
-            panic!("expected shot");
-        };
-        assert_eq!((shot.ticks, shot.seed, shot.players), (120, 1, 2));
-        assert_eq!(shot.input, Some(PathBuf::from("i.toml")));
-        assert_eq!(shot.report, Some(PathBuf::from("r.json")));
-        assert_eq!(shot.budgets, Some(PathBuf::from("b.toml")));
-        assert_eq!(
-            shot.capture,
-            Some(CaptureArgs {
-                frames: Frames::Last,
-                out: PathBuf::from("s.png"),
-                width: 320,
-                height: 240,
-            })
-        );
-        assert_eq!(shot.dump, None);
-        let Command::Run(sized) =
-            parse(&args("shot --at-tick 0 --out s.png --size 64x48")).unwrap()
-        else {
-            panic!("expected shot");
-        };
-        let capture = sized.capture.unwrap();
-        assert_eq!((sized.ticks, capture.width, capture.height), (0, 64, 48));
-    }
-
-    #[test]
-    fn parses_video() {
-        let command = parse(&args(
-            "video --ticks 240 --out p.apng --every 2 --size 8192x1",
-        ))
-        .unwrap();
-        assert_eq!(command.name(), "video");
-        let Command::Run(video) = command else {
-            panic!("expected video");
-        };
-        assert_eq!(video.ticks, 240);
-        assert_eq!(
-            video.capture,
-            Some(CaptureArgs {
-                frames: Frames::Every(2),
-                out: PathBuf::from("p.apng"),
-                width: 8192,
-                height: 1,
-            })
-        );
-        let Command::Run(every_tick) = parse(&args("video --ticks 9999 --out p.apng")).unwrap()
-        else {
-            panic!("expected video");
-        };
-        assert_eq!(every_tick.capture.unwrap().frames, Frames::Every(1));
-        // The largest video: 10,000 frames, ticks 0 to 19,998.
-        assert!(parse(&args("video --ticks 19999 --every 2 --out p.apng")).is_ok());
-    }
-
-    #[test]
-    fn rejects_bad_shot_and_video_usage() {
-        for bad in [
-            "shot",
-            "shot --out s.png",
-            "shot --at-tick 1",
-            "shot --at-tick 1 --out s.png --ticks 3",
-            "shot --at-tick 1 --out s.png --every 2",
-            "shot --at-tick 1 --out s.png --hashes h.txt",
-            "shot --at-tick 1 --out s.png --record r.rec",
-            "shot --at-tick 1 --out s.png --size 0x240",
-            "shot --at-tick 1 --out s.png --size 320x0",
-            "shot --at-tick 1 --out s.png --size 8193x240",
-            "shot --at-tick 1 --out s.png --size 320",
-            "shot --at-tick 1 --out s.png --size 320x",
-            "shot --at-tick 1 --out s.png --size x240",
-            "shot --at-tick 1 --out s.png --size 32ax24",
-            "shot --at-tick 1 --out s.png --size 320x240x1",
-            "shot --at-tick 18446744073709551615 --out s.png",
-            "video",
-            "video --ticks 5",
-            "video --out p.apng",
-            "video --ticks 5 --out p.apng --at-tick 3",
-            "video --ticks 5 --out p.apng --every 0",
-            "video --ticks 5 --out p.apng --every x",
-            "video --ticks 10000 --out p.apng",
-            "video --ticks 20000 --every 2 --out p.apng",
-            "video --ticks 5 --out p.apng --assert a.toml",
-            "run --ticks 1 --size 4x4",
-            "run --ticks 1 --every 2",
-            "dump-world --at-tick 1 --out w.json --size 4x4",
-        ] {
-            assert!(parse(&args(bad)).is_err(), "{bad:?} should be refused");
-        }
-    }
-
-    #[test]
-    fn rejects_bad_usage() {
-        for bad in [
-            "",
-            "fly",
-            "run",
-            "run --ticks",
-            "run --ticks x",
-            "run --ticks 1 --bogus",
-            "run --ticks 1 --players 0",
-            "run --ticks 18446744073709551615",
-            "dump-world --out w.json",
-            "dump-world --at-tick 1 --out w.json --record r",
-            "replay",
-            "replay verify",
-            "replay jump r.rec",
-            "--json",
-            "--version --json --json",
-            "--version --verbose",
-            "--version run",
-            "version",
-        ] {
-            assert!(parse(&args(bad)).is_err(), "{bad:?} should be refused");
-        }
-    }
-}
+mod tests;

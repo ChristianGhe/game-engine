@@ -1,4 +1,5 @@
-//! The testbed game binary: the probe command set over the testbed sim.
+//! The testbed game binary: the probe command set and `play` over the
+//! testbed sim. It enters through eng-app (rung 1b plan, difference 6).
 
 use std::process::ExitCode;
 
@@ -15,5 +16,5 @@ static GAME: eng_cli::GameDef = eng_cli::GameDef {
 };
 
 fn main() -> ExitCode {
-    eng_cli::main(&GAME)
+    eng_app::main(&GAME)
 }

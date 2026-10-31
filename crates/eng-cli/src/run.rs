@@ -10,7 +10,6 @@
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::Path;
-use std::time::Instant;
 
 use eng_core::{PlayerCommand, Tick};
 use eng_input::{InputScript, Recording, RecordingHeader, TickHash, write_recording};
@@ -21,7 +20,7 @@ use crate::args::RunArgs;
 use crate::assertions::{self, Tracker};
 use crate::budgets::BudgetTracker;
 use crate::capture::Capture;
-use crate::session::{Session, command_for, restored, session_bug, snapshot_limit};
+use crate::session::{Session, TickStop, command_for};
 use crate::ticker::{Flow, Ticker};
 use crate::{ENGINE_SHA, Exit, GameDef, RUSTC_VERSION, exit, log, report, version};
 
@@ -29,7 +28,7 @@ pub(crate) fn read_text(path: &Path) -> Result<String, String> {
     fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))
 }
 
-fn create_parent(path: &Path) -> Result<(), String> {
+pub(crate) fn create_parent(path: &Path) -> Result<(), String> {
     match path.parent().filter(|d| !d.as_os_str().is_empty()) {
         Some(dir) => {
             fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))
@@ -66,13 +65,13 @@ pub(crate) fn dump(sim: &Sim) -> JsonValue {
     JsonValue::from_walk(&|v| sim.world().visit_dump(v))
 }
 
-struct Inputs {
-    script: Option<InputScript>,
-    trackers: Vec<Tracker>,
-    budgets: BudgetTracker,
+pub(crate) struct Inputs {
+    pub script: Option<InputScript>,
+    pub trackers: Vec<Tracker>,
+    pub budgets: BudgetTracker,
 }
 
-fn load_inputs(a: &RunArgs) -> Result<Inputs, String> {
+pub(crate) fn load_inputs(a: &RunArgs) -> Result<Inputs, String> {
     let script = match &a.input {
         Some(path) => Some(
             InputScript::parse(&read_text(path)?, &path.display().to_string())
@@ -98,7 +97,7 @@ fn load_inputs(a: &RunArgs) -> Result<Inputs, String> {
 }
 
 /// Reports `message` and stops with `exit`, writing no other output.
-fn fail(exit: Exit, message: &str) -> Exit {
+pub(crate) fn fail(exit: Exit, message: &str) -> Exit {
     eprintln!("{message}");
     log::line("error", message);
     exit
@@ -200,34 +199,15 @@ pub(crate) fn run(game: &GameDef, a: &RunArgs) -> Exit {
             Ok(command) => command,
             Err(message) => return Flow::Exit(exit::usage(game.name, &message)),
         };
-        let client = &mut session.client;
-        client
-            .send(command)
-            .unwrap_or_else(|e| session_bug(&e, tick));
-        session
-            .server
-            .poll()
-            .unwrap_or_else(|e| session_bug(&e, tick));
-        let started = Instant::now();
-        let applied = match session.server.step() {
-            Ok(applied) => applied,
-            Err(e) => {
-                inputs
-                    .budgets
-                    .exceeded
-                    .get_or_insert(snapshot_limit(e, tick));
+        match session.tick(command, a.record.is_some().then_some(&mut recorded)) {
+            Ok(step_ns) => tick_ns.push(step_ns),
+            Err(TickStop::Limit(message)) => {
+                inputs.budgets.exceeded.get_or_insert(message);
                 return Flow::Stop;
             }
-        };
-        tick_ns.push(started.elapsed().as_nanos() as u64);
-        if a.record.is_some() {
-            recorded.extend_from_slice(applied);
+            Err(TickStop::Desync(message)) => return Flow::Exit(fail(Exit::Desync, &message)),
         }
-        client.poll().unwrap_or_else(|e| session_bug(&e, tick));
-        if let Err(message) = restored(client.latest(), tick) {
-            return Flow::Exit(fail(Exit::Desync, &message));
-        }
-        let sim = client.sim();
+        let sim = session.sim();
         if tick.0.is_multiple_of(a.hash_every) || tick.0 == a.ticks {
             hashes.push(TickHash {
                 tick,
@@ -291,6 +271,8 @@ pub(crate) fn run(game: &GameDef, a: &RunArgs) -> Exit {
         trackers: &inputs.trackers,
         budgets: &inputs.budgets,
         frames: frames.as_ref(),
+        platform: "headless",
+        dropped_ticks: 0,
         exit,
     };
     if let Some(path) = &a.report
@@ -307,7 +289,7 @@ pub(crate) fn run(game: &GameDef, a: &RunArgs) -> Exit {
 
 /// Writes the requested files. `stopped`: a budget stopped the run early,
 /// so the summary explains a missing dump (exit 13).
-fn write_outputs(
+pub(crate) fn write_outputs(
     game: &GameDef,
     a: &RunArgs,
     sim: &Sim,

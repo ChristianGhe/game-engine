@@ -1,0 +1,180 @@
+Patch T11 oracles (rung 1b, task T11; gate G5): protect the windowed-run
+and Esc tests, and add `play` to the crash harness.
+
+- crates/game-testbed/tests/play.rs (criteria 2 and 3: the window's hash
+  stream, Escape through XTEST, no display) and
+  crates/game-testbed/tests/twin.rs (criterion 3's headless twin: Escape,
+  a close request, `--ticks`, live input, dropped ticks, `play --input`'s
+  stream) join protected.toml and .github/CODEOWNERS (amendment 45).
+- crates/game-testbed/tests/crash_json.rs gains its `play` half
+  (criterion 6): `play --ticks 5 --seed 7 --panic-at-tick 3` in a window
+  exits 12 and writes every field. It skips without a display or an
+  adapter unless ENG_REQUIRE_DISPLAY=1 or ENG_REQUIRE_GPU=1. The `run`
+  half is unchanged in substance, moved into a shared `check_crash`.
+- No xtask step: the native jobs' `tests` run all three files; amendment
+  46 gives the native job's `window`, `esc` and `crash-json` commands.
+
+Base: main with T11's commit. Its lines sit right after known_answers.rs's,
+so it applies before or after the other queued oracle patches. At the
+repo root, run `git apply` with this file, then `cargo xtask quick`.
+Session 17's T11 entry in PROGRESS.md says how it was tested.
+Text before the first `diff --git` line is ignored by `git apply`.
+
+diff --git a/.github/CODEOWNERS b/.github/CODEOWNERS
+index e665280b86ba69e23ef0cbdb2b7da0280bdbfc17..e1d3af81ac0a4e38d2ccc1425f249090a0f92b4c 100644
+--- a/.github/CODEOWNERS
++++ b/.github/CODEOWNERS
+@@ -9,6 +9,8 @@
+ **/*.assert.toml @ChristianGhe
+ /crates/eng-math/tests/known_answers.txt @ChristianGhe
+ /crates/eng-math/tests/known_answers.rs @ChristianGhe
++/crates/game-testbed/tests/play.rs @ChristianGhe
++/crates/game-testbed/tests/twin.rs @ChristianGhe
+ /crates/game-testbed/tests/exit_codes.rs @ChristianGhe
+ /crates/game-testbed/tests/crash_json.rs @ChristianGhe
+ /crates/game-testbed/tests/version.rs @ChristianGhe
+diff --git a/crates/game-testbed/tests/crash_json.rs b/crates/game-testbed/tests/crash_json.rs
+index 555a4486c139c29d042edbcae8d6eff87ac8b884..b187a287df7245beffbcbbeac15e02ca20c30716 100644
+--- a/crates/game-testbed/tests/crash_json.rs
++++ b/crates/game-testbed/tests/crash_json.rs
+@@ -1,6 +1,8 @@
+ //! `crash.json` from the panic hook (rung 1b, spec 9.2 done-when 4 and
+ //! 6.13), run against the real binary: a panic writes every field and
+-//! exits 12.
++//! exits 12, in `run` and in the window of `play`. `play` needs a display
++//! and a GPU adapter: without them it skips, unless `ENG_REQUIRE_DISPLAY=1`
++//! or `ENG_REQUIRE_GPU=1` (the native jobs of CI) makes it fail.
+ 
+ use std::path::{Path, PathBuf};
+ use std::process::{Command, Output};
+@@ -44,6 +46,16 @@ const PANIC_RUN: [&str; 8] = [
+     "3",
+ ];
+ 
++const PANIC_PLAY: [&str; 7] = [
++    "play",
++    "--ticks",
++    "5",
++    "--seed",
++    "7",
++    "--panic-at-tick",
++    "3",
++];
++
+ fn crash_files(log_dir: &Path) -> Vec<PathBuf> {
+     let mut files: Vec<PathBuf> = std::fs::read_dir(log_dir)
+         .unwrap()
+@@ -69,17 +81,44 @@ fn run_panic_writes_crash_json_with_every_field() {
+     let dir = scratch("run");
+     let logs = dir.join("logs");
+     let out = probe(&dir, &logs, &PANIC_RUN);
+-    assert_eq!(out.status.code(), Some(12), "{}", text(&out));
+-    assert!(text(&out).contains("[E-PANIC]"), "{}", text(&out));
+-    assert!(text(&out).lines().count() <= 20, "console stays short");
++    check_crash(&dir, &out, &PANIC_RUN, "run.rs:", "eng_cli::run::run");
++}
++
++/// The same from `play`: the panic comes in a tick of the frame loop of the
++/// window (eng-app), on the main thread, where winit runs.
++#[test]
++fn play_panic_writes_crash_json_with_every_field() {
++    let dir = scratch("play");
++    let logs = dir.join("logs");
++    let out = probe(&dir, &logs, &PANIC_PLAY);
++    let required = |var: &str| std::env::var(var).as_deref() == Ok("1");
++    let cannot = |tag: &str, var: &str| text(&out).contains(tag) && !required(var);
++    if out.status.code() == Some(64)
++        && (cannot("[E-NO-DISPLAY]", "ENG_REQUIRE_DISPLAY")
++            || cannot("[E-NO-ADAPTER]", "ENG_REQUIRE_GPU"))
++    {
++        eprintln!("skipped: {}", text(&out));
++        return;
++    }
++    check_crash(&dir, &out, &PANIC_PLAY, "play.rs:", "eng_app::");
++}
++
++/// Every field of the one crash file that a panic at tick 3 of seed 7 left:
++/// `location` is in the location of the panic, `frame` in a backtrace line.
++fn check_crash(dir: &Path, out: &Output, args: &[&str], location: &str, frame: &str) {
++    let logs = dir.join("logs");
++    let out_text = text(out);
++    let command = args[0];
++    assert_eq!(out.status.code(), Some(12), "{out_text}");
++    assert!(out_text.contains("[E-PANIC]"), "{out_text}");
++    assert!(out_text.lines().count() <= 20, "console stays short");
+ 
+     let files = crash_files(&logs);
+     assert_eq!(files.len(), 1, "one crash file in {}", logs.display());
+     let path = &files[0];
+     assert!(
+-        text(&out).contains(&format!("crash: {}", path.display())),
+-        "the console names the crash file: {}",
+-        text(&out)
++        out_text.contains(&format!("crash: {}", path.display())),
++        "the console names the crash file: {out_text}"
+     );
+     let crash: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+ 
+@@ -93,15 +132,15 @@ fn run_panic_writes_crash_json_with_every_field() {
+     );
+     let version_dir = dir.join("version");
+     std::fs::create_dir_all(&version_dir).unwrap();
+-    let out = probe(&version_dir, &version_dir, &["--version", "--json"]);
+-    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+-    let stamp: Value = serde_json::from_slice(&out.stdout).unwrap();
++    let version = probe(&version_dir, &version_dir, &["--version", "--json"]);
++    assert_eq!(version.status.code(), Some(0), "{}", text(&version));
++    let stamp: Value = serde_json::from_slice(&version.stdout).unwrap();
+     // Every key and value, so a change to the stamp's `build` shows here.
+     assert_eq!(crash["version"], stamp["build"]);
+     assert_eq!(crash["crash_version"], stamp["formats"]["crash"]);
+ 
+     // What was running.
+-    assert_eq!(crash["args"], serde_json::json!(PANIC_RUN));
++    assert_eq!(crash["args"], serde_json::json!(args));
+     assert_eq!(crash["seed"], 7);
+     assert_eq!(crash["tick"], 3);
+ 
+@@ -114,7 +153,7 @@ fn run_panic_writes_crash_json_with_every_field() {
+         crash["panic"]["message"],
+         "deliberate panic at tick 3 (--panic-at-tick)"
+     );
+-    assert!(str_at(&crash, "/panic/location").contains("run.rs:"));
++    assert!(str_at(&crash, "/panic/location").contains(location));
+ 
+     // Backtrace: one string per line, through the probe's own frames.
+     let backtrace = crash["backtrace"].as_array().expect("backtrace array");
+@@ -122,7 +161,7 @@ fn run_panic_writes_crash_json_with_every_field() {
+     assert!(
+         backtrace
+             .iter()
+-            .any(|l| l.as_str().unwrap().contains("eng_cli::run::run")),
++            .any(|l| l.as_str().unwrap().contains(frame)),
+         "{backtrace:#?}"
+     );
+ 
+@@ -136,7 +175,10 @@ fn run_panic_writes_crash_json_with_every_field() {
+         );
+     }
+     let first = tail[0]["msg"].as_str().unwrap();
+-    assert!(first.starts_with("start: game-testbed run"), "{first}");
++    assert!(
++        first.starts_with(&format!("start: game-testbed {command}")),
++        "{first}"
++    );
+     let last = tail.last().unwrap();
+     assert_eq!(last["level"], "error");
+     assert!(last["msg"].as_str().unwrap().starts_with("[E-PANIC]"));
+diff --git a/protected.toml b/protected.toml
+index f4a63c753c564deeb8e81fee640809eb57549dc0..19ed0d6c79af1dffe0ab9cc96d07dca293b6868c 100644
+--- a/protected.toml
++++ b/protected.toml
+@@ -21,6 +21,8 @@ paths = [
+   # Harnesses whose results acceptance relies on, and the manifest that binds
+   # scenarios to their assertions (replay fails on an unreferenced assertion).
+   "crates/eng-math/tests/known_answers.rs",
++  "crates/game-testbed/tests/play.rs",
++  "crates/game-testbed/tests/twin.rs",
+   "crates/game-testbed/tests/exit_codes.rs",
+   "crates/game-testbed/tests/crash_json.rs",
+   "crates/game-testbed/tests/version.rs",

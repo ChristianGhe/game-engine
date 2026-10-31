@@ -54,7 +54,7 @@ impl Targets {
     /// format (B8G8R8A8, sRGB) that stands in for a window's surface: a
     /// [`crate::Target::Surface`] graph renders into it, and
     /// [`Targets::read_surface`] reads back what its present pass drew. A
-    /// window's own surface (rung 1b, T11) presents instead.
+    /// window's own surface ([`crate::WindowSurface`]) presents instead.
     pub fn with_offscreen_surface(gpu: &Gpu, width: u32, height: u32) -> Result<Self, GpuError> {
         Self::make(gpu, width, height, true)
     }

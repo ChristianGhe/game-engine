@@ -15,12 +15,9 @@ L1  eng-ecs  eng-net-transport  eng-net-wire                   (core set)
 L2  eng-sim  eng-collision-api  kit-fps  game-testbed-sim      (core set)
     eng-session                                                (core set)
 L3  eng-gpu  eng-render                                        (std)
-L4  eng-cli  eng-app*                                          (std)
+L4  eng-cli  eng-app                                           (std)
 game  game-testbed (binary)        tool  xtask
 ```
-
-\* Rung 1b crates, empty skeletons until their tasks in
-`docs/rungs/1b/plan.md`.
 
 A crate depends only on lower layers, or on same-layer crates declared in
 `architecture.toml`. The **core set** is everything the simulation links,
@@ -136,7 +133,8 @@ Platform::run(&mut app):  start ─▶ window (windowed only)
 ## Live input
 
 `eng-input` also quantizes the keyboard into one `PlayerCommand` per tick
-(spec 6.10). Nothing calls it yet; `eng-app`'s window will (rung 1b, T11).
+(spec 6.10). `eng-app`'s frame loop feeds it the window's keys and samples
+it once per tick ("The frame", below).
 
 ```
 PlatformEvent ──key_event()──▶ KeyEvent (Down/Up of a Key, FocusLost)
@@ -193,8 +191,9 @@ path. The crate docs list the five messages and their layouts.
 
 `eng-session` runs a server and its clients over a `Transport` (spec 6.6,
 6.8), every message encoded with `eng-net-wire`. Single-player is the same
-server in-process over Memory: `run` and `dump-world` drive a server and
-player 0's client, and `play` will too (T11). The crate docs draw the
+server in-process over Memory: `run`, `dump-world`, `shot`, `video` and
+`play` drive a server and player 0's client, all through one per-tick step
+(`Session::tick` in eng-cli). The crate docs draw the
 exchange: `Hello`, then `Welcome` and the current state (or `Denied`),
 then `Commands` up and a `Snapshot` down every tick.
 
@@ -282,9 +281,15 @@ Graph::render ──▶ FrameCounters (draws, switches, uploaded bytes)
   Metal, Vulkan and DX12, and the present blit then reproduces the
   output's bytes. `Targets::with_offscreen_surface` adds a texture in that
   format standing in for a window's, so a surface graph renders whole
-  offscreen and `Targets::read_surface` reads it back in RGBA order. A
-  window's surface (T11) gives a new image every frame, so `Graph::render`
-  will take it per frame then.
+  offscreen and `Targets::read_surface` reads it back in RGBA order.
+- **A window's surface.** `Gpu::with_window` takes the window through the
+  seam (ADR-0016) and opens a device on an adapter that can present to it.
+  `WindowSurface` makes its images in `Bgra8UnormSrgb`, or in `Bgra8Unorm`
+  drawn through an sRGB view when only that is offered; with neither it
+  fails with `[E-GPU]`. Present mode Fifo (plan decision 7). Each frame
+  `acquire` gives a `SurfaceFrame` (or nothing: skip the frame),
+  `Graph::render_to` draws a surface graph into it, and `present` shows it
+  after the submit; `Graph::render` stays the offscreen path.
 - **Errors.** wgpu's errors, validation included, are caught around each
   call that returns a `Result` and come back as `GpuError` (`[E-GPU]`,
   `[E-SHADER]`, `[E-GRAPH]`). Any other one panics, so validation errors
@@ -294,13 +299,12 @@ Graph::render ──▶ FrameCounters (draws, switches, uploaded bytes)
   shader model 5.1, the lowest each backend runs at. Every shader is
   therefore a `.wgsl` file, loaded with `include_str!`; WGSL inline in Rust
   would escape the check.
-- Not built yet: a window's surface (T11).
 
 ## The frame
 
 `eng-render` (spec 6.7, 6.13) draws rung 1b's top-down view, the one kept
 later as the automap and debug view, through eng-gpu's fixed graph. The
-probe's `shot` and `video` call it, and `play`'s window will (T11). It
+probe's `shot` and `video` call it, and so does `play`'s window. It
 reads only the scene a game's extraction hands it, never the simulation,
 and nothing flows back.
 
@@ -313,6 +317,7 @@ Renderer::render:
   tonemap  tonemap.wgsl   clamp to [0, 1], alpha 1 ──▶ output (shot, video, goldens)
   present  present.wgsl   output, texel for texel ──▶ surface (targets with one)
   ──▶ FrameCounters
+Renderer::render_to: the same three passes, into a window's SurfaceFrame
 ```
 
 - **The view** looks straight down: +X to the right of the image, +Y up
@@ -363,6 +368,52 @@ Renderer::render:
   `sRGB` chunk and nothing else, so the same pixels give the same bytes.
   A frame that fails once the GPU is open (`[E-SCENE]`, `[E-GPU]`) is a
   bug: it panics, and the hook writes `crash.json` (exit 12).
+
+### `play`: the frame loop
+
+`eng-app` composes the platform, the session, live input and the renderer
+into `play` (spec 6.6), and the testbed enters through it (`eng_app::main`,
+which is eng-cli's probe plus `play`). eng-cli parses `play`'s flags and
+hands eng-app a `PlayRun`: `run`'s session, tick, hash stream, recording
+and report. eng-app owns the clock, the window and drawing.
+
+```
+eng-platform-winit (or headless) ──▶ App callbacks on eng-app's Frames
+  event: keys ──▶ LiveInput (held keys, a latch for taps; focus lost releases all)
+         CloseRequested ──▶ exit; Resized ──▶ surface and targets; Occluded ──▶ no drawing
+  frame: TickClock::due(now) ──▶ at most 5 ticks, the rest dropped ([W-TICK-DROP])
+           each tick: LiveInput::sample(tick) ──▶ quit? exit : PlayRun::step(command)
+         draw: extraction(previous, current, alpha) ──▶ Renderer::render_to ──▶ present
+         Wake::At(the next tick)
+  stop:  PlayRun::finish ──▶ --hashes, --record, --report, the console summary
+```
+
+- **Ticks come from the timer**, a fixed-timestep accumulator in whole
+  nanoseconds (1/60 s rounded down, as `run`'s headless pace), woken with
+  `Wake::At`. A wake runs at most 5 ticks; the rest are dropped, counted
+  in the report's `dropped_ticks` and logged as `[W-TICK-DROP]`. The
+  simulation never skips a tick; it falls behind the clock.
+- **Input.** Each tick samples `LiveInput` once. `quit` (Esc by default)
+  ends the run before that tick and never reaches the simulation; so does
+  a close request. With `--input` the script's commands replace the
+  keyboard's and only `quit` is read, so `play --input` gives `run`'s hash
+  stream tick for tick (acceptance `native-window`).
+- **Drawing.** After the ticks, the game's extraction builds the scene
+  from the previous and newest states at the clock's alpha, and
+  eng-render draws it into the window's image, the engine-owned targets
+  kept at the window's size. Nothing is acquired while the window is
+  minimised or occluded (macOS can block a second); ticks go on.
+- **The end.** `--ticks N` ends after tick N; `quit` and a close request
+  end it with exit 0. `stop` writes the files, so they are saved even
+  where a desktop's quit command ends the process right after it (macOS).
+  Without a display `play` exits 64 with `[E-NO-DISPLAY]`, without an
+  adapter with `[E-NO-ADAPTER]`, before the first tick and writing
+  nothing. A panic, `--panic-at-tick` included, goes to eng-cli's hook
+  (`crash.json`, exit 12).
+- **Tests.** `crates/game-testbed/tests/twin.rs` runs the same loop on the
+  headless platform with scripted keys (the headless twin, every target);
+  `crates/game-testbed/tests/play.rs` runs the binary in a real window as
+  a child process, since winit needs the main thread (plan, risk table).
 
 ## Invariants
 
@@ -433,14 +484,20 @@ Renderer::render:
 ## The report
 
 `--report` writes one JSON object (`crates/eng-cli/src/report.rs`),
-`report_version` 2. `run`, `shot` and `video` share it (`replay verify`
-writes its own): `command`, the stamp's `build`, the run (seed, players,
-ticks, hashes, state size, tick times), `assertions`, `budgets` and `gpu`.
+`report_version` 2. `run`, `shot`, `video` and `play` share it (`replay
+verify` writes its own): `command`, the stamp's `build`, `platform`
+(`headless`, or `winit` for `play`), the run (seed, players, ticks,
+`dropped_ticks`, hashes, state size, tick times), `assertions`, `budgets`
+and `gpu`. `ticks_requested` is `null` for a `play` without `--ticks`.
 
 - `budgets` holds each limit from `budgets.toml` (`null` when unset): the
   `[sim]` limits with the peaks seen, the four `[gpu]` limits, and
   `exceeded`, the first excess (exit 13).
-- `gpu` is `null` for `run`. For `shot` and `video` it is an object even
+- `gpu` is `null` for `run` and for a `play` without a window. For
+  `play` it describes the window: its last size, the frames presented, and
+  `surface_format`, the format its surface got (`Bgra8UnormSrgb`, or
+  `Bgra8Unorm` drawn through an sRGB view).
+  For `shot` and `video` it is an object even
   when a budget stopped the run before the first frame (`frames` 0,
   `per_frame` `null`). It holds eng-gpu's capability report (`adapter`, `backend`, `device_type`,
   `vendor`, `device`, `driver`, `driver_info`, `tier` and `capabilities`,

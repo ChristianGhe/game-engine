@@ -8,6 +8,12 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+eng-cli.workspace = true
+eng-gpu.workspace = true
+eng-input.workspace = true
+eng-platform-api.workspace = true
+eng-platform-winit.workspace = true
+eng-render.workspace = true
 
 [lints]
 workspace = true

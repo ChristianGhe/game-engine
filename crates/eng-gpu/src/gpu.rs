@@ -60,35 +60,31 @@ pub struct Gpu {
     pub(crate) device: wgpu::Device,
     pub(crate) queue: wgpu::Queue,
     pub(crate) shared: Shared,
+    /// Kept for a window's surface ([`Gpu::with_window`]), whose
+    /// capabilities are the adapter's.
+    pub(crate) adapter: wgpu::Adapter,
     report: GpuReport,
 }
 
 impl Gpu {
     /// Opens a device on the adapter `options` names, or on wgpu's choice.
     pub fn new(options: &GpuOptions) -> Result<Self, GpuError> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: BACKENDS,
-            // wgpu's release flags in every build, so tests run as the game
-            // does; `WGPU_DEBUG=1` and `WGPU_VALIDATION=1` add debug labels
-            // and the backend's validation layer when debugging. Debug builds
-            // used to add them by default, and Debian 13's Vulkan loader then
-            // hung or crashed now and then when several threads created and
-            // dropped devices at once (rung 1b, T7).
-            flags: wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL.with_env(),
-            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
-            backend_options: wgpu::BackendOptions {
-                // FXC ships with Windows, so no DLL goes next to the binary
-                // (plan decision 10). wgpu's default would take DXC when one
-                // is on the PATH, so machines would differ.
-                dx12: wgpu::Dx12BackendOptions {
-                    shader_compiler: wgpu::Dx12Compiler::Fxc,
-                    ..wgpu::Dx12BackendOptions::default()
-                },
-                ..wgpu::BackendOptions::default()
-            },
-            display: None,
-        });
-        let adapters = block_on(instance.enumerate_adapters(BACKENDS));
+        Self::open(instance(), options, None)
+    }
+
+    /// Opens a device on an adapter of `instance`; with a `surface`, only on
+    /// one that can present to it.
+    pub(crate) fn open(
+        instance: wgpu::Instance,
+        options: &GpuOptions,
+        surface: Option<&wgpu::Surface<'_>>,
+    ) -> Result<Self, GpuError> {
+        let presents =
+            |adapter: &wgpu::Adapter| surface.is_none_or(|s| adapter.is_surface_supported(s));
+        let adapters: Vec<wgpu::Adapter> = block_on(instance.enumerate_adapters(BACKENDS))
+            .into_iter()
+            .filter(presents)
+            .collect();
         let adapter = match &options.adapter {
             Some(wanted) => {
                 let wanted = wanted.to_lowercase();
@@ -99,6 +95,7 @@ impl Gpu {
             }
             None => block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: surface,
                 ..wgpu::RequestAdapterOptions::default()
             }))
             .ok(),
@@ -128,6 +125,7 @@ impl Gpu {
             device,
             queue,
             shared,
+            adapter,
             report,
         })
     }
@@ -196,6 +194,33 @@ impl Gpu {
         }
         first.map_or(Ok(value), Err)
     }
+}
+
+/// The instance every [`Gpu`] starts from: the backend of this OS, and
+/// wgpu's release flags.
+pub(crate) fn instance() -> wgpu::Instance {
+    wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: BACKENDS,
+        // wgpu's release flags in every build, so tests run as the game
+        // does; `WGPU_DEBUG=1` and `WGPU_VALIDATION=1` add debug labels
+        // and the backend's validation layer when debugging. Debug builds
+        // used to add them by default, and Debian 13's Vulkan loader then
+        // hung or crashed now and then when several threads created and
+        // dropped devices at once (rung 1b, T7).
+        flags: wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL.with_env(),
+        memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+        backend_options: wgpu::BackendOptions {
+            // FXC ships with Windows, so no DLL goes next to the binary
+            // (plan decision 10). wgpu's default would take DXC when one
+            // is on the PATH, so machines would differ.
+            dx12: wgpu::Dx12BackendOptions {
+                shader_compiler: wgpu::Dx12Compiler::Fxc,
+                ..wgpu::Dx12BackendOptions::default()
+            },
+            ..wgpu::BackendOptions::default()
+        },
+        display: None,
+    })
 }
 
 /// Drives a wgpu future to its end without an async runtime (plan decision

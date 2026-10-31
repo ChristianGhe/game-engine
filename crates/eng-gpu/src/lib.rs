@@ -46,7 +46,15 @@
 //!   format, `Bgra8UnormSrgb`, standing in for a window's: a
 //!   [`Target::Surface`] graph then renders whole, and
 //!   [`Targets::read_surface`] reads back what it presented, in RGBA order.
-//!   Opening a window's surface is rung 1b's task T11.
+//! - **[`WindowSurface`]**: a window's own surface, from [`Gpu::with_window`]
+//!   on an adapter that can present to it, in `Bgra8UnormSrgb`, or
+//!   `Bgra8Unorm` drawn through an sRGB view (`[E-GPU]` if it offers
+//!   neither), presented with Fifo (plan decision 7). Each frame,
+//!   [`WindowSurface::acquire`] gives a [`SurfaceFrame`] (or `None`: skip
+//!   the frame), [`Graph::render_to`] draws into it, and
+//!   [`WindowSurface::present`] shows it after the submit. The window comes
+//!   through the window seam (ADR-0016): `raw-window-handle`'s two traits,
+//!   which `eng-platform-api`'s `Arc<dyn Window>` implements.
 //!
 //! Errors come back as [`GpuError`] values whose messages start with a log
 //! tag (`[E-NO-ADAPTER]`, `[E-GPU]`, `[E-SHADER]`, `[E-GRAPH]`). wgpu's own
@@ -68,6 +76,7 @@ mod graph;
 mod instanced;
 mod pass;
 mod report;
+mod surface;
 mod targets;
 
 pub use counters::FrameCounters;
@@ -78,4 +87,5 @@ pub use graph::{DRAW, Graph, GraphError, PRESENT, PassDecl, Resource, TONEMAP, T
 pub use instanced::{Attribute, InstancedDesc, InstancedPipeline};
 pub use pass::{LinearRgba, Pass, PassRecorder};
 pub use report::{Backend, Capabilities, DeviceType, GpuReport};
+pub use surface::{SurfaceFrame, WindowSurface};
 pub use targets::{Image, Targets};

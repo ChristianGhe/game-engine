@@ -36,8 +36,12 @@ pub(crate) struct RunSummary<'a> {
     pub events: u64,
     pub trackers: &'a [Tracker],
     pub budgets: &'a BudgetTracker,
-    /// `shot` and `video`: the adapter and the frames.
+    /// `shot`, `video` and `play`: the adapter and the frames.
     pub frames: Option<&'a CaptureSummary>,
+    /// `"headless"`, or the platform `play` ran on.
+    pub platform: &'static str,
+    /// Ticks of real time `play`'s frame loop dropped; 0 headless.
+    pub dropped_ticks: u64,
     pub exit: Exit,
 }
 
@@ -116,12 +120,13 @@ impl RunSummary<'_> {
             ("command", JsonValue::str(self.args.command())),
             ("game", JsonValue::str(self.game.name)),
             ("build", version::build_json(self.game)),
-            ("platform", JsonValue::str("headless")),
+            ("platform", JsonValue::str(self.platform)),
             ("seed", JsonValue::U64(self.args.seed)),
             ("players", JsonValue::U64(self.args.players.into())),
             ("tick_rate", JsonValue::U64(self.game.tick_rate.into())),
-            ("ticks_requested", JsonValue::U64(self.args.ticks)),
+            ("ticks_requested", self.ticks_requested()),
             ("ticks_run", JsonValue::U64(self.sim.tick().0)),
+            ("dropped_ticks", JsonValue::U64(self.dropped_ticks)),
             ("sim_protocol", JsonValue::hex(self.sim.protocol_version())),
             ("systems", JsonValue::Array(systems)),
             ("hash_every", JsonValue::U64(self.args.hash_every)),
@@ -173,7 +178,7 @@ impl RunSummary<'_> {
                 ("upload_bytes", JsonValue::U64(p.upload_bytes)),
             ])
         });
-        JsonValue::object([
+        let mut gpu = vec![
             ("adapter", JsonValue::str(r.adapter.clone())),
             ("backend", JsonValue::str(r.backend.as_str())),
             ("device_type", JsonValue::str(r.device_type.as_str())),
@@ -199,17 +204,31 @@ impl RunSummary<'_> {
             ("height", JsonValue::U64(frames.height.into())),
             ("frames", JsonValue::U64(frames.frames)),
             ("per_frame", per_frame),
-        ])
+        ];
+        if let Some(format) = frames.surface_format {
+            gpu.push(("surface_format", JsonValue::str(format)));
+        }
+        JsonValue::object(gpu)
     }
 
-    /// `shot`'s and `video`'s two lines: the frames and the adapter, then
-    /// the per-frame counters.
+    /// `--ticks`, or `null` for a `play` that runs until `quit`.
+    fn ticks_requested(&self) -> JsonValue {
+        match &self.args.play {
+            Some(play) if play.open_ended => JsonValue::Null,
+            _ => JsonValue::U64(self.args.ticks),
+        }
+    }
+
+    /// `shot`'s, `video`'s and `play`'s two lines: the frames and the
+    /// adapter, then the per-frame counters.
     fn frame_lines(&self, frames: &CaptureSummary) -> [String; 2] {
         let r = &frames.report;
-        let written = if self.sim.tick().0 == self.args.ticks {
-            format!("written to {}", frames.out.display())
-        } else {
-            "not written: the run stopped early".to_string()
+        let written = match &frames.out {
+            None => "presented in the window".to_string(),
+            Some(out) if self.sim.tick().0 == self.args.ticks => {
+                format!("written to {}", out.display())
+            }
+            Some(_) => "not written: the run stopped early".to_string(),
         };
         let counters = match self.budgets.peak_frame {
             Some(p) => format!(
@@ -239,15 +258,19 @@ impl RunSummary<'_> {
             .last()
             .copied()
             .expect("tick 0 is always hashed");
+        let of = match self.ticks_requested() {
+            JsonValue::U64(ticks) => format!("of {ticks} "),
+            _ => String::new(),
+        };
         let mut lines = vec![
             format!(
-                "{} {}: {} of {} ticks, seed {}, {} player(s), headless",
+                "{} {}: {} {of}ticks, seed {}, {} player(s), {}",
                 self.game.name,
                 self.args.command(),
                 self.sim.tick().0,
-                self.args.ticks,
                 self.args.seed,
-                self.args.players
+                self.args.players,
+                self.platform
             ),
             format!(
                 "final {} hash {:#018x}, stream {:#018x}, protocol {:#018x}",
@@ -274,6 +297,9 @@ impl RunSummary<'_> {
         }
         if let Some(frames) = self.frames {
             lines.extend(self.frame_lines(frames));
+        }
+        if self.args.play.is_some() {
+            lines.push(format!("dropped ticks: {}", self.dropped_ticks));
         }
         if let Some(message) = &self.budgets.exceeded {
             lines.push(message.clone());

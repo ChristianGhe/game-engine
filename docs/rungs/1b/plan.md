@@ -1,14 +1,15 @@
 # Rung 1b: Windowed dot
 
-> **DRAFT FOR OWNER.** Nothing in this plan is approved. The acceptance
-> criteria, the time-box, the AI budget and every protected change below
-> are proposals for the owner to accept, change or refuse (touchpoint 2,
-> spec 2.2). `docs/rungs/current.txt` stays at 1a, and there is no
-> `docs/rungs/1b/acceptance.json`, until the owner acts (gate G1).
+> **APPROVED BY THE OWNER, 2026-10-31** (gates G1 and G2), as drafted:
+> the acceptance criteria, the time-box and the AI budget (touchpoint 2,
+> spec 2.2), and the seven-crate layout. `docs/rungs/1b/acceptance.json`
+> holds the criteria and `docs/rungs/current.txt` says `1b`. G3 to G7 are
+> still the owner's; every other proposal below stands until the owner
+> changes it.
 
-- **Status:** draft, 2026-10-25 (second revision). Only the three items
-  in "This window's queue" are being built before approval; they need no
-  owner gate.
+- **Status:** approved 2026-10-31 (G1, G2). Drafted 2026-10-25 (second
+  revision); the three items in "This window's queue" were built before
+  approval.
 - **Spec:** section 9.2 of `docs/superpowers/specs/2026-10-20-ai-built-engine-design.md`,
   with 6.1-6.2 (crates and rules), 6.6 (frame loop), 6.7 (rendering), 6.8
   (network contracts), 6.10 (input), 6.13 (version stamps, crashes), 7.1
@@ -39,7 +40,7 @@ as an example. The exact entries are gate G2.
 |---|---|---|---|
 | `eng-platform-api` | `L1` | The platform contract: plain-data events for everything 6.10 lists (physical keys, raw mouse deltas, mouse buttons, wheel, gamepad axes and buttons, focus) plus resize, occluded and close request; a monotonic clock; the callback trait the app implements; the window seam (ADR-0016); a conformance suite. Mouse and gamepad events are defined now, so rungs 2 and 6 need no contract change. 1b maps only keys, and winit sends no gamepad events until gilrs arrives (rung 6). It takes over `Key` and `KeyEvent` from `eng-input` (see "This window's queue"). | spec 6.1 (the crate, its layer and the winit-headless contract pair), 6.10; the event list beyond keys: proposal |
 | `eng-platform-winit` | `L1`, `same_layer = ["eng-platform-api"]` | winit 0.30.13 behind the contract. It is the only crate that imports winit (already the `[floor]` rule). | spec 9.2, 6.2 rule 2; version: proposal |
-| `eng-net-wire` | `L1`, core | The codec (6.8 contract 7): little-endian, fixed width, capped counts, and decoders that never panic. It also carries the 32-bit tick and its extension (contract 1) on every message. 1b's messages are `Hello` (wire and sim protocol versions), `Welcome` or `Denied` (version mismatch), `Commands` (the last 3 commands and the last acknowledged snapshot tick) and `Snapshot` (the full state). `Snapshot` carries the sim's canonical state as opaque bytes: `eng-net-wire` (L1) cannot reach `eng-sim`, so `eng-session` encodes and decodes the state. `PlayerCommand` comes from `eng-core` (L0). | spec 6.1, 6.8; building it in 1b: proposal (difference 2) |
+| `eng-net-wire` | `L1`, core | The codec (6.8 contract 7): little-endian, fixed width, capped counts, and decoders that never panic. Every message carries the low 32 bits of the server tick, which the receiver extends against the last acknowledged tick (contract 1). 1b's messages are `Hello` (wire and sim protocol versions), `Welcome` or `Denied` (version mismatch), `Commands` (the last 3 commands and the last acknowledged snapshot tick) and `Snapshot` (the full state). `Snapshot` carries the sim's canonical state as opaque bytes: `eng-net-wire` (L1) cannot reach `eng-sim`, so `eng-session` encodes and decodes the state. `PlayerCommand` comes from `eng-core` (L0). | spec 6.1, 6.8; building it in 1b: proposal (difference 2) |
 | `eng-session` | `L2`, core, `same_layer = ["eng-sim"]` | Server and client loops over `Transport`. It buffers commands and repeats the last one when one is missing. It keeps each client's last acknowledged tick (its baseline) and has a relevance hook that answers "everything" (contract 5). It records the commands actually applied, as plain data that `eng-cli` writes in `eng-input`'s recording format. It has no clock (`now` is passed in) and registers nothing in the sim's World. | spec 9.2, 6.1, 6.6, 6.8 + proposal |
 | `eng-gpu` | `L3` | The only crate that imports wgpu (30.0.1, Tier 0). It covers adapter choice, the capability report, surface and offscreen targets, the fixed render graph and readback. Validation errors are fatal in tests. | spec 9.2, 6.7; three passes: proposal (difference 1) |
 | `eng-render` | `L3`, `same_layer = ["eng-gpu"]` | The top-down pass (kept later as the automap and debug view), the tone-map pass, the present blit and per-frame counters. | spec 9.2, 6.2, 6.13 |

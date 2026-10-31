@@ -1,0 +1,568 @@
+{
+  "version": 1,
+  "rung": "1b",
+  "name": "Windowed dot",
+  "status": "approved by the owner on 2026-10-31: these criteria, the time-box and the AI budget (spec 2.2, touchpoint 2), as drafted in docs/rungs/1b/plan.md",
+  "spec": "docs/superpowers/specs/2026-10-20-ai-built-engine-design.md, section 9.2",
+  "time_box": {
+    "start": "2026-10-31",
+    "calendar_days": 14
+  },
+  "ai_budget": {
+    "plan": "the owner's current Claude plan, nothing else (P1 default)",
+    "max_agent_sessions": 30,
+    "note": "Usage is logged per session in PROGRESS.md; each open-pulsar task counts as one session, including its reviewer subagent. The 30 cover tasks T0-T17, two rung reviews and a margin, so the 16 sessions logged before approval count. The pivot rule (spec 7.7) compares rungs 1a-3 against twice their time-boxes."
+  },
+  "features": [
+    {
+      "id": "native-build-test",
+      "done_when": 1,
+      "description": "The workspace builds and every test passes on the five native runners (ubuntu-24.04, ubuntu-24.04-arm, windows-2025, windows-11-arm, macos-26), and `cargo check --target x86_64-apple-darwin` passes on macos-26.",
+      "command": "cargo xtask ci --job native",
+      "checks": [
+        {
+          "job": "native",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "build"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-unknown-linux-gnu",
+          "step": "build"
+        },
+        {
+          "job": "native",
+          "target": "x86_64-pc-windows-msvc",
+          "step": "build"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-pc-windows-msvc",
+          "step": "build"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-apple-darwin",
+          "step": "build"
+        },
+        {
+          "job": "native",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "tests"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-unknown-linux-gnu",
+          "step": "tests"
+        },
+        {
+          "job": "native",
+          "target": "x86_64-pc-windows-msvc",
+          "step": "tests"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-pc-windows-msvc",
+          "step": "tests"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-apple-darwin",
+          "step": "tests"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-apple-darwin",
+          "step": "check-intel-mac"
+        }
+      ]
+    },
+    {
+      "id": "native-window",
+      "done_when": [
+        1,
+        2
+      ],
+      "description": "`play --ticks 240 --seed 1 --input dot-square.input.toml --hashes h.txt` opens a real window (under xvfb on Linux), and h.txt equals the committed hashes/dot-square.seed1.txt.",
+      "command": "cargo xtask ci --job native (step window)",
+      "checks": [
+        {
+          "job": "native",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "window"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-unknown-linux-gnu",
+          "step": "window"
+        },
+        {
+          "job": "native",
+          "target": "x86_64-pc-windows-msvc",
+          "step": "window"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-pc-windows-msvc",
+          "step": "window"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-apple-darwin",
+          "step": "window"
+        }
+      ]
+    },
+    {
+      "id": "esc-quits",
+      "done_when": 2,
+      "description": "A running `play` gets Escape from xdotool through the real OS path and exits 0 within 5 s; a headless-twin test covers every target.",
+      "command": "cargo xtask ci --job native (step esc on ubuntu-24.04, tests everywhere)",
+      "checks": [
+        {
+          "job": "native",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "esc"
+        },
+        {
+          "job": "native",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "tests"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-unknown-linux-gnu",
+          "step": "tests"
+        },
+        {
+          "job": "native",
+          "target": "x86_64-pc-windows-msvc",
+          "step": "tests"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-pc-windows-msvc",
+          "step": "tests"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-apple-darwin",
+          "step": "tests"
+        }
+      ]
+    },
+    {
+      "id": "shot-exact",
+      "done_when": 3,
+      "description": "On ubuntu-24.04 (x64), `shot`'s decoded RGBA8 pixels equal the committed goldens exactly. The adapter is Mesa 25.2.7 lavapipe (gfx-rs/ci-build build26) with a fixed llvmpipe environment.",
+      "command": "cargo xtask ci --job native (step shot-exact)",
+      "checks": [
+        {
+          "job": "native",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "shot-exact"
+        }
+      ]
+    },
+    {
+      "id": "shot-flip",
+      "done_when": 3,
+      "description": "On the other four native runners, the FLIP error of `shot` against the same goldens is within golden/thresholds.toml.",
+      "command": "cargo xtask ci --job native (step shot-flip)",
+      "checks": [
+        {
+          "job": "native",
+          "target": "aarch64-unknown-linux-gnu",
+          "step": "shot-flip"
+        },
+        {
+          "job": "native",
+          "target": "x86_64-pc-windows-msvc",
+          "step": "shot-flip"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-pc-windows-msvc",
+          "step": "shot-flip"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-apple-darwin",
+          "step": "shot-flip"
+        }
+      ]
+    },
+    {
+      "id": "crash-json",
+      "done_when": 4,
+      "description": "A panic in `run` and in `play` writes crash.json with every field (version stamp, thread, backtrace, last log lines, seed, tick, command line) and exits 12. The test job has no display, so it checks `run` only.",
+      "command": "cargo test -p game-testbed --test crash_json",
+      "checks": [
+        {
+          "job": "test",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "crash-json"
+        },
+        {
+          "job": "test",
+          "target": "aarch64-unknown-linux-gnu",
+          "step": "crash-json"
+        },
+        {
+          "job": "native",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "crash-json"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-unknown-linux-gnu",
+          "step": "crash-json"
+        },
+        {
+          "job": "native",
+          "target": "x86_64-pc-windows-msvc",
+          "step": "crash-json"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-pc-windows-msvc",
+          "step": "crash-json"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-apple-darwin",
+          "step": "crash-json"
+        }
+      ]
+    },
+    {
+      "id": "replay-cross-platform",
+      "done_when": null,
+      "description": "Hash streams are identical on the five native targets, the PR-tier Linux targets and RISC-V, and they equal the committed streams, which are not regenerated in rung 1b.",
+      "command": "cargo xtask ci --job test | riscv | native | summary",
+      "checks": [
+        {
+          "job": "test",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "replay"
+        },
+        {
+          "job": "test",
+          "target": "aarch64-unknown-linux-gnu",
+          "step": "replay"
+        },
+        {
+          "job": "riscv",
+          "step": "replay"
+        },
+        {
+          "job": "native",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "replay"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-unknown-linux-gnu",
+          "step": "replay"
+        },
+        {
+          "job": "native",
+          "target": "x86_64-pc-windows-msvc",
+          "step": "replay"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-pc-windows-msvc",
+          "step": "replay"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-apple-darwin",
+          "step": "replay"
+        },
+        {
+          "job": "summary",
+          "step": "compare-hashes"
+        }
+      ]
+    },
+    {
+      "id": "version-json",
+      "done_when": null,
+      "description": "`--version --json` prints every field of version.json, and `--version` prints the same stamp on one line. A CI build has no `unknown`.",
+      "command": "cargo xtask ci --job native (step version)",
+      "checks": [
+        {
+          "job": "native",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "version"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-unknown-linux-gnu",
+          "step": "version"
+        },
+        {
+          "job": "native",
+          "target": "x86_64-pc-windows-msvc",
+          "step": "version"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-pc-windows-msvc",
+          "step": "version"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-apple-darwin",
+          "step": "version"
+        }
+      ]
+    },
+    {
+      "id": "gpu-report-budgets",
+      "done_when": null,
+      "description": "Reports record the adapter and its capabilities. Draws, pipeline switches, bind-group switches and uploaded bytes per frame are within budgets.toml [gpu].",
+      "command": "cargo xtask ci --job native (step gpu-budgets)",
+      "checks": [
+        {
+          "job": "native",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "gpu-budgets"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-unknown-linux-gnu",
+          "step": "gpu-budgets"
+        },
+        {
+          "job": "native",
+          "target": "x86_64-pc-windows-msvc",
+          "step": "gpu-budgets"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-pc-windows-msvc",
+          "step": "gpu-budgets"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-apple-darwin",
+          "step": "gpu-budgets"
+        }
+      ]
+    },
+    {
+      "id": "shaders",
+      "done_when": null,
+      "description": "Every WGSL file validates with naga and translates to SPIR-V, MSL and HLSL.",
+      "command": "cargo xtask ci --job test (step shaders)",
+      "checks": [
+        {
+          "job": "test",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "shaders"
+        }
+      ]
+    },
+    {
+      "id": "wire-session",
+      "done_when": null,
+      "description": "The eng-net-wire golden vectors hold and its decoders never panic (proptest). The session gives the same hashes as stepping the simulation directly.",
+      "command": "cargo xtask ci --job test (step wire-session) | riscv",
+      "checks": [
+        {
+          "job": "test",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "wire-session"
+        },
+        {
+          "job": "test",
+          "target": "aarch64-unknown-linux-gnu",
+          "step": "wire-session"
+        },
+        {
+          "job": "riscv",
+          "step": "core-tests"
+        }
+      ]
+    },
+    {
+      "id": "violations-1b",
+      "done_when": null,
+      "description": "Each of these fails, with a self-test: wgpu imported outside eng-gpu; winit imported outside eng-platform-winit; raw-window-handle used outside its seam (ADR-0016); a core crate depending on eng-gpu; an edited golden image.",
+      "command": "cargo xtask selftest wgpu-outside-gpu && cargo xtask selftest winit-outside-platform && cargo xtask selftest rwh-outside-seam && cargo xtask selftest core-depends-on-gpu && cargo xtask selftest golden-edit",
+      "checks": [
+        {
+          "job": "selftest",
+          "step": "violation:wgpu-outside-gpu"
+        },
+        {
+          "job": "selftest",
+          "step": "violation:winit-outside-platform"
+        },
+        {
+          "job": "selftest",
+          "step": "violation:rwh-outside-seam"
+        },
+        {
+          "job": "selftest",
+          "step": "violation:core-depends-on-gpu"
+        },
+        {
+          "job": "selftest",
+          "step": "violation:golden-edit"
+        }
+      ]
+    },
+    {
+      "id": "native-duration",
+      "done_when": null,
+      "description": "The native tier's duration is measured on GitHub Actions and recorded (budget: 25 minutes, budgets.toml [ci] native_job_minutes). Going over is reported, not failed.",
+      "command": "cargo xtask ci --job summary",
+      "checks": [
+        {
+          "job": "summary",
+          "step": "native-duration"
+        }
+      ]
+    },
+    {
+      "id": "lint-tier",
+      "done_when": null,
+      "description": "fmt, clippy -D warnings, arch-check, size-check, cargo-deny and typos pass.",
+      "command": "cargo xtask ci --job lint",
+      "checks": [
+        {
+          "job": "lint",
+          "step": "fmt"
+        },
+        {
+          "job": "lint",
+          "step": "clippy"
+        },
+        {
+          "job": "lint",
+          "step": "arch-check"
+        },
+        {
+          "job": "lint",
+          "step": "size-check"
+        },
+        {
+          "job": "lint",
+          "step": "deny"
+        },
+        {
+          "job": "lint",
+          "step": "typos"
+        }
+      ]
+    },
+    {
+      "id": "tests-and-targets",
+      "done_when": null,
+      "description": "All tests pass on Linux x64 and arm64; the core set's tests, which now include eng-net-wire and eng-session, pass under RISC-V QEMU; the core set compiles for wasm32.",
+      "command": "cargo xtask ci --job test | riscv | wasm",
+      "checks": [
+        {
+          "job": "test",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "tests"
+        },
+        {
+          "job": "test",
+          "target": "aarch64-unknown-linux-gnu",
+          "step": "tests"
+        },
+        {
+          "job": "riscv",
+          "step": "core-tests"
+        },
+        {
+          "job": "wasm",
+          "step": "wasm-check"
+        }
+      ]
+    },
+    {
+      "id": "proof-video",
+      "done_when": 5,
+      "description": "CI writes proof.apng, the scripted dot-square session, as an artifact; the owner also gets it as a local file.",
+      "command": "cargo xtask ci --job native (step proof-video on ubuntu-24.04)",
+      "checks": [
+        {
+          "job": "native",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "proof-video"
+        }
+      ]
+    },
+    {
+      "id": "owner-play",
+      "done_when": [
+        2,
+        5
+      ],
+      "owner": true,
+      "description": "On the owner's Mac a window opens, the dot moves with WASD or the arrows, and Esc quits. The owner plays it and accepts it. CI does not compute this feature; until patch X4 teaches `cargo xtask acceptance` owner-checked features, it reports no checks.",
+      "command": "cargo run -p game-testbed -- play",
+      "checks": []
+    },
+    {
+      "id": "agents-md-length",
+      "done_when": null,
+      "description": "AGENTS.md is at most 150 lines.",
+      "command": "cargo xtask docs-check",
+      "checks": [
+        {
+          "job": "lint",
+          "step": "docs-check"
+        }
+      ]
+    },
+    {
+      "id": "live-input",
+      "done_when": 2,
+      "description": "The default bindings (WASD, the arrows, Esc for quit) load from strict TOML; an unknown action or key name fails with [E-BINDINGS] and the line; the same key timeline gives the same PlayerCommands on every target (proptest); a tap shorter than a tick counts for one tick; losing focus releases every key; quit never becomes a PlayerCommand.",
+      "command": "cargo test -p eng-input --test live_input",
+      "checks": [
+        {
+          "job": "test",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "live-input"
+        },
+        {
+          "job": "test",
+          "target": "aarch64-unknown-linux-gnu",
+          "step": "live-input"
+        },
+        {
+          "job": "native",
+          "target": "x86_64-unknown-linux-gnu",
+          "step": "tests"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-unknown-linux-gnu",
+          "step": "tests"
+        },
+        {
+          "job": "native",
+          "target": "x86_64-pc-windows-msvc",
+          "step": "tests"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-pc-windows-msvc",
+          "step": "tests"
+        },
+        {
+          "job": "native",
+          "target": "aarch64-apple-darwin",
+          "step": "tests"
+        }
+      ]
+    }
+  ]
+}

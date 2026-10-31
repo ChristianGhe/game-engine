@@ -70,9 +70,12 @@ The simulation must give bit-identical results on every OS and CPU.
 ## Crates and layers
 
 L0 `eng-schema-core`, `eng-derive`, `eng-math`, `eng-core` < L1 `eng-ecs`,
-`eng-net-transport`, `eng-schema-json`, `eng-input`, `eng-platform-headless`
-< L2 `eng-sim`, `eng-collision-api`, `kit-fps`, `game-testbed-sim` < L4
-`eng-cli` < `game-testbed` (binary). `xtask` is the tool layer.
+`eng-net-transport`, `eng-net-wire`, `eng-schema-json`, `eng-input`,
+`eng-platform-api`, `eng-platform-headless`, `eng-platform-winit` < L2
+`eng-sim`, `eng-session`, `eng-collision-api`, `kit-fps`, `game-testbed-sim`
+< L3 `eng-gpu`, `eng-render` < L4 `eng-cli`, `eng-app` < `game-testbed`
+(binary). `xtask` is the tool layer. The rung 1b crates are empty skeletons
+until their tasks in `docs/rungs/1b/plan.md`.
 
 - A new crate goes in `crates/<name>/` and must be listed in
   `architecture.toml` (protected: ask the owner). Follow "Adding a crate"

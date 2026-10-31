@@ -25,6 +25,13 @@ eng-input = { path = "crates/eng-input" }
 eng-platform-headless = { path = "crates/eng-platform-headless" }
 eng-cli = { path = "crates/eng-cli" }
 game-testbed-sim = { path = "crates/game-testbed-sim" }
+eng-platform-api = { path = "crates/eng-platform-api" }
+eng-platform-winit = { path = "crates/eng-platform-winit" }
+eng-net-wire = { path = "crates/eng-net-wire" }
+eng-session = { path = "crates/eng-session" }
+eng-gpu = { path = "crates/eng-gpu" }
+eng-render = { path = "crates/eng-render" }
+eng-app = { path = "crates/eng-app" }
 
 # Third-party crates. New entries need the owner's approval (deny.toml allow-list).
 libm = { version = "=0.2.16", default-features = false }
@@ -72,4 +79,8 @@ overflow-checks = true
 [profile.release.package.kit-fps]
 overflow-checks = true
 [profile.release.package.game-testbed-sim]
+overflow-checks = true
+[profile.release.package.eng-net-wire]
+overflow-checks = true
+[profile.release.package.eng-session]
 overflow-checks = true

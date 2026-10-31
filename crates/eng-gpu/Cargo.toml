@@ -1,0 +1,13 @@
+[package]
+name = "eng-gpu"
+description = "The GPU layer: adapter choice, capability report, the fixed render graph, offscreen targets and readback."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

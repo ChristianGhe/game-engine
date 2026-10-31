@@ -9,22 +9,28 @@ what it describes.
 
 ```
 L0  eng-schema-core  eng-derive  eng-math  eng-core           (core set)
-L1  eng-ecs  eng-net-transport                                 (core set)
+L1  eng-ecs  eng-net-transport  eng-net-wire*                  (core set)
     eng-schema-json  eng-input  eng-platform-headless          (std)
+    eng-platform-api*  eng-platform-winit*                     (std)
 L2  eng-sim  eng-collision-api  kit-fps  game-testbed-sim      (core set)
-L4  eng-cli                                                    (std)
+    eng-session*                                               (core set)
+L3  eng-gpu*  eng-render*                                      (std)
+L4  eng-cli  eng-app*                                          (std)
 game  game-testbed (binary)        tool  xtask
 ```
 
+\* Rung 1b crates, empty skeletons until their tasks in
+`docs/rungs/1b/plan.md`.
+
 A crate depends only on lower layers, or on same-layer crates declared in
-`architecture.toml`. The **core set** is everything the simulation links:
-`#![no_std]`, `#![forbid(unsafe_code)]`, only `libm` as a third-party
+`architecture.toml`. The **core set** is everything the simulation links,
+plus the network codec, transport and session loops: `#![no_std]`, `#![forbid(unsafe_code)]`, only `libm` as a third-party
 dependency (plus `eng-derive`'s build-time `syn`/`quote`), overflow checks
 in release. `cargo xtask arch-check` enforces all of it over the transitive
 dependency closure. The core set also builds for `wasm32-unknown-unknown`
 and is tested on RISC-V under QEMU.
 
-L3 (GPU, render, audio, UI) arrives in rung 1b and later.
+L3 starts in rung 1b with GPU and render; audio and UI come later.
 
 ## Data flow of one tick
 

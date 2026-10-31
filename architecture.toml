@@ -54,15 +54,27 @@ core = true
 layer = "L1"
 core = true
 
+[crates.eng-net-wire]
+layer = "L1"
+core = true
+
 [crates.eng-schema-json]
 layer = "L1"
 
 [crates.eng-input]
 layer = "L1"
-same_layer = ["eng-schema-json"]
+same_layer = ["eng-schema-json", "eng-platform-api"]
+
+[crates.eng-platform-api]
+layer = "L1"
 
 [crates.eng-platform-headless]
 layer = "L1"
+same_layer = ["eng-platform-api"]
+
+[crates.eng-platform-winit]
+layer = "L1"
+same_layer = ["eng-platform-api"]
 
 [crates.eng-sim]
 layer = "L2"
@@ -82,8 +94,24 @@ layer = "L2"
 core = true
 same_layer = ["eng-sim", "eng-collision-api", "kit-fps"]
 
+[crates.eng-session]
+layer = "L2"
+core = true
+same_layer = ["eng-sim"]
+
+[crates.eng-gpu]
+layer = "L3"
+
+[crates.eng-render]
+layer = "L3"
+same_layer = ["eng-gpu"]
+
 [crates.eng-cli]
 layer = "L4"
+
+[crates.eng-app]
+layer = "L4"
+same_layer = ["eng-cli"]
 
 [crates.game-testbed]
 layer = "game"

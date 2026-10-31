@@ -1,0 +1,466 @@
+Patch G2 (rung 1b, task T0): the seven rung 1b crates as empty skeletons,
+their architecture.toml entries, and release overflow checks for the two
+new core crates.
+
+- crates/: eng-platform-api, eng-platform-winit, eng-net-wire (core),
+  eng-session (core), eng-gpu, eng-render and eng-app. Each is a Cargo.toml
+  with no dependencies and a crate root with a doc comment and the required
+  attributes. Their tasks in docs/rungs/1b/plan.md fill them in.
+- architecture.toml: proposal 2 of docs/rungs/1b/PROGRESS.md, that is, the
+  seven entries and the new same_layer edges of eng-platform-headless and
+  eng-input.
+- Cargo.toml: the seven [workspace.dependencies] paths, and proposal 3's
+  [profile.release.package.*] lines for eng-net-wire and eng-session.
+- Cargo.lock, AGENTS.md and docs/ARCHITECTURE.md follow the change.
+
+It must land as one commit. arch-check fails on a crate that is not listed
+in architecture.toml, and on a listed one that does not exist
+([E-ARCH-UNKNOWN]). It also fails on a core crate without release overflow
+checks ([E-ARCH-OVERFLOW]). The session entry that added this file says
+how it was tested.
+
+Apply it after G1: the plan's T0 row needs the plan approved, and the new
+AGENTS.md sentence points agents at that plan.
+
+Base: main at 9520947. At the repo root, run `git apply` with this file,
+then `cargo xtask quick`, `cargo xtask selftest` and
+`cargo xtask ci --job lint`.
+Text before the first `diff --git` line is ignored by `git apply`.
+
+diff --git a/AGENTS.md b/AGENTS.md
+index ba5eb0c2db38c8120fbebf3c41798c54f0c923a3..e043818a0b332594bea67e2b55df2d062e30721e 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -70,9 +70,12 @@ The simulation must give bit-identical results on every OS and CPU.
+ ## Crates and layers
+ 
+ L0 `eng-schema-core`, `eng-derive`, `eng-math`, `eng-core` < L1 `eng-ecs`,
+-`eng-net-transport`, `eng-schema-json`, `eng-input`, `eng-platform-headless`
+-< L2 `eng-sim`, `eng-collision-api`, `kit-fps`, `game-testbed-sim` < L4
+-`eng-cli` < `game-testbed` (binary). `xtask` is the tool layer.
++`eng-net-transport`, `eng-net-wire`, `eng-schema-json`, `eng-input`,
++`eng-platform-api`, `eng-platform-headless`, `eng-platform-winit` < L2
++`eng-sim`, `eng-session`, `eng-collision-api`, `kit-fps`, `game-testbed-sim`
++< L3 `eng-gpu`, `eng-render` < L4 `eng-cli`, `eng-app` < `game-testbed`
++(binary). `xtask` is the tool layer. The rung 1b crates are empty skeletons
++until their tasks in `docs/rungs/1b/plan.md`.
+ 
+ - A new crate goes in `crates/<name>/` and must be listed in
+   `architecture.toml` (protected: ask the owner). Follow "Adding a crate"
+diff --git a/Cargo.lock b/Cargo.lock
+index fa14553ad32af1cf478a6f0f1137fff4e6bf507d..95df21dd55d9a2a13e23720190c26c4732a98761 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -46,6 +46,10 @@ dependencies = [
+  "libc",
+ ]
+ 
++[[package]]
++name = "eng-app"
++version = "0.1.0"
++
+ [[package]]
+ name = "eng-cli"
+ version = "0.1.0"
+@@ -94,6 +98,10 @@ dependencies = [
+  "proptest",
+ ]
+ 
++[[package]]
++name = "eng-gpu"
++version = "0.1.0"
++
+ [[package]]
+ name = "eng-input"
+ version = "0.1.0"
+@@ -118,10 +126,26 @@ dependencies = [
+ name = "eng-net-transport"
+ version = "0.1.0"
+ 
++[[package]]
++name = "eng-net-wire"
++version = "0.1.0"
++
++[[package]]
++name = "eng-platform-api"
++version = "0.1.0"
++
+ [[package]]
+ name = "eng-platform-headless"
+ version = "0.1.0"
+ 
++[[package]]
++name = "eng-platform-winit"
++version = "0.1.0"
++
++[[package]]
++name = "eng-render"
++version = "0.1.0"
++
+ [[package]]
+ name = "eng-schema-core"
+ version = "0.1.0"
+@@ -139,6 +163,10 @@ dependencies = [
+  "toml",
+ ]
+ 
++[[package]]
++name = "eng-session"
++version = "0.1.0"
++
+ [[package]]
+ name = "eng-sim"
+ version = "0.1.0"
+diff --git a/Cargo.toml b/Cargo.toml
+index 36c2d083a82aa57ac6228938a8aa495737e1f18f..4da0c371ad80fe989b7fd4c6fc18d7463c3cbe3c 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -25,6 +25,13 @@ eng-input = { path = "crates/eng-input" }
+ eng-platform-headless = { path = "crates/eng-platform-headless" }
+ eng-cli = { path = "crates/eng-cli" }
+ game-testbed-sim = { path = "crates/game-testbed-sim" }
++eng-platform-api = { path = "crates/eng-platform-api" }
++eng-platform-winit = { path = "crates/eng-platform-winit" }
++eng-net-wire = { path = "crates/eng-net-wire" }
++eng-session = { path = "crates/eng-session" }
++eng-gpu = { path = "crates/eng-gpu" }
++eng-render = { path = "crates/eng-render" }
++eng-app = { path = "crates/eng-app" }
+ 
+ # Third-party crates. New entries need the owner's approval (deny.toml allow-list).
+ libm = { version = "=0.2.16", default-features = false }
+@@ -73,3 +80,7 @@ overflow-checks = true
+ overflow-checks = true
+ [profile.release.package.game-testbed-sim]
+ overflow-checks = true
++[profile.release.package.eng-net-wire]
++overflow-checks = true
++[profile.release.package.eng-session]
++overflow-checks = true
+diff --git a/architecture.toml b/architecture.toml
+index 9debd9195424ee163e7f8b2f20c31d42c10295ef..20c4d3b7501da545ddb199f8dadf4bf2ded0173f 100644
+--- a/architecture.toml
++++ b/architecture.toml
+@@ -54,15 +54,27 @@ core = true
+ layer = "L1"
+ core = true
+ 
++[crates.eng-net-wire]
++layer = "L1"
++core = true
++
+ [crates.eng-schema-json]
+ layer = "L1"
+ 
+ [crates.eng-input]
+ layer = "L1"
+-same_layer = ["eng-schema-json"]
++same_layer = ["eng-schema-json", "eng-platform-api"]
++
++[crates.eng-platform-api]
++layer = "L1"
+ 
+ [crates.eng-platform-headless]
+ layer = "L1"
++same_layer = ["eng-platform-api"]
++
++[crates.eng-platform-winit]
++layer = "L1"
++same_layer = ["eng-platform-api"]
+ 
+ [crates.eng-sim]
+ layer = "L2"
+@@ -82,9 +94,25 @@ layer = "L2"
+ core = true
+ same_layer = ["eng-sim", "eng-collision-api", "kit-fps"]
+ 
++[crates.eng-session]
++layer = "L2"
++core = true
++same_layer = ["eng-sim"]
++
++[crates.eng-gpu]
++layer = "L3"
++
++[crates.eng-render]
++layer = "L3"
++same_layer = ["eng-gpu"]
++
+ [crates.eng-cli]
+ layer = "L4"
+ 
++[crates.eng-app]
++layer = "L4"
++same_layer = ["eng-cli"]
++
+ [crates.game-testbed]
+ layer = "game"
+ 
+diff --git a/crates/eng-app/Cargo.toml b/crates/eng-app/Cargo.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..0193e01aeecbe28c0885d1cd9957e7661b7c1840
+--- /dev/null
++++ b/crates/eng-app/Cargo.toml
+@@ -0,0 +1,13 @@
++[package]
++name = "eng-app"
++description = "The app: the frame loop that composes platform, session, live input and renderer."
++version.workspace = true
++edition.workspace = true
++rust-version.workspace = true
++license.workspace = true
++publish.workspace = true
++
++[dependencies]
++
++[lints]
++workspace = true
+diff --git a/crates/eng-app/src/lib.rs b/crates/eng-app/src/lib.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..9a17f6bdbc85f88918a6a54186db036ee14dc0c1
+--- /dev/null
++++ b/crates/eng-app/src/lib.rs
+@@ -0,0 +1,6 @@
++//! The app (spec 6.1, 6.6): the frame loop, and the composition of the
++//! platform, the in-process session, live input and the renderer. It runs
++//! `play`.
++//!
++//! An empty skeleton until rung 1b's task T11 (`docs/rungs/1b/plan.md`).
++#![forbid(unsafe_code)]
+diff --git a/crates/eng-gpu/Cargo.toml b/crates/eng-gpu/Cargo.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..45f19961b21ced4659ebd11d42c0cd645598e721
+--- /dev/null
++++ b/crates/eng-gpu/Cargo.toml
+@@ -0,0 +1,13 @@
++[package]
++name = "eng-gpu"
++description = "The GPU layer: adapter choice, capability report, the fixed render graph, offscreen targets and readback."
++version.workspace = true
++edition.workspace = true
++rust-version.workspace = true
++license.workspace = true
++publish.workspace = true
++
++[dependencies]
++
++[lints]
++workspace = true
+diff --git a/crates/eng-gpu/src/lib.rs b/crates/eng-gpu/src/lib.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..2c82feae455f0789446646399ec85ffbcb525f06
+--- /dev/null
++++ b/crates/eng-gpu/src/lib.rs
+@@ -0,0 +1,6 @@
++//! The GPU layer (spec 6.7): adapter choice, the capability report, surface
++//! and offscreen targets, the fixed render graph and readback. It is the
++//! only crate that may import wgpu (`[floor]` in `architecture.toml`).
++//!
++//! An empty skeleton until rung 1b's task T7 (`docs/rungs/1b/plan.md`).
++#![forbid(unsafe_code)]
+diff --git a/crates/eng-net-wire/Cargo.toml b/crates/eng-net-wire/Cargo.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..a340ae14c80ab5da30094d9583ccfc9aa54b503d
+--- /dev/null
++++ b/crates/eng-net-wire/Cargo.toml
+@@ -0,0 +1,13 @@
++[package]
++name = "eng-net-wire"
++description = "The network codec: little-endian, fixed-width messages with capped counts and decoders that never panic."
++version.workspace = true
++edition.workspace = true
++rust-version.workspace = true
++license.workspace = true
++publish.workspace = true
++
++[dependencies]
++
++[lints]
++workspace = true
+diff --git a/crates/eng-net-wire/src/lib.rs b/crates/eng-net-wire/src/lib.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..dfc595439a60feaf201db90a705a2f800d151ef3
+--- /dev/null
++++ b/crates/eng-net-wire/src/lib.rs
+@@ -0,0 +1,12 @@
++//! The wire codec (spec 6.8, contract 7): little-endian, fixed width,
++//! capped counts, and decoders that never panic. Every message carries the
++//! low 32 bits of the server tick, which the receiver extends against the
++//! last acknowledged tick (contract 1).
++//!
++//! Rung 1b's messages are `Hello`, `Welcome`, `Denied`, `Commands` and
++//! `Snapshot`. An empty skeleton until rung 1b's task T5
++//! (`docs/rungs/1b/plan.md`).
++#![no_std]
++#![forbid(unsafe_code)]
++
++extern crate alloc;
+diff --git a/crates/eng-platform-api/Cargo.toml b/crates/eng-platform-api/Cargo.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..383346c07b13276afbb9181c6fe8454f50323f75
+--- /dev/null
++++ b/crates/eng-platform-api/Cargo.toml
+@@ -0,0 +1,13 @@
++[package]
++name = "eng-platform-api"
++description = "The platform contract: input and window events, a monotonic clock, the app callback trait and the window seam."
++version.workspace = true
++edition.workspace = true
++rust-version.workspace = true
++license.workspace = true
++publish.workspace = true
++
++[dependencies]
++
++[lints]
++workspace = true
+diff --git a/crates/eng-platform-api/src/lib.rs b/crates/eng-platform-api/src/lib.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..89e40f00d0a56c753105319943b0f70c92ad7357
+--- /dev/null
++++ b/crates/eng-platform-api/src/lib.rs
+@@ -0,0 +1,9 @@
++//! The platform contract (spec 6.1, 6.10): plain-data events for physical
++//! keys, raw mouse deltas, mouse buttons, the wheel, gamepad axes and
++//! buttons, focus, resize, occlusion and close requests; a monotonic clock;
++//! the callback trait the app implements; and the window seam.
++//!
++//! Implementations: `eng-platform-headless` and `eng-platform-winit`, which
++//! will both pass this crate's conformance suite. An empty skeleton until
++//! rung 1b's task T3 (`docs/rungs/1b/plan.md`).
++#![forbid(unsafe_code)]
+diff --git a/crates/eng-platform-winit/Cargo.toml b/crates/eng-platform-winit/Cargo.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..81336011787a812c5e232ccd6aa0d7036d636925
+--- /dev/null
++++ b/crates/eng-platform-winit/Cargo.toml
+@@ -0,0 +1,13 @@
++[package]
++name = "eng-platform-winit"
++description = "The desktop platform: winit windows and input behind the platform contract."
++version.workspace = true
++edition.workspace = true
++rust-version.workspace = true
++license.workspace = true
++publish.workspace = true
++
++[dependencies]
++
++[lints]
++workspace = true
+diff --git a/crates/eng-platform-winit/src/lib.rs b/crates/eng-platform-winit/src/lib.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..a47b19629df97018dc9c639fde720af749c85356
+--- /dev/null
++++ b/crates/eng-platform-winit/src/lib.rs
+@@ -0,0 +1,6 @@
++//! The desktop platform (spec 6.10, 9.2): winit windows and input behind
++//! the `eng-platform-api` contract. It is the only crate that may import
++//! winit (`[floor]` in `architecture.toml`).
++//!
++//! An empty skeleton until rung 1b's task T10 (`docs/rungs/1b/plan.md`).
++#![forbid(unsafe_code)]
+diff --git a/crates/eng-render/Cargo.toml b/crates/eng-render/Cargo.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..1dc0ee30c6e793e6b5da57e07371c4170afff969
+--- /dev/null
++++ b/crates/eng-render/Cargo.toml
+@@ -0,0 +1,13 @@
++[package]
++name = "eng-render"
++description = "The render passes: the top-down view, tone mapping, the present blit and per-frame counters."
++version.workspace = true
++edition.workspace = true
++rust-version.workspace = true
++license.workspace = true
++publish.workspace = true
++
++[dependencies]
++
++[lints]
++workspace = true
+diff --git a/crates/eng-render/src/lib.rs b/crates/eng-render/src/lib.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..2a26964b8757b3c208c22da856e8e7539a279827
+--- /dev/null
++++ b/crates/eng-render/src/lib.rs
+@@ -0,0 +1,6 @@
++//! The render passes (spec 6.7, 6.13): the top-down pass (kept later as the
++//! automap and debug view), tone mapping, the present blit, and per-frame
++//! counters.
++//!
++//! An empty skeleton until rung 1b's task T8 (`docs/rungs/1b/plan.md`).
++#![forbid(unsafe_code)]
+diff --git a/crates/eng-session/Cargo.toml b/crates/eng-session/Cargo.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..5ca6417df314e905a2cb6ce484d12db57abcd033
+--- /dev/null
++++ b/crates/eng-session/Cargo.toml
+@@ -0,0 +1,13 @@
++[package]
++name = "eng-session"
++description = "Server and client session loops over a transport: buffered commands, acknowledged ticks and snapshots."
++version.workspace = true
++edition.workspace = true
++rust-version.workspace = true
++license.workspace = true
++publish.workspace = true
++
++[dependencies]
++
++[lints]
++workspace = true
+diff --git a/crates/eng-session/src/lib.rs b/crates/eng-session/src/lib.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..015742261b3082d9ee0c88157144bddc7e7849af
+--- /dev/null
++++ b/crates/eng-session/src/lib.rs
+@@ -0,0 +1,10 @@
++//! Server and client loops over a `Transport` (spec 6.6, 6.8). The server
++//! buffers commands and repeats the last one when one is missing, keeps each
++//! client's last acknowledged tick, and records the commands it applied. It
++//! has no clock: the caller passes `now`.
++//!
++//! An empty skeleton until rung 1b's task T6 (`docs/rungs/1b/plan.md`).
++#![no_std]
++#![forbid(unsafe_code)]
++
++extern crate alloc;
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index d95e5f8b346fc18fa61fd56078316f2c2773f71e..7b33d2c2db915bd448e21360d1aeb7c2dc0139d5 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -9,22 +9,28 @@ what it describes.
+ 
+ ```
+ L0  eng-schema-core  eng-derive  eng-math  eng-core           (core set)
+-L1  eng-ecs  eng-net-transport                                 (core set)
++L1  eng-ecs  eng-net-transport  eng-net-wire*                  (core set)
+     eng-schema-json  eng-input  eng-platform-headless          (std)
++    eng-platform-api*  eng-platform-winit*                     (std)
+ L2  eng-sim  eng-collision-api  kit-fps  game-testbed-sim      (core set)
+-L4  eng-cli                                                    (std)
++    eng-session*                                               (core set)
++L3  eng-gpu*  eng-render*                                      (std)
++L4  eng-cli  eng-app*                                          (std)
+ game  game-testbed (binary)        tool  xtask
+ ```
+ 
++\* Rung 1b crates, empty skeletons until their tasks in
++`docs/rungs/1b/plan.md`.
++
+ A crate depends only on lower layers, or on same-layer crates declared in
+-`architecture.toml`. The **core set** is everything the simulation links:
+-`#![no_std]`, `#![forbid(unsafe_code)]`, only `libm` as a third-party
++`architecture.toml`. The **core set** is everything the simulation links,
++plus the network codec, transport and session loops: `#![no_std]`, `#![forbid(unsafe_code)]`, only `libm` as a third-party
+ dependency (plus `eng-derive`'s build-time `syn`/`quote`), overflow checks
+ in release. `cargo xtask arch-check` enforces all of it over the transitive
+ dependency closure. The core set also builds for `wasm32-unknown-unknown`
+ and is tested on RISC-V under QEMU.
+ 
+-L3 (GPU, render, audio, UI) arrives in rung 1b and later.
++L3 starts in rung 1b with GPU and render; audio and UI come later.
+ 
+ ## Data flow of one tick
+ 

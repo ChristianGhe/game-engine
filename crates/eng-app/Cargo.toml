@@ -1,0 +1,13 @@
+[package]
+name = "eng-app"
+description = "The app: the frame loop that composes platform, session, live input and renderer."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

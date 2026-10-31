@@ -1,0 +1,13 @@
+[package]
+name = "eng-render"
+description = "The render passes: the top-down view, tone mapping, the present blit and per-frame counters."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

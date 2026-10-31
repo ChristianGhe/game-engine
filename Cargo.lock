@@ -47,6 +47,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "eng-app"
+version = "0.1.0"
+
+[[package]]
 name = "eng-cli"
 version = "0.1.0"
 dependencies = [
@@ -95,6 +99,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "eng-gpu"
+version = "0.1.0"
+
+[[package]]
 name = "eng-input"
 version = "0.1.0"
 dependencies = [
@@ -119,7 +127,23 @@ name = "eng-net-transport"
 version = "0.1.0"
 
 [[package]]
+name = "eng-net-wire"
+version = "0.1.0"
+
+[[package]]
+name = "eng-platform-api"
+version = "0.1.0"
+
+[[package]]
 name = "eng-platform-headless"
+version = "0.1.0"
+
+[[package]]
+name = "eng-platform-winit"
+version = "0.1.0"
+
+[[package]]
+name = "eng-render"
 version = "0.1.0"
 
 [[package]]
@@ -138,6 +162,10 @@ dependencies = [
  "serde",
  "toml",
 ]
+
+[[package]]
+name = "eng-session"
+version = "0.1.0"
 
 [[package]]
 name = "eng-sim"

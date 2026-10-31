@@ -1590,10 +1590,148 @@ question 1.
   14 s per run with X7. The three new steps add about 0.6 s together.
 - Reviewer subagent: about 99k tokens, 41 tool calls, 6.7 min.
 
+## 2026-10-25, session 16: T0, the G2 change as a tested patch (Claude Opus 5.5, with the owner)
+
+The task: T0, which prepares gate G2 as one tested patch. It was item 1 of
+the queue drafted for the next open-pulsar window, done in this session
+while the window waited for the owner, so that queue now starts at G3. G1
+is not approved, so the patch is only prepared. It was made and tested in a
+scratch clone, never in this repo: no crate is added here, no protected path
+is edited, and `current.txt` stays at `1a`.
+
+**The patch:** `docs/rungs/1b/patches/g2-crates.patch`, against `main` at
+9520947, to apply after G1. It changes 19 files: 231 lines added, 9
+removed.
+- Seven crates under `crates/`. Each is a `Cargo.toml` (the workspace
+  fields, a description, `[lints] workspace = true`, no dependencies) and a
+  `src/lib.rs` whose doc comment names the crate's spec sections and the
+  task that fills it in:
+
+  | Crate | Layer | Crate root | Task |
+  |---|---|---|---|
+  | `eng-platform-api` | L1 | `#![forbid(unsafe_code)]` | T3 |
+  | `eng-platform-winit` | L1 | `#![forbid(unsafe_code)]` | T10 |
+  | `eng-net-wire` | L1, core | `#![no_std]`, `#![forbid(unsafe_code)]`, `extern crate alloc;` | T5 |
+  | `eng-session` | L2, core | the same | T6 |
+  | `eng-gpu` | L3 | `#![forbid(unsafe_code)]` | T7 |
+  | `eng-render` | L3 | `#![forbid(unsafe_code)]` | T8 |
+  | `eng-app` | L4 | `#![forbid(unsafe_code)]` | T11 |
+
+- `architecture.toml`: proposal 2 exactly, each entry in its layer's place,
+  with the new `same_layer` edges of eng-platform-headless and eng-input.
+- Root `Cargo.toml`: the seven `[workspace.dependencies]` paths and
+  proposal 3's two `[profile.release.package.*]` lines. `Cargo.lock` gains
+  the seven path packages.
+- Docs, because `docs/ARCHITECTURE.md` asks to be updated in the commit that
+  changes what it describes:
+  - its layer diagram gains the seven crates, marked as skeletons;
+  - its core-set sentence now also names the network codec, transport and
+    session loops, which the simulation does not link;
+  - L3 "starts in rung 1b";
+  - `AGENTS.md`'s crate list gains the seven crates too (137 of 150 lines).
+
+  This overlaps T14's "layers"; T14 then only drops the skeleton notes.
+
+**How it was tested.** Scratch clone at 9520947, its `target/` seeded with
+a copy-on-write copy.
+- Baseline: `cargo xtask quick` green, 29 s.
+- The crates added but not listed: `arch-check` fails with
+  `[E-ARCH-UNKNOWN]` for each of the seven.
+- Listed: `arch-check` passes, 23 crates. Without the two `[profile]` lines
+  it fails with `[E-ARCH-OVERFLOW]` for eng-net-wire and eng-session. Both
+  confirm amendment 11: the change lands as one commit.
+- The whole change, with `CI=1`:
+  - `quick` green (14 s);
+  - `selftest` 17 of 17;
+  - `ci --job lint` 7 of 7 steps (clippy `-D warnings`, cargo-deny, typos);
+  - `ci --job test` 7 of 7;
+  - `ci --job wasm`, which checked both new core crates for wasm32.
+- Not run: `ci --job riscv`. This Mac has no RISC-V target and no
+  `qemu-riscv64`. The two core crates are empty `no_std` crates, and CI's
+  riscv job builds them.
+- The patch applies with `git apply` to a fresh clone of main and gives the
+  tested clone's tree exactly. `typos` passes on it.
+
+**Reviewer** (fresh context, read-only): approve with fixes, nothing
+blocking. It re-ran `quick`, `selftest`, `arch-check` and the lint and wasm
+jobs with `CI=true` in its own clone, using the local cargo-deny and typos
+at CI's pinned versions, and compared every entry with proposals 2 and 3.
+Fixed after the review:
+- `eng-net-wire`'s doc comment said every message carries "the 32-bit tick
+  and its extension". Spec 6.8, contract 1: the wire carries the low 32 bits
+  of the u64 tick, which the receiver extends against the last acknowledged
+  tick. The doc comment now says so, and so does `plan.md`'s crate table,
+  which had the same wording.
+- `docs/ARCHITECTURE.md` defined the core set as "everything the simulation
+  links", which the new diagram contradicted.
+- The patch header now says to apply it after G1.
+- This entry, which the header points to.
+
+**Open questions**
+1. **`eng-net-wire` has no edge to `eng-net-transport`** (proposal 2 gives
+   it none), so the codec cannot read `MAX_DATAGRAM`. In the plan,
+   `eng-session` (L2), which may depend on both, checks the snapshot size
+   and raises `[E-SNAPSHOT-SIZE]`. If the owner would rather the codec
+   capped `Snapshot` itself, this patch needs
+   `same_layer = ["eng-net-transport"]` for `eng-net-wire`.
+2. **No unsafe code.** Every skeleton forbids it, like every crate today. If
+   T7 or T10 needs it, for example for a window handle, relaxing `forbid`
+   in that crate is the owner's call.
+
+**Costs and timings**
+- This session, from about 19:00 to 19:50 EET, while the window waited for
+  the owner.
+- Scratch-clone checks: about 2 minutes in all (`quick` 14 s, the test job
+  30 s, the rest a few seconds each).
+- Reviewer subagent: about 9 minutes, 158k tokens, 54 tool calls.
+
+## 2026-10-31, session 17: gates G1 and G2 applied (Claude Opus 5.5, with the owner)
+
+The owner approved the plan as drafted (G1) and the seven-crate layout
+(G2). The owner then unlocked the three protected paths those gates
+write: `docs/rungs/1b/acceptance.json`, `architecture.toml` and
+`Cargo.toml`, listed in `.claude/guard-unlock`. G3 to G7 stay open.
+
+**Applied**
+- `docs/rungs/1b/acceptance.json` (proposal 1, with amendment 11): the
+  plan's 18 criteria as 19 features, in 1a's format. Criterion 14 is two
+  features, `lint-tier` and `tests-and-targets`, as in 1a. The time-box
+  is 14 calendar days from 2026-10-31; the AI budget is at most 30
+  sessions.
+  - Two additions to 1a's format. `done_when` is a list where a criterion
+    serves two done-when items (`native-window` [1, 2], `owner-play`
+    [2, 5]). `owner-play` has `"owner": true` and no checks; until X4,
+    `cargo xtask acceptance` reports it as "no checks listed".
+  - The native checks name each runner by its host triple, which is what
+    a job report records as `target`.
+  - The budget's note counts the 16 sessions logged before approval,
+    because the plan's 30 cover T0 to T17. The owner may say otherwise.
+- `g2-crates.patch` (T0), applied with `git apply` as session 16 tested
+  it. It brings the seven skeleton crates, proposal 2 in
+  `architecture.toml` and proposal 3's `[profile]` lines, with the
+  matching changes to `Cargo.toml`, `Cargo.lock`, `AGENTS.md` and
+  `docs/ARCHITECTURE.md`.
+- `docs/rungs/current.txt` says `1b`, and `plan.md`'s header says the plan
+  is approved.
+
+**Checked** (this repo, aarch64-apple-darwin)
+- `cargo xtask quick` green (17 s).
+- `CI=1 cargo xtask ci --job lint` 7 of 7, with cargo-deny and typos.
+- `cargo xtask selftest` 17 of 17.
+- `cargo xtask acceptance target/ci/reports` reads the new file. From
+  the local lint report, 2 of 19 features pass (`lint-tier`,
+  `agents-md-length`). The others need CI's jobs, most of them the native
+  jobs of X2 and X6. The computed copy was deleted, so the SessionStart
+  hook still reports CI's result.
+
 ## Proposals for the owner (protected paths)
 
-Nothing below is applied. Each item is what an agent would otherwise have
-to change; the owner applies it, or unlocks the path.
+Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1
+and X7 from proposal 7 (2026-10-25); and from proposal 8 and amendments
+14 to 17, the protection of `crash_json.rs`, `version.rs`,
+`live_input.rs` and `**/*.proptest-regressions` (e14b533). Nothing else
+below is applied. Each item is what an agent would otherwise have to
+change; the owner applies it, or unlocks the path.
 
 1. **`docs/rungs/1b/acceptance.json`** (G1). Make it from the table in
    `plan.md`, "Acceptance", in 1a's format: rung `1b`, spec section 9.2,

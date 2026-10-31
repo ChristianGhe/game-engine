@@ -2217,16 +2217,89 @@ streams were clean. Its findings, each fixed in this change:
 - The mutation checks took about 6 minutes in all; each run rebuilt only
   eng-session's tests.
 
+## 2026-10-31, session 17 (continued): gates G3 and G4, ADR-0016 and the G3 patch (Claude Opus 5.5, owner away)
+
+Before leaving at about 12:40, the owner approved gates G3 and G4 in
+conversation. Asked whether to stop after T6 or go further, they chose
+"Approve G3+G4, go further", and they asked for subagents to keep the
+main session's context small. From here the main session coordinates:
+subagents build each piece, a fresh-context reviewer checks it, and the
+main session commits with git. Nothing is pushed.
+
+**G4: ADR-0016** (75e444f, written by a subagent).
+`raw-window-handle`'s `HasWindowHandle` and `HasDisplayHandle` may appear
+in public APIs between `eng-platform-api`, `eng-platform-winit`,
+`eng-gpu` and `eng-app`, and nowhere else. `AGENTS.md`,
+`docs/ARCHITECTURE.md` (invariant 5) and the ADR index name the second
+exception, and plan.md's banner records both approvals. T6's reviewer
+approved it. For the owner:
+1. `.claude/agents/reviewer.md` (protected) still allows no exception in
+   public APIs, not even serde's. Amendment 21 proposes the wording.
+   Until then, briefs to the reviewer mention ADR-0016.
+2. The ADR says none of the four crates re-exports the traits, because a
+   re-export would get round the wrapper ban. The sources don't say it;
+   it follows from "nowhere else". Strike it if unwanted.
+3. Spec 6.2 rule 4 and ADR-0002 still state the rule without exceptions,
+   and the serde exception (rung 1a, difference 5) has no ADR. Both are
+   left alone.
+4. T3 must keep the platform contract implementable without the traits,
+   because `eng-platform-headless` is outside the seam.
+
+**G3: `docs/rungs/1b/patches/g3-crate-batch-2.patch`** (this commit,
+made and tested by a subagent in scratch clones). It changes `deny.toml`
+(167 lines added, 2 removed: crate batch 2 in `[bans] allow`,
+`[graph] targets` without wasm32, the `raw-window-handle` wrapper ban)
+and `_typos.toml` (the deflate crate's name). Tested:
+- `cargo deny check` (0.20.2, advisories fetched today) passes with
+  today's dependencies. It passes again with batch 2 added where the plan
+  puts it: wgpu in eng-gpu, winit in eng-platform-winit, png in eng-cli
+  and game-testbed's dev-dependencies, nv-flip in game-testbed's
+  dev-dependencies, raw-window-handle =0.6.2 in the four seam crates.
+  cargo-deny's graph then holds batch 1 plus exactly the 136 names (146
+  versions), and every batch-2 entry is used. Batch 1's `r-efi` is the
+  only unused entry.
+- `raw-window-handle` in eng-render fails with `error[banned]`.
+- `typos` (1.51.1) passes with that lock, and fails once without the new
+  entry.
+- `git apply` gives byte-identical files on fresh clones, where `cargo
+  xtask quick` and `CI=1 cargo xtask ci --job lint` pass.
+Amendment 22 lists its differences from the approved list.
+
+**Before the owner pushes, apply the G3 patch.** Until then, CI's
+`typos` flags this patch file's own diff lines, and once T3 or T7 adds
+batch-2 crates, `cargo deny check` fails on them. Meanwhile agents check
+against the approved policy with copies of the two patched files under
+other names, passed with `--config` (cargo-deny takes it before
+`check`). This session keeps them in its scratchpad, and a later session
+can make them again from the patch.
+
+**CI.** The push of 13fcdaa ran green: 8 of 8 jobs, riscv included. The
+selftest job's "Post Run Swatinem/rust-cache" step printed ENOENT errors
+as annotations. On a cache miss (the lock changed, so "No cache found")
+the post step cleans `target/`, takes the selftest's copies under
+`target/selftest/<case>/crates/*/tests/` for nested target directories,
+and fails to open `target` and `trybuild` inside them. The job still
+passes, and earlier runs with a cache hit show none. Amendment 23
+proposes a fix.
+
+**Costs** (subagents, each with its own context):
+- ADR-0016: about 10 minutes, 185k tokens, 55 tool calls.
+- The G3 patch and the policy copies: about 24 minutes, 290k tokens, 128
+  tool calls.
+- T6 (its entry above): about 64 minutes over two rounds, 577k tokens.
+- T6's review: about 21 minutes, 266k tokens, 89 tool calls.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1
 and X7 from proposal 7 (2026-10-25); from proposal 8 and amendments 14
 to 17, the protection of `crash_json.rs`, `version.rs`, `live_input.rs`
-and `**/*.proptest-regressions` (e14b533); and amendment 18's oracle
-patch, which protects eng-net-wire's `golden.rs` and `never_panic.rs`
-(2026-10-31). Nothing else below is applied. Each item is what an agent
-would otherwise have to change; the owner applies it, or unlocks the
-path.
+and `**/*.proptest-regressions` (e14b533); amendment 18's oracle patch,
+which protects eng-net-wire's `golden.rs` and `never_panic.rs`
+(2026-10-31); and proposal 5 (G4) as ADR-0016 (75e444f). Proposal 4 (G3)
+is approved and waits as `docs/rungs/1b/patches/g3-crate-batch-2.patch`.
+Nothing else below is applied. Each item is what an agent would
+otherwise have to change; the owner applies it, or unlocks the path.
 
 1. **`docs/rungs/1b/acceptance.json`** (G1). Make it from the table in
    `plan.md`, "Acceptance", in 1a's format: rung `1b`, spec section 9.2,
@@ -2728,3 +2801,30 @@ path.
       bytes-in, bytes-out shape belongs to rung 5's `eng-net-proto`.
     - If the owner wants the argument now, unused, it is one parameter on
       `Server::poll`, `Server::step` and `Client::poll`.
+
+21. **Amendment from session 17, ADR-0016** (to `.claude/agents/reviewer.md`,
+    protected). Its item 5 says "Third-party types must not appear in
+    public APIs", with no exception. Proposed: add "except serde derives
+    on authored-data types and ADR-0016's window-handle traits". Without
+    it, the reviewer flags the traits that T3, T7 and T10 may use.
+
+22. **Amendment from session 17, the G3 patch** (to proposal 4 with
+    amendment 12, approved by the owner as G3):
+    - `wgpu`, `winit` and `raw-window-handle` are written `wgpu:*`,
+      `winit:*` and `raw-window-handle:*` in `[bans] allow`. cargo-deny
+      0.20.2 refuses a policy that names a crate in both `allow` and
+      `deny`, where the three are wrapper-banned, and without an allow
+      match it reports them as not allowed. `*` matches every release but
+      no pre-release, so this is stricter than a bare name.
+    - Four crates resolve to newer versions than on 2026-10-25, with the
+      same names and licences: log 0.4.35, ordered-float 5.5.1, rustix
+      1.1.6 and unicode-width 0.2.3. No name, advisory or licence is new.
+    - Dev-only crates (nv-flip, nv-flip-sys) are outside cargo-deny's
+      licence check by default. Their licences are on the list anyway.
+
+23. **Amendment from session 17, CI** (to `.github/workflows/ci.yml` or
+    `xtask/`, protected). Keep the rust-cache post step out of the
+    selftest's scratch copies: `cargo xtask selftest` removes
+    `target/selftest` when it finishes, or the selftest job deletes it
+    before the post step runs. Either removes the ENOENT annotations that
+    every cache miss prints. Low priority: the job passes.

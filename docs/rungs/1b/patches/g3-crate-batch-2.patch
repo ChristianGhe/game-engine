@@ -1,0 +1,289 @@
+Patch G3 (rung 1b, gate G3): crate batch 2 in deny.toml, with cargo-deny's
+graph targets and the raw-window-handle wrapper ban, and the deflate crate's
+name in _typos.toml, in one change. The owner approved G3 on 2026-10-31.
+
+Why: T3, T7, T9, T10 and T12 add wgpu, winit, raw-window-handle, png and
+nv-flip. cargo-deny fails on any crate outside `[bans] allow`, and typos
+fails on the deflate crate's name once the allow-list holds it.
+
+What (docs/rungs/1b/PROGRESS.md proposal 4 with amendments 12 and 13;
+docs/rungs/1b/plan.md, "Owner gates", both G3 rows, and "Crate batch 2"):
+- deny.toml:
+  - `[graph] targets`: the seven targets whose whole workspace CI builds,
+    without wasm32.
+  - `[bans] deny`: raw-window-handle only as a direct dependency of wgpu,
+    wgpu-core, wgpu-hal, wgpu-types, winit and the four seam crates
+    (eng-platform-api, eng-platform-winit, eng-gpu, eng-app).
+  - `[bans] allow`: the plan table's 136 names, no more and no fewer, in
+    a block after batch 1. Three are written `name:*` (difference 1).
+  - Comments: the list now covers "the dependency graph of these targets"
+    (amendment 13); batch 1's serde line adds "tests", the optional
+    comment of amendments 14 and 15; a note on batch 2.
+- _typos.toml: the deflate crate's name (<https://crates.io/crates/flate2>)
+  under `[default.extend-identifiers]`. typos reads it as a misspelt "flat".
+
+Differences from the approved list (proposed amendments):
+1. `wgpu:*`, `winit:*` and `raw-window-handle:*` in `allow`, not bare
+   names. cargo-deny 0.20.2 rejects a policy that names the same spec in
+   both `allow` and `deny` ("a crate was specified in both `allow` and
+   `deny`"), yet it still wants an `allow` match for a crate that a
+   wrapper ban lets through (`not-allowed` without one). A version
+   requirement makes the two specs differ. `*` matches every release but
+   no pre-release (a winit 0.31 beta, say): stricter, never looser.
+2. Resolved today, four versions differ from the table, with the same
+   names and licences: log 0.4.35 (table 0.4.34), ordered-float 5.5.1
+   (5.5.0), rustix 1.1.6 (1.1.5), unicode-width 0.2.3 (0.2.2). No new
+   name, no advisory, no licence change.
+
+Notes:
+- With the targets, batch 1's r-efi (UEFI only) is never in the graph.
+  It stays (proposal 4: keep or drop). cargo-deny does not report unused
+  `allow` entries.
+- Until T3, T7, T10 and T11 depend on raw-window-handle, its four engine
+  wrappers give `unused-wrapper` warnings, as gilrs and cpal already do.
+- cargo-deny leaves dev-only crates out of the licence check
+  (`include-dev` defaults to false). So nv-flip and nv-flip-sys, which
+  only tests use, are not licence-checked, and BSD-3-Clause stays "not
+  encountered". Their licences are on the list (the plan's table).
+- typos flags this file's diff lines, which hold the deflate crate's bare
+  name, until the patch is applied. Commit this file with the patch
+  applied or after it, not before.
+
+Base: main at 13fcdaa. At the repo root, run `git apply` with this file,
+then `cargo xtask quick`. quick runs neither cargo-deny nor typos;
+`cargo xtask ci --job lint` runs both.
+Text before the first `diff --git` line is ignored by `git apply`.
+
+How it was tested, in scratch clones of main at 13fcdaa, with cargo-deny
+0.20.2 and typos-cli 1.51.1 (CI's pins) and the advisory database fetched
+on 2026-10-31:
+- Today's dependencies: `cargo deny check` exits 0 with "advisories ok,
+  bans ok, licenses ok, sources ok"; `typos` is clean.
+- The plan's crates added where its tasks put them, the lock resolved
+  today: wgpu =30.0.1 in eng-gpu and winit =0.30.13 in eng-platform-winit,
+  both with decision 5's features; png =0.18.1 in eng-cli and in
+  game-testbed's dev-dependencies; nv-flip =0.1.2 in game-testbed's
+  dev-dependencies; raw-window-handle =0.6.2 in the four seam crates.
+  `cargo deny check` exits 0, all four checks ok. Besides batch 1,
+  cargo-deny's graph holds exactly the 136 names (146 versions), each
+  entry used. Warnings only: the duplicate versions the plan lists,
+  unused wrappers for gilrs and cpal, licences not encountered.
+- raw-window-handle added to eng-render, outside the seam:
+  `cargo deny check bans` fails with `error[banned]`.
+- typos with that lock is clean. Without the _typos.toml entry it fails
+  once, on the deflate crate's line in deny.toml.
+- This file applies with `git apply` to a fresh clone and gives the
+  tested files byte for byte. There, `cargo xtask quick` and
+  `CI=1 cargo xtask ci --job lint` are green, and `typos` passes on this
+  file with the patch applied.
+
+diff --git a/_typos.toml b/_typos.toml
+index 63a184a84dc41387e1903f18f18af36ad1727f1c..f533d88026c03321ad0eced7d07dd65cab05ba78 100644
+--- a/_typos.toml
++++ b/_typos.toml
+@@ -8,3 +8,5 @@ Obscur = "Obscur"
+ 
+ [default.extend-identifiers]
+ PNGs = "PNGs"
++# A crate name in cargo-deny's allow-list, not a misspelt "flat".
++flate2 = "flate2"
+diff --git a/deny.toml b/deny.toml
+index 923026afa03b2b48fad60e834fc30da5cbffe9cb..0f1a64be48db4379cd4603ed0008fb1f258447b4 100644
+--- a/deny.toml
++++ b/deny.toml
+@@ -3,6 +3,18 @@
+ 
+ [graph]
+ all-features = false
++# The targets whose whole workspace we build. wasm32 is left out on purpose:
++# CI builds only the core set for it, which reaches nothing but libm, while
++# winit would add web-only crates to the graph.
++targets = [
++  "x86_64-unknown-linux-gnu",
++  "aarch64-unknown-linux-gnu",
++  "x86_64-pc-windows-msvc",
++  "aarch64-pc-windows-msvc",
++  "aarch64-apple-darwin",
++  "x86_64-apple-darwin",
++  "riscv64gc-unknown-linux-gnu",
++]
+ 
+ [advisories]
+ version = 2
+@@ -44,16 +56,30 @@ deny = [
+   { crate = "winit", wrappers = ["eng-platform-winit"] },
+   { crate = "gilrs", wrappers = ["eng-platform-winit"] },
+   { crate = "cpal", wrappers = ["eng-audio-cpal"] },
++  # The window-handle traits stay inside the window seam (ADR-0016): the
++  # floor crates that use them directly, and the four seam crates.
++  { crate = "raw-window-handle", wrappers = [
++    "wgpu", "wgpu-core", "wgpu-hal", "wgpu-types", "winit",
++    "eng-platform-api", "eng-platform-winit", "eng-gpu", "eng-app",
++  ] },
+   # Unmaintained (spec 6.8).
+   { crate = "laminar" },
+   { crate = "bincode" },
+ ]
+-# The third-party allow-list: only these crates may appear in Cargo.lock.
++# The third-party allow-list: only these crates may appear in the dependency
++# graph of these targets (see [graph]).
+ # Batch 1, approved by the owner on 2026-10-24 for rung 1a:
+ # libm (core math), syn/quote/proc-macro2/unicode-ident (eng-derive),
+-# serde/toml/serde_json and their dependencies (authored data, xtask),
++# serde/toml/serde_json and their dependencies (authored data, xtask, tests),
+ # proptest and its dependencies (property tests). Some appear only on
+ # other targets (r-efi, getrandom) or through optional features.
++# Batch 2, approved by the owner on 2026-10-31 for rung 1b ("Crate batch 2"
++# in docs/rungs/1b/plan.md): wgpu and winit with their platform crates, png
++# (shots, the proof video, goldens) and nv-flip (golden comparison in tests).
++# Some are never built: cargo-deny tests each platform-gated edge against
++# every target above. wgpu, winit and raw-window-handle are also in `deny`
++# with their wrappers, and cargo-deny refuses the same spec in both lists, so
++# here they are written `name:*` (any release version).
+ allow = [
+   "autocfg",
+   "bitflags",
+@@ -92,6 +118,143 @@ allow = [
+   "unicode-ident",
+   "winnow",
+   "zmij",
++  # Batch 2 (rung 1b).
++  "adler2",
++  "ahash",
++  "allocator-api2",
++  "arrayvec",
++  "as-raw-xcb-connection",
++  "ash",
++  "bit-set",
++  "bit-vec",
++  "block2",
++  "bytemuck",
++  "bytemuck_derive",
++  "calloop",
++  "calloop-wayland-source",
++  "cc",
++  "cfg_aliases",
++  "codespan-reporting",
++  "concurrent-queue",
++  "core-foundation",
++  "core-foundation-sys",
++  "core-graphics",
++  "core-graphics-types",
++  "crc32fast",
++  "crossbeam-utils",
++  "cursor-icon",
++  "dispatch",
++  "dlib",
++  "document-features",
++  "downcast-rs",
++  "dpi",
++  "errno",
++  "fdeflate",
++  "find-msvc-tools",
++  "flate2",
++  "foldhash",
++  "foreign-types",
++  "foreign-types-macros",
++  "foreign-types-shared",
++  "gethostname",
++  "gpu-allocator",
++  "half",
++  "libloading",
++  "linux-raw-sys",
++  "litrs",
++  "lock_api",
++  "log",
++  "memmap2",
++  "miniz_oxide",
++  "naga",
++  "naga-types",
++  "nv-flip",
++  "nv-flip-sys",
++  "objc-sys",
++  "objc2",
++  "objc2-app-kit",
++  "objc2-core-foundation",
++  "objc2-core-graphics",
++  "objc2-encode",
++  "objc2-foundation",
++  "objc2-metal",
++  "objc2-quartz-core",
++  "once_cell",
++  "ordered-float",
++  "parking_lot",
++  "parking_lot_core",
++  "percent-encoding",
++  "pin-project-lite",
++  "pkg-config",
++  "png",
++  "polling",
++  "presser",
++  "profiling",
++  "quick-xml",
++  "range-alloc",
++  "raw-window-handle:*",
++  "raw-window-metal",
++  "renderdoc-sys",
++  "rustc-hash",
++  "rustix",
++  "scoped-tls",
++  "scopeguard",
++  "shlex",
++  "simd-adler32",
++  "slab",
++  "smallvec",
++  "smithay-client-toolkit",
++  "smol_str",
++  "spirv",
++  "static_assertions",
++  "thiserror",
++  "thiserror-impl",
++  "tracing",
++  "tracing-core",
++  "unicode-segmentation",
++  "unicode-width",
++  "version_check",
++  "wayland-backend",
++  "wayland-client",
++  "wayland-csd-frame",
++  "wayland-cursor",
++  "wayland-protocols",
++  "wayland-protocols-plasma",
++  "wayland-protocols-wlr",
++  "wayland-scanner",
++  "wayland-sys",
++  "wgpu:*",
++  "wgpu-core",
++  "wgpu-core-deps-apple",
++  "wgpu-core-deps-windows-linux-android",
++  "wgpu-hal",
++  "wgpu-naga-bridge",
++  "wgpu-types",
++  "windows",
++  "windows-collections",
++  "windows-core",
++  "windows-future",
++  "windows-implement",
++  "windows-interface",
++  "windows-link",
++  "windows-numerics",
++  "windows-result",
++  "windows-strings",
++  "windows-sys",
++  "windows-targets",
++  "windows-threading",
++  "windows_aarch64_msvc",
++  "windows_x86_64_gnu",
++  "windows_x86_64_msvc",
++  "winit:*",
++  "x11-dl",
++  "x11rb",
++  "x11rb-protocol",
++  "xcursor",
++  "xkbcommon-dl",
++  "xkeysym",
++  "zerocopy",
++  "zerocopy-derive",
+ ]
+ 
+ [sources]

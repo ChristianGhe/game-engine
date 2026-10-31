@@ -3454,11 +3454,12 @@ targets, with the repo's policy):
 
 **`t10-oracles.patch`** (`docs/rungs/1b/patches/`, the owner's, a G5
 item): `crates/eng-platform-winit/tests/conformance.rs` joins
-`protected.toml` and `.github/CODEOWNERS` (amendment 35). The agent's
-version had df96332 with `t10.patch` as its base, and was tested as under
-"Checks". At integration the orchestrator re-made it on top of
-`t8-oracles.patch`, since both add a line at the same place. No xtask step:
-acceptance names none for this harness, and `tests` runs it.
+`protected.toml` and `.github/CODEOWNERS` (amendment 35). Its base is
+df96332 with `t10.patch` applied; tested as under "Checks". At
+integration, `t8-oracles.patch` was re-made on top of it and of
+`t3-oracles.patch`, since all three add lines at the same place
+(amendment 35 gives the order). No xtask step: acceptance names none for
+this harness, and `tests` runs it.
 
 **Review** (the `reviewer` subagent, fresh context, read-only; 18 min,
 231k tokens, 74 tool calls): approve, no code blockers. It checked each of
@@ -4077,7 +4078,9 @@ otherwise have to change; the owner applies it, or unlocks the path.
     - Why (the reviewer's reason): T10 and T11 will be tempted to relax a
       rule when winit misbehaves, and whether a rule may change should be
       the owner's call.
-    - Described only; no patch yet. `cargo xtask docs-check` wants a
+    - Now a patch: `docs/rungs/1b/patches/t3-oracles.patch`, made after
+      T10 and stacked on `t10-oracles.patch` (amendment 35 gives the
+      order). `cargo xtask docs-check` wants a
       CODEOWNERS line for each new pattern, so the two files change
       together.
 
@@ -4170,7 +4173,8 @@ otherwise have to change; the owner applies it, or unlocks the path.
     whatever eng-render draws. No xtask step: criterion 9's check is the
     native job's `gpu-budgets` (X2), and CI's test job has no GPU. Best
     applied after T11 (open question 3); the patch itself only adds the
-    path.
+    path. It comes last in the stack of oracle patches, after T10's and
+    T3's (amendment 35).
 
 35. **Amendment from session 17, T10** (to proposal 8 and amendment 24;
     G5). `docs/rungs/1b/patches/t10-oracles.patch`: protect
@@ -4179,9 +4183,16 @@ otherwise have to change; the owner applies it, or unlocks the path.
     harness. It runs `conformance::check` on real windows and holds the
     checks the suite cannot make on a desktop (decision 8 and the tests
     above) and the no-display skip; unprotected, making it skip would
-    leave the protected suite unrun on winit. The patches stack: apply
-    `t8-oracles.patch`, `t10-oracles.patch` and `t3-oracles.patch`
-    (amendment 24's entries) in one `git apply`, in that order.
+    leave the protected suite unrun on winit. Three patches add lines at
+    the same place in both files, so they stack, in this order:
+    `t10-oracles.patch` and `t3-oracles.patch` (amendment 24's entries)
+    in one `git apply`, at any time but best before T11, so the suite is
+    protected while T11 works on winit; then `t8-oracles.patch` after
+    T11 (amendment 31). Tested on a fresh clone of 7775f60: after the
+    first two, docs-check, `quick` (7 of 7), the lint job (7 of 7) and
+    selftest (17 of 17) pass; after the third, docs-check and `quick`;
+    and with one of the new CODEOWNERS lines removed, docs-check fails
+    with `[E-DOCS]`.
 
 36. **Amendment from session 17, T10** (to proposal 7, X2 and X6; G5).
     The native jobs set `ENG_REQUIRE_DISPLAY=1` for their `tests` step, as

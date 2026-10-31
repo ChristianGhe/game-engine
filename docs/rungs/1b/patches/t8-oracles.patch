@@ -10,15 +10,15 @@ counting test.
 - No xtask step: criterion 9's check is the native job's `gpu-budgets`
   step (X2), and CI's test job has no GPU, where the file's tests skip.
 
-Base: main at df96332 with t8.patch applied, which adds the test file.
-Best applied after T11, which may change `Graph::render` to take a
-window's frame each frame. At the repo root, run `git apply` with this
-file, then `cargo xtask quick`. Session 17's T8 entry in PROGRESS.md says
-how it was tested.
+Base: main with t10-oracles.patch and t3-oracles.patch applied (they
+stack; see t10-oracles.patch). Best applied after T11, which may change
+`Graph::render` to take a window's frame each frame. At the repo root, run
+`git apply` with this file, then `cargo xtask quick`. Session 17's T8
+entry in PROGRESS.md says how the counting test was tested.
 Text before the first `diff --git` line is ignored by `git apply`.
 
 diff --git a/.github/CODEOWNERS b/.github/CODEOWNERS
-index e665280b86ba69e23ef0cbdb2b7da0280bdbfc17..b8025d5b173195f46cc1d7821d2b8f15475d925f 100644
+index d8b3185aa292b37769bf811c82b3739098dc10c6..6d42c7302dc758dcfb097c7666a721f7bdd08b7c 100644
 --- a/.github/CODEOWNERS
 +++ b/.github/CODEOWNERS
 @@ -16,6 +16,7 @@
@@ -26,11 +26,11 @@ index e665280b86ba69e23ef0cbdb2b7da0280bdbfc17..b8025d5b173195f46cc1d7821d2b8f15
  /crates/eng-session/tests/hash_equality.rs @ChristianGhe
  /crates/eng-gpu/tests/shaders.rs @ChristianGhe
 +/crates/eng-gpu/tests/counters.rs @ChristianGhe
- /crates/game-testbed/scenarios/scenarios.toml @ChristianGhe
- /crates/*/tests/golden.rs @ChristianGhe
- **/golden/ @ChristianGhe
+ /crates/eng-platform-winit/tests/conformance.rs @ChristianGhe
+ /crates/eng-platform-api/src/conformance.rs @ChristianGhe
+ /crates/eng-platform-api/src/conformance/ @ChristianGhe
 diff --git a/protected.toml b/protected.toml
-index f4a63c753c564deeb8e81fee640809eb57549dc0..a20bf03d94bb82a83126f8f2d410ea56a466121e 100644
+index a0f141b5d97dee8b81d3c5f7f886de2bd05d40df..01bd98108773ff3d551464af587424f4dd0a9440 100644
 --- a/protected.toml
 +++ b/protected.toml
 @@ -28,6 +28,7 @@ paths = [
@@ -38,6 +38,6 @@ index f4a63c753c564deeb8e81fee640809eb57549dc0..a20bf03d94bb82a83126f8f2d410ea56
    "crates/eng-session/tests/hash_equality.rs",
    "crates/eng-gpu/tests/shaders.rs",
 +  "crates/eng-gpu/tests/counters.rs",
-   "crates/game-testbed/scenarios/scenarios.toml",
-   "crates/*/tests/golden.rs",
-   "**/golden/**",
+   "crates/eng-platform-winit/tests/conformance.rs",
+   "crates/eng-platform-api/src/conformance.rs",
+   "crates/eng-platform-api/src/conformance/**",

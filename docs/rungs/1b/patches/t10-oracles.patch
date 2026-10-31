@@ -15,36 +15,38 @@ the harness that runs the platform contract's conformance suite on winit.
 - No xtask step: acceptance names none for this harness, and `tests`
   runs it.
 
-Base: main with T10's commit and t8-oracles.patch applied; the patches
-stack, so apply them in one command, in order:
-  git apply docs/rungs/1b/patches/t8-oracles.patch \
-            docs/rungs/1b/patches/t10-oracles.patch \
-            docs/rungs/1b/patches/t3-oracles.patch
-then `cargo xtask quick` and `CI=1 cargo xtask ci --job lint` (docs-check
-wants the CODEOWNERS line). Session 17's T10 entry in PROGRESS.md says how
-it was tested.
+Base: main with T10's commit (7775f60). The oracle patches for T10, T3
+and T8 stack, in this order:
+  1. t10-oracles.patch and 2. t3-oracles.patch, at any time; best before
+     T11, so the suite is protected while T11 works on winit:
+       git apply docs/rungs/1b/patches/t10-oracles.patch \
+                 docs/rungs/1b/patches/t3-oracles.patch
+  3. t8-oracles.patch, after T11, which may change `Graph::render`.
+Then `cargo xtask quick` and `CI=1 cargo xtask ci --job lint` (docs-check
+wants the CODEOWNERS lines). Session 17's T10 entry in PROGRESS.md says
+how the harness was tested.
 Text before the first `diff --git` line is ignored by `git apply`.
 
 diff --git a/.github/CODEOWNERS b/.github/CODEOWNERS
-index b8025d5b173195f46cc1d7821d2b8f15475d925f..af3ca72745aac98f11cb83a3cfbd69f6b13234e3 100644
+index e665280b86ba69e23ef0cbdb2b7da0280bdbfc17..53fdc6808d84e166465ee9afbd42ebceadd5e148 100644
 --- a/.github/CODEOWNERS
 +++ b/.github/CODEOWNERS
-@@ -17,6 +17,7 @@
+@@ -16,6 +16,7 @@
+ /crates/eng-net-wire/tests/never_panic.rs @ChristianGhe
  /crates/eng-session/tests/hash_equality.rs @ChristianGhe
  /crates/eng-gpu/tests/shaders.rs @ChristianGhe
- /crates/eng-gpu/tests/counters.rs @ChristianGhe
 +/crates/eng-platform-winit/tests/conformance.rs @ChristianGhe
  /crates/game-testbed/scenarios/scenarios.toml @ChristianGhe
  /crates/*/tests/golden.rs @ChristianGhe
  **/golden/ @ChristianGhe
 diff --git a/protected.toml b/protected.toml
-index a20bf03d94bb82a83126f8f2d410ea56a466121e..f8bab56729cac9c7b383ae2adfe3019413bcbc28 100644
+index f4a63c753c564deeb8e81fee640809eb57549dc0..6146dae9ba3f54ff8d61d9734d6e4edc0007d011 100644
 --- a/protected.toml
 +++ b/protected.toml
-@@ -29,6 +29,7 @@ paths = [
+@@ -28,6 +28,7 @@ paths = [
+   "crates/eng-net-wire/tests/never_panic.rs",
    "crates/eng-session/tests/hash_equality.rs",
    "crates/eng-gpu/tests/shaders.rs",
-   "crates/eng-gpu/tests/counters.rs",
 +  "crates/eng-platform-winit/tests/conformance.rs",
    "crates/game-testbed/scenarios/scenarios.toml",
    "crates/*/tests/golden.rs",

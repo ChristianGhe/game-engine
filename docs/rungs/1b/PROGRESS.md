@@ -2923,6 +2923,13 @@ this entry.
      --job test` then runs 9 of 9 steps, `wire-session` and `shaders`
      included, and quick stays green.
   3. Then the owner pushes.
+- Step 1 is done: back the same day, the owner applied G3 and
+  `t7-libm.patch`, and an agent applied `t7-eng-gpu.patch`. G3 is
+  37142b7 and T7 84f0745. In this checkout, `quick` (7 of 7) and `CI=1
+  cargo xtask ci --job lint` (7 of 7, cargo-deny and typos on the real
+  configs) pass. eng-gpu's GPU tests skip without an adapter, unless
+  `ENG_REQUIRE_GPU=1`, which nothing sets before G5's native jobs, so
+  CI's Linux test job needs no GPU.
 - T7's agent worktree sat under `.claude/worktrees/`, where the guard
   refuses writes, so it was never used. It has been removed with its
   branch. Scratch clones did the job.
@@ -2940,12 +2947,10 @@ and X7 from proposal 7 (2026-10-25); from proposal 8 and amendments 14
 to 17, the protection of `crash_json.rs`, `version.rs`, `live_input.rs`
 and `**/*.proptest-regressions` (e14b533); amendment 18's oracle patch,
 which protects eng-net-wire's `golden.rs` and `never_panic.rs`
-(2026-10-31); and proposal 5 (G4) as ADR-0016 (75e444f). Proposal 4 (G3)
-is approved and waits as `docs/rungs/1b/patches/g3-crate-batch-2.patch`.
-T7 waits as `t7-libm.patch` (the owner's, amendment 25) together with
-`t7-eng-gpu.patch` (nothing protected; an agent applies it in the same
-commit). For G5, `t6-oracles.patch` and then `t7-oracles.patch` are
-ready. Nothing else below is applied. Each item is what an agent would
+(2026-10-31); proposal 5 (G4) as ADR-0016 (75e444f); proposal 4 (G3)
+with amendment 22 (37142b7); and amendment 25's libm pin, in one commit
+with T7 (84f0745). For G5, `t6-oracles.patch` and then
+`t7-oracles.patch` are ready. Nothing else below is applied. Each item is what an agent would
 otherwise have to change; the owner applies it, or unlocks the path.
 
 1. **`docs/rungs/1b/acceptance.json`** (G1). Make it from the table in

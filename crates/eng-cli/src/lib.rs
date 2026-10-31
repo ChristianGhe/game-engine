@@ -26,11 +26,11 @@
 //! ([`GameDef::top_down`]) offscreen through eng-render, from a tick's state
 //! at alpha 1, so the pictures are exact. `shot` writes the frame at its
 //! tick as a PNG; `video` writes tick 0 and every K-th tick after it (the
-//! last multiple of K not past N) as an
-//! animated PNG (the proof video, spec 7.1), each frame shown for K ticks.
-//! The files hold 8-bit sRGB RGBA and nothing else: the same pixels give
-//! the same bytes. Their reports carry a `gpu` object (the adapter, its
-//! capabilities and the per-frame counters), and `budgets.toml [gpu]` holds
+//! last multiple of K not past N) as an animated PNG (the proof video,
+//! spec 7.1), each frame shown for K ticks. The files hold 8-bit sRGB RGBA
+//! and nothing else: the same pixels give the same bytes. Their reports
+//! carry a `gpu` object (the adapter, its capabilities and the per-frame
+//! counters), and the budgets file's `[gpu]` table, when it has one, holds
 //! every frame (exit 13, `[E-BUDGET]`). Without an adapter they exit 64
 //! with `[E-NO-ADAPTER]`, writing nothing (plan decision 4); a frame that
 //! fails once the GPU is open is a bug and panics (exit 12). Golden tests

@@ -41,10 +41,10 @@ Rung 1b draws the dot in a real window.
 
   | Crate | Layer | Its part in the window seam |
   |---|---|---|
-  | `eng-platform-api` | L1 | defines the seam in the platform contract |
-  | `eng-platform-winit` | L1 | implements it over winit's window |
-  | `eng-gpu` | L3 | creates the wgpu surface from it |
-  | `eng-app` | L4 | passes the window from the platform to `eng-gpu` |
+  | `eng-platform-api` | L1 | defines the seam in the platform contract: `window::Window`, with both traits as supertraits, which `App::window` receives as `Arc<dyn Window>` |
+  | `eng-platform-winit` | L1 | implements `Window` over winit's window, in a private type |
+  | `eng-gpu` | L3 | creates the wgpu surface from it: `Gpu::with_window` names both traits in its bounds |
+  | `eng-app` | L4 | passes the platform's `Arc<dyn Window>` to `Gpu::with_window`. It names neither trait and does not depend on the crate (rung 1b, T11); the ban still allows it to |
 
 - Only these two traits: the rest of the crate, such as its raw handle
   enums, stays under rule 4. None of the four re-exports the traits,
@@ -55,14 +55,15 @@ Rung 1b draws the dot in a real window.
   `wgpu-core`, `wgpu-hal`, `wgpu-types` and `winit`), depend on
   `raw-window-handle`. A crate that cannot depend on it cannot name the
   traits. CI's `lint` job runs `cargo deny check`.
-  - `deny.toml` is protected, so the ban reaches the owner as a patch
+  - `deny.toml` is protected, so the ban reached the owner as a patch
     with the rest of rung 1b gate G3, which the owner approved the same
-    day.
+    day and applied (37142b7).
   - That change also puts the crate on the allow-list (crate batch 2),
     so the crate is never allowed without its ban.
-- **A selftest proves the ban.** `cargo xtask selftest rwh-outside-seam`
-  (patch X5, gate G5) expects a use of the crate outside the seam to
-  fail. It is part of acceptance criterion 12, `violations-1b`.
+- **A selftest will prove the ban.** Patch X5 (gate G5) adds `cargo
+  xtask selftest rwh-outside-seam`, which expects a use of the crate
+  outside the seam to fail. It is part of acceptance criterion 12,
+  `violations-1b`. Until then cargo-deny alone enforces the ban.
 - **`arch-check` needs no change.** The crate is not in
   `[core_third_party]`, so core-set purity already keeps it out of every
   core crate and `game-*-sim`. `[floor]` gives each crate one wrapper, so
@@ -89,10 +90,10 @@ Rung 1b draws the dot in a real window.
   implementable without them.
 - Rule 4 holds everywhere else; a third exception would again be the
   owner's decision.
-- Until the owner applies G3's patch, the crate is not on `deny.toml`'s
-  allow-list, so CI's `cargo deny check` fails once rung 1b's T3, T7 or
-  T10 adds it. The owner approved G3 with this decision, so those tasks
-  go ahead, and the patch lands before their first push.
+- Without G3's patch, CI's `cargo deny check` fails on the crate. The
+  owner approved G3 with this decision, and its patch (37142b7) landed
+  after T3's commit and before the push that carried T3 (up to 15747b2),
+  so CI never ran on a tree with the crate and without its ban.
 
 ## Alternatives considered
 

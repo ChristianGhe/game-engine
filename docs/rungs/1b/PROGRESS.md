@@ -4706,6 +4706,226 @@ window: commit locally, push nothing, record decisions as proposals here.
     check the fixes;
   - the integration reviewer: 15 min, 233k tokens.
 
+## 2026-11-01, session 18: T14, the docs (Claude Opus 5.5, subagent, owner away)
+
+The task: T14, the docs. Its plan row asks for `AGENTS.md`'s commands,
+`docs/ARCHITECTURE.md` (the layers and the frame), ADR-0016 and ADR-0017;
+done when `cargo xtask docs-check` passes and AGENTS.md is at most 150
+lines (criterion 17). T1 to T12 are on main, and each updated some docs as
+it went; this task makes them true for main at 5b38ce8, complete and
+consistent. Built in a scratch clone of main while t13a and t13b built
+T13's patches in theirs. Docs and doc comments only: no code, no test, no
+protected path and no hash stream changed. It is left uncommitted, as
+`t14.patch`.
+
+**What changed**
+- **ADR-0017, "Three passes, not two"** (new; status Proposed, and so in
+  the index). It records plan difference 1 against the code: eng-gpu's
+  `Graph::fixed` (offscreen `draw`, `tonemap`; a surface graph adds
+  `present`), the declarations `Graph::new` checks, eng-render's three
+  passes, the fixed `Bgra8UnormSrgb` surface format (T8 decision 7, T11
+  decision 6), the counters, and the alternatives (tone map in the draw
+  pass, in the blit, or a copy). It amends ADR-0003, which gains a
+  one-line pointer under its rung 1b bullet; ADR-0003's decision text is
+  unchanged.
+- **ADR-0016**, checked against T3, T7, T10 and T11. Its changes:
+  - the seam table names what each crate does: `window::Window`, with
+    both traits as supertraits, which `App::window` receives as
+    `Arc<dyn Window>` (eng-platform-api); a private type implementing it
+    (eng-platform-winit); `Gpu::with_window`'s bounds (eng-gpu);
+  - eng-app's row: it passes the `Arc<dyn Window>` to `Gpu::with_window`,
+    names neither trait and does not depend on the crate (T11), though the
+    ban allows it to;
+  - G3's patch is applied (37142b7): the ban "reached" the owner, and the
+    last consequence now says what happened: the patch landed after T3's
+    commit and before the push that carried T3 (up to 15747b2), so CI
+    never ran on a tree with the crate and without its ban;
+  - the selftest bullet says X5 (G5) will add `rwh-outside-seam`, and that
+    until then cargo-deny alone enforces the ban (it read as if it
+    existed).
+
+  Unchanged and still true: the four crates, the wrapper ban's list in
+  `deny.toml`, no re-exports, `forbid(unsafe_code)` in all four, the
+  crates outside.
+- **docs/ARCHITECTURE.md** (637 lines before, 688 after):
+  - "Layers": the diagram draws all 15 `same_layer` edges of
+    `architecture.toml`, and a table gives the seven new crates' edges to
+    our other crates (from `cargo metadata`), third-party ones in
+    brackets. The floor rule is named.
+  - "The frame" is now one frame from OS events to present, from the
+    plan's "One frame", amendment 48, T11's entry and the code (eng-app's
+    `frame.rs`, `clock.rs` and `view.rs`, eng-cli's `PlayRun` and
+    `Session::tick`, eng-platform-winit's pacing): the ticker, dropped
+    ticks, the session round trip, the previous state, frames once per
+    tick plus one per batch of events, occlusion (and wgpu 30 refusing on
+    macOS), the end, and the tests. The old "The frame" (eng-render's
+    view) is "The top-down view". `shot`, `video` and the goldens moved to
+    "Shots, the proof video and goldens", with the golden flow as on main:
+    no `golden/` yet, candidates, `[W-NO-GOLDEN]`, `[W-NO-THRESHOLDS]`,
+    then G5 and G6.
+  - `crash.json` has its own bullet under "Agent tooling", checked against
+    `exit.rs` and `log.rs`; "The report"'s `gpu` bullet is untangled.
+  - Fixed: "`budgets.toml [gpu]` holds them for every frame" (main's
+    `budgets.toml` has no `[gpu]` yet: it is `t9-oracles.patch`, G5);
+    "`ENG_REQUIRE_GPU=1` (CI)" (no job sets it before G5); "`run
+    --headless` paces its ticks" on the headless platform (`dump-world`,
+    `shot` and `video` do too); the probe does not run `replay verify`
+    through the session; the background is the draw pass's clear colour;
+    the Oracles table gains the protected harnesses and says no golden
+    exists yet.
+  - Tightened: the GPU layer (the fullscreen, instanced and surface
+    bullets merged), the conformance suite, the top-down view's colour,
+    extraction and interpolation, the golden part.
+  - "The version stamp" and "The report" keep their headings: the
+    protected `tests/version.rs`, `version.rs` and `report.rs` point at
+    them. Their contents match the code (checked key by key).
+- **AGENTS.md** (149 lines): every command and flag checked against the
+  probe's `--help` and xtask's usage; `selftest [CASE]`, `cargo xtask
+  help` for the rest, `replay dump`; exit 13 also for
+  `[E-SNAPSHOT-SIZE]`; the logs include xtask's `xtask-<step>.log`, where
+  the shot harness's `[E-GOLDEN]` and `[W-NO-GOLDEN]` land; the 1b tags; a
+  new "Environment" paragraph with every variable the code reads
+  (`ENG_REQUIRE_GPU`, `ENG_REQUIRE_DISPLAY`, `ENG_GPU_ADAPTER`,
+  `ENG_SHOT_MODE`, `ENG_GOLDEN_DIR`, `ENG_AGENT_LOG_DIR`, `WGPU_DEBUG`,
+  `WGPU_VALIDATION`, `CI`, and the four stamp variables xtask sets); golden
+  images and named harnesses in the protected list. To fit, the layer list
+  became one sentence pointing at ARCHITECTURE.md, and the two `replay`
+  lines one.
+- **Crate docs**: eng-cli and eng-render said `budgets.toml [gpu]` holds
+  every frame; now "a `[gpu]` table, when there is one" (and eng-render
+  says `play`'s report carries the counters too, though only `shot` and
+  `video` are limited). eng-gpu's graph bullet names ADR-0017, and
+  `gpu_required`'s doc no longer says CI sets `ENG_REQUIRE_GPU`. The other
+  1b crates' docs (eng-app, eng-platform-api, eng-platform-winit,
+  eng-platform-headless, eng-input, eng-session) match their code.
+
+**Decisions** (proposals; the owner can overrule any):
+1. **ADR-0017 is Proposed, not Accepted**: plan difference 1 is a
+   proposal. It also records the fixed surface format, since that is the
+   same ADR-0003 bullet ("the surface's preferred format") and the present
+   blit cannot reproduce the output otherwise. If the owner wants the
+   format as its own ADR, that bullet moves out.
+2. **Edges as text, not a picture**: same-layer edges in the layer
+   diagram, the new crates' edges in a table. A full graph of 22 crates
+   would be harder to read than either and would drift faster.
+3. **No linked page.** The longest parts ("The version stamp", "The
+   report") are pointed at by protected test docs, so they stay; the rest
+   grew by 51 lines net for the edges, the frame and the golden flow,
+   after tightening.
+4. **Nothing documented as on main that is not**: the native job, the
+   five new selftest cases, `golden/thresholds.toml`, `budgets.toml
+   [gpu]`, `ENG_REQUIRE_GPU` in CI and `crash_json.rs`'s `play` half are
+   described as G5's. The lines to change after G5 are listed below.
+5. **`Platform::run`'s doc** (`eng-platform-api/src/app.rs`) still says
+   `run` returns when a desktop's quit command ends the run, which macOS
+   does not do (amendments 39 and 47). Not edited: amendment 47 leaves
+   that sentence to the owner. ARCHITECTURE.md and eng-platform-winit's
+   docs say what happens.
+6. **Test-file docs left alone**: five GPU test files say
+   "`ENG_REQUIRE_GPU=1` (CI)"; they state the intent (plan decision 4),
+   and two of them become the owner's at G5.
+
+**After G5: doc lines to change** (each depends on a patch the owner
+applies; t13a's and t13b's final names win):
+- `AGENTS.md`, the `ci --job` line: add `native` to "CI jobs: lint test
+  riscv wasm selftest summary all".
+- `docs/ARCHITECTURE.md`, "Agent tooling": add the native job (X2: its
+  steps, `ENG_REQUIRE_GPU=1` and `ENG_REQUIRE_DISPLAY=1`, the artifacts
+  `report-native-<runner>`, `golden-candidates-<runner>`,
+  `crash-native-<runner>`) and the summary's native hash comparison and
+  `native-duration` (X3).
+- `docs/ARCHITECTURE.md`, "The GPU layer", Adapters: drop "from gate G5;
+  no job sets it yet"; `crates/eng-gpu/src/gpu.rs`, `gpu_required`: drop
+  "from gate G5".
+- `docs/ARCHITECTURE.md`, "The top-down view", Cost: replace "its values
+  are proposed for gate G5, and until then nothing is limited" with the
+  limits `t9-oracles.patch` sets (12 draws, 12 pipeline switches, 8
+  bind-group switches, 2,048 bytes); eng-render's crate docs drop
+  "`budgets.toml`'s is proposed for gate G5"; eng-cli's "when it has
+  one" can stay.
+- `docs/ARCHITECTURE.md`, "Shots, the proof video and goldens": "on main
+  it does not exist yet" becomes "it holds `thresholds.toml`"
+  (`t12-oracles.patch`), and after G6 the goldens; the Oracles table's
+  "(none yet)" goes at G6; "criterion 12's selftest (patch X5, gate G5)"
+  becomes `cargo xtask selftest golden-edit`, with where CI gets its
+  pinned lavapipe (X5, X6).
+- `docs/ARCHITECTURE.md`, `crash.json` bullet: `crash_json.rs` also checks
+  `play --panic-at-tick` in a window (`t11-oracles.patch`).
+- ADR-0016: "A selftest will prove the ban. Patch X5 (gate G5) adds ...
+  Until then cargo-deny alone enforces the ban." becomes "A selftest
+  proves the ban. `cargo xtask selftest rwh-outside-seam` expects ...".
+- `AGENTS.md`, "Tests and oracles": one line for the `golden-update` skill
+  (t13b's `.claude/` patch), as `replay-debug` has; AGENTS.md has one line
+  to spare.
+- If the owner accepts ADR-0017 (not G5): its status and the index say
+  Accepted, and ADR-0003's pointer, ARCHITECTURE.md's and eng-gpu's
+  "(ADR-0017, proposed)" drop "proposed".
+
+**Review** (the `reviewer` subagent, fresh context, read-only, in its own
+clone of 5b38ce8 with the patch; 18 min, 361k tokens, 114 tool calls):
+changes needed, four must-fix points, all one-line edits, all taken:
+1. ADR-0016 said "no pushed commit had the crate without its ban": T3's
+   commit was pushed (inside the push of 15747b2); only CI never saw it.
+2. ADR-0016's selftest bullet read as existing on main (17 cases there).
+3. ARCHITECTURE.md said the probe runs every command through the session;
+   `replay verify` steps the sim directly.
+4. eng-render's docs read as if `budgets.toml` had a `[gpu]` table.
+
+Its 11 should-fix points and nits, all taken: ADR-0017 overclaimed that
+exposure changes only `tonemap.wgsl` (fullscreen passes bind only their
+input today); AGENTS.md's protected list overstated the harnesses, its
+logs missed xtask's, its layer sentence dropped three crates, `CI=1` is
+"`CI` set", "`help` lists every flag" left out the test-only
+`--panic-at-tick`; "`ENG_REQUIRE_GPU=1` (CI)" with no job setting it; the
+golden flow put `[W-NO-THRESHOLDS]` before any golden and the FLIP maps
+only on failure; frames also come with each batch of events; the
+background is the clear colour; three wording nits. It confirmed the rest
+against the code: ADR-0017's rules, formats, costs and quotes; ADR-0016's
+rows and the policy; all 15 edges and the new-crates table; "The frame";
+`crash.json`, the report, the shots and the Oracles rows; every AGENTS.md
+command, tag and variable; and that the change is docs only. `quick` 7 of
+7 in its clone. Side effect: its first `--help` ran in the main checkout
+and left one 74-byte log under the git-ignored
+`target/agent-logs/`. The same reviewer then checked the fixes on a
+rebuilt clone (about 2 minutes, 13 tool calls): approve, every fix true
+to the code, no new error. Its two optional nits were taken: the Cost
+bullet names `shot` and `video`, as eng-render's docs do, and one
+paragraph re-wrapped.
+
+**Checks** (aarch64-apple-darwin, in the work clone, on the final tree,
+one after another; `scratchpad/t14/checks.sh`):
+- `cargo xtask docs-check`: ok, AGENTS.md 149/150 lines, CODEOWNERS
+  covers `protected.toml`.
+- `typos` from the clone's root: clean.
+- `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p eng-cli -p eng-gpu
+  -p eng-render`: clean.
+- `cargo xtask quick`: 7 of 7 (131 s the first time, 28 s on the final
+  tree).
+- `t14.patch` (`scratchpad/t14/make-patch.sh`): `git apply --check` and
+  `git apply` on a fresh clone of 5b38ce8 give the work clone's tree
+  (`git write-tree` 4fd5864). It touches 10 files, none protected.
+- `typos` with the repo's config on this entry and the patch: clean.
+
+**Open questions**
+1. **ADR-0017**: accept, change or reject (amendment 85).
+2. **The plan's own text** ("One frame", "Probe additions") differs from
+   what was built (amendment 86); ARCHITECTURE.md is now the accurate one.
+3. **AGENTS.md has one spare line.** Any new rule after G5 needs a cut
+   elsewhere, or a higher limit, which is the owner's (`xtask/src/docs.rs`).
+
+**Costs and timings**
+- Session 18's T14 subagent, from 23:51 to about 00:45 EET (54 minutes):
+  reading to 23:58; ADR-0017 and ADR-0016 to 00:00; ARCHITECTURE.md to
+  00:08; AGENTS.md and the crate docs to 00:10; checks and the patch to
+  00:15; the review from 00:15 to 00:34, with this entry meanwhile; its
+  fixes and the checks to 00:39; the re-check to 00:41; its nits, the
+  final checks and patch to 00:43. The harness reported 52 minutes, 469k
+  tokens and 226 tool calls for the subagent (the orchestrator's note).
+- Builds: the seeded `target/` made everything warm; `quick` 28 to 131 s.
+- Reviewer subagent: 18 minutes, 361k tokens, 114 tool calls; then about
+  2 minutes and 13 tool calls for the re-check (the harness reported 386k
+  tokens for the agent at its end, context included).
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1
@@ -5641,3 +5861,29 @@ otherwise have to change; the owner applies it, or unlocks the path.
       and the advisory `visual-qa` subagent (spec 7.5). No task builds
       them and no patch adds them, yet T16 needs them. Proposal: T13 or
       T16 drafts both as a patch for the owner, as with X1 to X7.
+
+85. **Amendment from session 18, T14** (to `plan.md` difference 1 and
+    ADR-0003; the owner's decision). ADR-0017, "Three passes, not two", is
+    written and marked Proposed: rung 1b's fixed graph is `draw`,
+    `tonemap`, `present` (offscreen without `present`), and the present
+    pass writes a fixed `Bgra8UnormSrgb` (or `Bgra8Unorm` through an sRGB
+    view) instead of the surface's preferred format. If the owner accepts
+    it: set its status and the index to Accepted, drop "proposed" from
+    ADR-0003's pointer, from ARCHITECTURE.md ("The GPU layer") and from
+    eng-gpu's crate docs, and change spec 6.7 ("a fixed two-pass graph:
+    draw, then present") and 9.2 ("the fixed two-pass graph (draw, then a
+    blit into the surface's preferred format)") to three passes.
+86. **Amendment from session 18, T14** (to `plan.md`, not protected but
+    the owner's text; with amendments 20 and 48). Two sections describe
+    what T9 and T11 built differently:
+    - "One frame": there is no `FrameSnapshot` in eng-session; eng-cli's
+      `PlayRun` keeps the previous state in a second sim and builds a
+      `TopDownFrame { previous, current, alpha, .. }`; the clock is
+      eng-app's `TickClock` on the platform's `Wake::At`, not winit's
+      `ControlFlow::WaitUntil` directly. Proposed: keep the diagram as the
+      plan's intent and add "as built: `docs/ARCHITECTURE.md`, 'The
+      frame'".
+    - "Probe additions": `shot` also takes `--players` and `--budgets`;
+      `video` also `--size`, `--players`, `--budgets` and `--report`.
+      Proposed: the usage text `<game> help` prints, which eng-cli's crate
+      docs and AGENTS.md follow.

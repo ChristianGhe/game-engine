@@ -8,26 +8,47 @@ commit that changes what it describes.
 ## Layers
 
 ```
-L0  eng-schema-core  eng-derive  eng-math  eng-core           (core set)
-L1  eng-ecs  eng-net-transport  eng-net-wire                   (core set)
-    eng-schema-json  eng-input  eng-platform-headless          (std)
-    eng-platform-api  eng-platform-winit                       (std)
-L2  eng-sim  eng-collision-api  kit-fps  game-testbed-sim      (core set)
-    eng-session                                                (core set)
-L3  eng-gpu  eng-render                                        (std)
-L4  eng-cli  eng-app                                           (std)
+L0  eng-schema-core ▶ eng-derive;  eng-math, eng-core ▶ eng-schema-core   (core set)
+L1  eng-ecs  eng-net-transport  eng-net-wire                                (core set)
+    eng-input ▶ eng-schema-json, eng-platform-api                           (std)
+    eng-platform-headless, eng-platform-winit ▶ eng-platform-api            (std)
+L2  eng-sim  eng-collision-api;  kit-fps ▶ eng-collision-api                (core set)
+    game-testbed-sim ▶ eng-sim, eng-collision-api, kit-fps                  (core set)
+    eng-session ▶ eng-sim                                                   (core set)
+L3  eng-render ▶ eng-gpu                                                    (std)
+L4  eng-app ▶ eng-cli                                                       (std)
 game  game-testbed (binary)        tool  xtask
 ```
 
-A crate depends only on lower layers, or on same-layer crates declared in
-`architecture.toml`. The **core set** is everything the simulation links,
-plus the network codec, transport and session loops: `#![no_std]`, `#![forbid(unsafe_code)]`, only `libm` as a third-party
-dependency (plus `eng-derive`'s build-time `syn`/`quote`), overflow checks
-in release. `cargo xtask arch-check` enforces all of it over the transitive
-dependency closure. eng-math gives libm `force-soft-floats`, so libm's `arch`
-code stays off even in builds where wgpu's shader compiler turns the
-feature on. The core set also builds for `wasm32-unknown-unknown`
-and is tested on RISC-V under QEMU.
+A crate depends only on lower layers, or on the same-layer crates its
+`same_layer` lists in `architecture.toml`, drawn above as `A ▶ B` (A
+depends on B). Rung 1b added seven crates; their edges to our others
+(third-party crates in brackets):
+
+| Crate | Layer | Depends on |
+|---|---|---|
+| `eng-platform-api` | L1 | none [raw-window-handle, for the window seam: ADR-0016] |
+| `eng-platform-winit` | L1 | eng-platform-api [winit, raw-window-handle] |
+| `eng-net-wire` | L1, core | eng-core |
+| `eng-session` | L2, core | eng-sim, eng-ecs, eng-net-wire, eng-net-transport, eng-core |
+| `eng-gpu` | L3 | none [wgpu, raw-window-handle] |
+| `eng-render` | L3 | eng-gpu, eng-math |
+| `eng-app` | L4 | eng-cli, eng-platform-winit, eng-platform-api, eng-input, eng-gpu, eng-render |
+
+eng-cli, the probe, uses four of them (eng-session, eng-gpu, eng-render
+and eng-platform-api) and the headless platform; game-testbed enters
+through eng-app.
+
+The **core set** is everything the simulation links, plus the network
+codec, transport and session loops: `#![no_std]`,
+`#![forbid(unsafe_code)]`, only `libm` as a third-party dependency (plus
+`eng-derive`'s build-time `syn`/`quote`), overflow checks in release.
+`cargo xtask arch-check` enforces all of it over the transitive
+dependency closure, and the floor rule: only eng-gpu imports wgpu, only
+eng-platform-winit winit. eng-math gives libm `force-soft-floats`, so
+libm's `arch` code stays off even in builds where wgpu's shader compiler
+turns the feature on. The core set also builds for
+`wasm32-unknown-unknown` and is tested on RISC-V under QEMU.
 
 L3 starts in rung 1b with GPU and render; audio and UI come later.
 
@@ -101,8 +122,8 @@ Platform::run(&mut app):  start ─▶ window (windowed only)
   event when none is left fails with `Idle`, one past its time limit with
   `TimeLimit`, and one whose app keeps asking to be woken at once with
   `Stalled` (after 10,000 frames at one instant), instead of hanging.
-  `run --headless` paces its ticks on it, one per frame
-  (`crates/eng-cli/src/ticker.rs`).
+  `run`, `dump-world`, `shot` and `video` pace their ticks on it, one per
+  frame (`crates/eng-cli/src/ticker.rs`).
 - `WinitPlatform` (the only crate that imports winit) opens one window
   per run, hidden until `start` and `window` have run, and hands it over
   as the seam's `Arc<dyn Window>`. winit makes its event loop once per
@@ -113,22 +134,21 @@ Platform::run(&mut app):  start ─▶ window (windowed only)
   early. Keys are physical (W3C codes); key repeat and winit's synthetic
   keys at focus changes are dropped. Rung 1b maps keys and window events
   only; the mouse comes with rung 2's raw-input shim. Without a display
-  `new` is `Unavailable`.
+  `new` is `Unavailable`. On macOS, Quit (Cmd+Q, the Dock) ends the
+  process right after `stop`, so `run` never returns there and an app
+  saves what it must in `stop`.
 - The conformance suite is `conformance::check` (any platform: order, the
-  clock, timed wakes including one in the past, exit, running again) and
-  `conformance::check_scripted` (event delivery, exact times, every event
-  due before its frame, batches, close requests). Its probes give up after
-  a bounded number of frames and fail a platform that keeps calling after
-  an exit, so the suite never hangs. Headless passes both, and the
-  deliberately broken platforms in its tests, at least one per rule, each
-  fail on the rule they break.
-- winit passes `check` with real windows in
-  `crates/eng-platform-winit/tests/conformance.rs`, a `harness = false`
-  test (the main thread, one event loop), which adds checks of its own:
-  real window handles, a clock that restarts each run, and more timed
-  frames than a window's opening events can bring. Without a display
-  (CI's test job) it skips, unless `ENG_REQUIRE_DISPLAY=1`; a watchdog
-  fails it after a minute rather than let a run hang.
+  clock, timed wakes, exit, running again) and
+  `conformance::check_scripted` (event delivery, exact times, batches,
+  close requests). Its probes give up after a bounded number of frames,
+  so it never hangs. Headless passes both, and deliberately broken
+  platforms, at least one per rule, fail on the rule they break. winit
+  passes `check` with real windows in
+  `crates/eng-platform-winit/tests/conformance.rs` (`harness = false`:
+  the main thread), which adds real window handles, a clock that restarts
+  each run, and more timed frames than a window's opening brings. Without
+  a display (CI's test job) it skips, unless `ENG_REQUIRE_DISPLAY=1`; a
+  watchdog fails it after a minute.
 
 ## Live input
 
@@ -159,8 +179,8 @@ PlatformEvent ──key_event()──▶ KeyEvent (Down/Up of a Key, FocusLost)
   `crates/eng-input/src/default.bindings.toml`. A file replaces them; an
   action it leaves out is unbound. Unknown action or key names, a value
   that is not a list of names, an unknown top-level key and a key bound
-  twice fail with `[E-BINDINGS] <file>:<line>: ...`, the first in the file
-  being reported; `eng_schema_json::TomlSpans` finds the line.
+  twice fail with `[E-BINDINGS] <file>:<line>: ...`; only a file's first
+  error is reported.
 
 ## The wire format
 
@@ -248,48 +268,49 @@ Graph::render ──▶ FrameCounters (draws, switches, uploaded bytes)
 - **Adapters.** `ENG_GPU_ADAPTER` picks the first adapter whose name
   contains it, ignoring case; otherwise wgpu chooses, software last. With
   no adapter `Gpu::new` fails with `[E-NO-ADAPTER]`, and GPU tests skip
-  unless `ENG_REQUIRE_GPU=1` (CI) makes them fail. Each OS has one
-  backend, so machines agree: Metal on macOS, Vulkan on Linux, and DX12 on
-  Windows, which compiles shaders with FXC, part of Windows.
+  unless `ENG_REQUIRE_GPU=1` makes them fail (CI's native jobs set it,
+  from gate G5; no job sets it yet). Each OS has one backend, so machines
+  agree: Metal on macOS, Vulkan on Linux, and DX12 on Windows, which
+  compiles shaders with FXC, part of Windows.
 - **Flags.** Debug builds use wgpu's release flags, as the game does;
   `WGPU_DEBUG=1` and `WGPU_VALIDATION=1` add debug labels and the
   backend's validation layer when debugging.
-- **The graph.** Passes declare what they read and write (`PassDecl`).
+- **The graph** has three passes, not the spec's two (ADR-0017,
+  proposed). Passes declare what they read and write (`PassDecl`).
   `Graph::new` checks that each read was written by an earlier pass, that a
   pass writes exactly one resource, that the output is written but never as
-  the surface, and that only a surface graph uses the surface.
+  the surface, and that only a surface graph uses the surface, which it
+  must write.
   `Graph::render` takes one `Pass` per declaration, in order. Each records
-  into a `PassRecorder`: a clear, then fullscreen and instanced draws.
+  into a `PassRecorder`: a clear, then draws of two kinds.
+  - Fullscreen: eng-gpu owns the vertex stage (`src/fullscreen.wgsl`); the
+    caller writes the fragment stage, which gets `uv` and may bind the
+    pass's one read as `input`, with a sampler that takes the nearest
+    texel.
+  - Instanced: an `InstancedPipeline` draws a triangle strip per instance
+    into the scene or the output, reading each instance's `Attribute`s
+    (`f32x2`, `f32x3`, `u32`, packed, little-endian) from bytes the pass
+    records.
+
   Every recording is checked against its declaration before the frame's
   instances are uploaded, in one buffer, and the frame is encoded and
   submitted.
-- **Fullscreen passes.** eng-gpu owns the vertex stage
-  (`src/fullscreen.wgsl`, one triangle over the target). The caller writes
-  the fragment stage, which gets `uv` and may bind the pass's one read as
-  `input`, with a sampler that takes the nearest texel.
-- **Instanced draws.** An `InstancedPipeline` draws a triangle strip per
-  instance, into the scene or the output, never the surface. Its vertex
-  stage reads each instance's `Attribute`s (`f32x2`, `f32x3`, `u32`,
-  packed, little-endian) from bytes the pass records.
 - **Counters.** `Graph::render` returns the frame's `FrameCounters` (spec
   6.13): draws, pipeline switches, bind-group switches and uploaded bytes,
   counted from the commands it encodes, so they are exact and the same on
   every adapter. A pass binds a pipeline only when a draw needs another,
   and its input once; nothing stays bound from one pass to the next.
-- **The surface.** Its format is fixed, `Bgra8UnormSrgb`, rather than the
-  surface's preferred one (spec 6.7): wgpu 30 offers it for windows on
-  Metal, Vulkan and DX12, and the present blit then reproduces the
-  output's bytes. `Targets::with_offscreen_surface` adds a texture in that
-  format standing in for a window's, so a surface graph renders whole
-  offscreen and `Targets::read_surface` reads it back in RGBA order.
-- **A window's surface.** `Gpu::with_window` takes the window through the
-  seam (ADR-0016) and opens a device on an adapter that can present to it.
-  `WindowSurface` makes its images in `Bgra8UnormSrgb`, or in `Bgra8Unorm`
-  drawn through an sRGB view when only that is offered; with neither it
-  fails with `[E-GPU]`. Present mode Fifo (plan decision 7). Each frame
-  `acquire` gives a `SurfaceFrame` (or nothing: skip the frame),
-  `Graph::render_to` draws a surface graph into it, and `present` shows it
-  after the submit; `Graph::render` stays the offscreen path.
+- **The surface** is `Bgra8UnormSrgb`, not the surface's preferred format
+  (spec 6.7, ADR-0017), so the present blit reproduces the output's
+  bytes. `Gpu::with_window` takes the window through the seam (ADR-0016),
+  opens a device on an adapter that can present to it, and makes a
+  `WindowSurface` in that format, or in `Bgra8Unorm` drawn through an sRGB
+  view; with neither it fails with `[E-GPU]`. Present mode Fifo (plan
+  decision 7). Each frame `acquire` gives a `SurfaceFrame` (or nothing:
+  skip the frame), `Graph::render_to` draws into it, and `present` shows
+  it after the submit. Offscreen, `Targets::with_offscreen_surface` stands
+  a texture in for the window's, and `Targets::read_surface` reads it back
+  in RGBA order.
 - **Errors.** wgpu's errors, validation included, are caught around each
   call that returns a `Result` and come back as `GpuError` (`[E-GPU]`,
   `[E-SHADER]`, `[E-GRAPH]`). Any other one panics, so validation errors
@@ -300,7 +321,7 @@ Graph::render ──▶ FrameCounters (draws, switches, uploaded bytes)
   therefore a `.wgsl` file, loaded with `include_str!`; WGSL inline in Rust
   would escape the check.
 
-## The frame
+## The top-down view
 
 `eng-render` (spec 6.7, 6.13) draws rung 1b's top-down view, the one kept
 later as the automap and debug view, through eng-gpu's fixed graph. The
@@ -313,7 +334,7 @@ GameDef::top_down(TopDownFrame { previous, current, alpha, width, height })
   game extraction ──▶ TopDownScene: camera, background, shapes (WorldPos, f64)
      TopDownScene::quads: camera subtracted in f64, then clip space, then f32
 Renderer::render:
-  draw     top_down.wgsl  background, then every quad in one instanced draw ──▶ scene
+  draw     top_down.wgsl  clear to the background, then every quad in one instanced draw ──▶ scene
   tonemap  tonemap.wgsl   clamp to [0, 1], alpha 1 ──▶ output (shot, video, goldens)
   present  present.wgsl   output, texel for texel ──▶ surface (targets with one)
   ──▶ FrameCounters
@@ -330,120 +351,148 @@ Renderer::render_to: the same three passes, into a window's SurfaceFrame
   are clipped to the image in f64 first, so one far larger than the image
   keeps its edges.
 - **Colour.** Shape and background colours are `LinearRgb`, linear and
-  scene-referred; the scene holds values above 1. Rung 1b's tone map
-  clamps each channel to [0, 1] (plan decision 2), and the output's sRGB
-  format encodes it, so 1 shows as full intensity. Light in nits and EV100
-  exposure arrive with lights and the tone-mapping curve in rung 2.
+  scene-referred, and may exceed 1. Rung 1b's tone map clamps each channel
+  to [0, 1] (plan decision 2) and the output's sRGB format encodes it; the
+  curve, light in nits and EV100 exposure come with lights in rung 2.
 - **Extraction.** A game gives the probe a function from a `TopDownFrame`
   to a `TopDownScene` (`GameDef::top_down`). It reads the previous and
-  current states and never writes. The testbed's is one small file,
-  `crates/game-testbed/src/top_down.rs` (plan difference 6): the camera on
-  the room's centre, zoomed so the room fits the image (40 px/m on the
-  320x240 shot, where it fills the image exactly); the room as a wall
-  rectangle under a floor inset by 0.1 m; one disc per dot, as wide as its
-  hull and coloured by player slot.
-- **Interpolation** is the extraction's: it builds the scene from the
-  previous and current states at the frame's alpha, exactly the previous
-  state at 0 and the current one at 1. `shot` and `video` pass one tick's
-  state as both, at alpha 1, so they are exact.
+  current states and never writes, and it interpolates: at the frame's
+  alpha, exactly the previous state at 0 and the current one at 1. `shot`
+  and `video` pass one tick's state as both, at alpha 1, so they are
+  exact. The testbed's is `crates/game-testbed/src/top_down.rs` (plan
+  difference 6): the room centred and fitted to the image (40 px/m at
+  320x240), its wall under a floor inset by 0.1 m, and one disc per dot,
+  as wide as its hull and coloured by player slot.
 - **Culling and checks.** A shape that covers none of the image is left
   out, so it costs nothing to upload. A scene that cannot be drawn (a
   value that is not finite, a rectangle inside out, a zoom that is not
   above 0) fails with `[E-SCENE]` before any GPU work.
 - **Cost.** Offscreen a frame is 2 draws, 2 pipeline switches, 1
   bind-group switch and 32 bytes per shape in view; presenting adds 1, 1
-  and 1. With nothing in view the top-down draw is skipped. `shot` and
-  `video` reports carry the counters (below), and `budgets.toml [gpu]`
-  holds them for every frame.
-- **`shot` and `video`** (`crates/eng-cli/src/capture.rs`) open the GPU
-  before the simulation runs; without an adapter they exit 64 with
-  `[E-NO-ADAPTER]` and write nothing (plan decision 4). They render the
-  frames they need from the client's state as the run reaches them and
-  keep them in memory: `shot` one PNG at its tick, `video` an animated PNG
-  of tick 0 and every K-th tick after it, each frame shown for K ticks.
-  The last frame is the last multiple of K not past N, so `--ticks` a
-  multiple of `--every` ends on the run's last state.
-  The file is written once the run reaches its last tick, so a run that a
-  budget stops early leaves none. Both files are 8-bit sRGB RGBA with an
-  `sRGB` chunk and nothing else, so the same pixels give the same bytes.
-  A frame that fails once the GPU is open (`[E-SCENE]`, `[E-GPU]`) is a
-  bug: it panics, and the hook writes `crash.json` (exit 12).
-- **Golden shots** (plan decision 3, spec 8.3) are the testbed's harness,
-  `crates/game-testbed/tests/shots.rs` (with `shots/compare.rs` and the
-  GPU-free tests in `shots/parts.rs`). It runs `shot` for four 320x240
-  pictures of seed 1, dot-square at ticks 0, 120 and 240 and ten dots at
-  tick 0, and compares each with `crates/game-testbed/golden/<name>.png`
-  as decoded RGBA8 pixels, never as PNG bytes.
-  - On the pinned configuration the pixels must be equal: Linux x64 with
-    Mesa 25.2.7's lavapipe (gfx-rs/ci-build build26), LLVM 18.1.3 and
-    256-bit vectors, as the report's `gpu` object names them. The harness
-    passes `LP_NATIVE_VECTOR_WIDTH=256`, and no other `LP_*` or
-    `GALLIVM_*` variable, to every shot.
-  - Elsewhere FLIP's mean and its 99th and 99.9th percentiles must stay
-    within `golden/thresholds.toml`; the 99.9th sees a dot that is
-    missing, which the other two do not.
-  - `golden/` is the owner's, and the harness never writes there. While it
-    holds no golden, each shot is saved as a candidate in
-    `target/golden-candidates/` and reported as `[W-NO-GOLDEN]`, and a
-    FLIP comparison without thresholds as `[W-NO-THRESHOLDS]`. Neither
-    fails the test, and neither is a pass for acceptance: the run's
-    summary, `shots.json`, gives each shot's status. Once one golden
-    exists, every shot needs its own, and a golden that no shot names
-    fails. A failure saves the shot there too, and a FLIP comparison its
-    error map (`flip/`).
-  - `ENG_SHOT_MODE=exact` fails on any configuration but the pinned one.
-    `ENG_GOLDEN_DIR` compares with another directory, which must exist
-    outside `golden-candidates/` and hold every shot's golden: another
-    machine's candidates, or an edited copy. An edited copy fails only in
-    exact mode, as FLIP passes a single changed pixel by design, so
-    criterion 12's selftest needs the pinned lavapipe.
-  - Without an adapter the test skips, unless `ENG_REQUIRE_GPU=1`.
+  and 1. With nothing in view the top-down draw is skipped. Reports carry
+  each frame's peaks ("The report"). A `[gpu]` table in `budgets.toml`
+  limits them for each frame of `shot` and `video` (`[E-BUDGET]`, exit
+  13); its values are proposed for gate G5, and until then nothing is
+  limited.
 
-### `play`: the frame loop
+## The frame
 
-`eng-app` composes the platform, the session, live input and the renderer
-into `play` (spec 6.6), and the testbed enters through it (`eng_app::main`,
-which is eng-cli's probe plus `play`). eng-cli parses `play`'s flags and
-hands eng-app a `PlayRun`: `run`'s session, tick, hash stream, recording
-and report. eng-app owns the clock, the window and drawing.
+`play` (spec 6.6) is the game. `eng-app` composes the desktop platform,
+the in-process session, live input and the renderer, and the testbed
+enters through it (`eng_app::main`, eng-cli's probe plus `play`). eng-cli
+parses `play`'s flags and hands eng-app a `PlayRun`: `run`'s session,
+tick, hash stream, recording and report. eng-app owns the clock, the
+window and drawing. One frame, from the OS to the screen:
 
 ```
-eng-platform-winit (or headless) ──▶ App callbacks on eng-app's Frames
-  event: keys ──▶ LiveInput (held keys, a latch for taps; focus lost releases all)
-         CloseRequested ──▶ exit; Resized ──▶ surface and targets; Occluded ──▶ no drawing
-  frame: TickClock::due(now) ──▶ at most 5 ticks, the rest dropped ([W-TICK-DROP])
-           each tick: LiveInput::sample(tick) ──▶ quit? exit : PlayRun::step(command)
-         draw: extraction(previous, current, alpha) ──▶ Renderer::render_to ──▶ present
-         Wake::At(the next tick)
-  stop:  PlayRun::finish ──▶ --hashes, --record, --report, the console summary
+OS events ─eng-platform-winit─▶ PlatformEvent ─▶ eng-app's Frames (an App)
+event  keys ─▶ LiveInput (held keys, a latch for taps; focus lost releases all)
+       CloseRequested ─▶ exit;  Resized ─▶ surface and targets;  Occluded ─▶ no drawing
+frame  TickClock::due(now) ─▶ at most 5 ticks, the rest dropped ([W-TICK-DROP])
+       each tick: LiveInput::sample(tick) ─▶ quit? exit : PlayRun::step(command)
+         Session::tick: client ─Commands─▶ Memory ─▶ server: Sim::step, record
+                        server ─Snapshot─▶ Memory ─▶ client: restore ─▶ hash stream
+       draw: extraction(previous, newest, alpha) ─▶ TopDownScene
+             ─eng-render─▶ draw ─▶ tonemap ─▶ present ─▶ WindowSurface::present
+       Wake::At(the next tick)
+stop   PlayRun::finish ─▶ --hashes, --record, --report, the console summary
 ```
 
-- **Ticks come from the timer**, a fixed-timestep accumulator in whole
-  nanoseconds (1/60 s rounded down, as `run`'s headless pace), woken with
-  `Wake::At`. A wake runs at most 5 ticks; the rest are dropped, counted
-  in the report's `dropped_ticks` and logged as `[W-TICK-DROP]`. The
-  simulation never skips a tick; it falls behind the clock.
-- **Input.** Each tick samples `LiveInput` once. `quit` (Esc by default)
-  ends the run before that tick and never reaches the simulation; so does
-  a close request. With `--input` the script's commands replace the
-  keyboard's and only `quit` is read, so `play --input` gives `run`'s hash
-  stream tick for tick (acceptance `native-window`).
+- **Ticks come from the timer** (`TickClock`), a fixed-timestep
+  accumulator in whole nanoseconds of the platform's clock (1/60 s
+  rounded down, as the headless ticker paces `run`), woken with
+  `Wake::At`. A wake runs at most 5 ticks (`MAX_TICKS_PER_WAKE`); the
+  clock moves past the rest, which are counted in the report's
+  `dropped_ticks` and logged as `[W-TICK-DROP]`. The simulation never
+  skips a tick; it falls behind the clock.
+- **Input.** Each tick samples `LiveInput` once, before its step. `quit`
+  (Esc by default) ends the run before that tick and never reaches the
+  simulation; so does a close request. With `--input` the script's
+  commands replace the keyboard's and only `quit` is read, so `play
+  --input` gives `run`'s hash stream tick for tick (acceptance
+  `native-window`).
+- **The session.** Each tick is `run`'s `Session::tick` ("The session").
+  Before each step `PlayRun` restores the client's state into a second
+  sim, so a frame has the previous state too.
 - **Drawing.** After the ticks, the game's extraction builds the scene
   from the previous and newest states at the clock's alpha, and
-  eng-render draws it into the window's image, the engine-owned targets
-  kept at the window's size. Nothing is acquired while the window is
-  minimised or occluded (macOS can block a second); ticks go on.
+  eng-render draws it through the three passes into the window's image
+  (Fifo), the engine-owned targets kept at the window's size. Frames come
+  once per tick, when the loop wakes for it, plus one per batch of events
+  (keys, a resize), so alpha mostly stays near 0; a display faster than
+  the tick rate gets no extra frames yet.
+- **Occlusion.** Nothing is acquired while the window is minimised or
+  occluded (on macOS acquiring can block for a second); ticks go on. On
+  macOS wgpu 30 also refuses to acquire while the window is not visible,
+  so a locked or sleeping screen presents nothing. Each frame compares
+  the window's size with the surface's, so a resize whose event never
+  came is caught.
 - **The end.** `--ticks N` ends after tick N; `quit` and a close request
   end it with exit 0. `stop` writes the files, so they are saved even
   where a desktop's quit command ends the process right after it (macOS).
   Without a display `play` exits 64 with `[E-NO-DISPLAY]`, without an
   adapter with `[E-NO-ADAPTER]`, before the first tick and writing
   nothing. A panic, `--panic-at-tick` included, goes to eng-cli's hook
-  (`crash.json`, exit 12).
+  (`crash.json`, exit 12), and so does a frame that fails once the GPU
+  is open, a lost surface included.
 - **Tests.** `crates/game-testbed/tests/twin.rs` runs the same loop on the
   headless platform with scripted keys (the headless twin, every target);
   `crates/game-testbed/tests/play.rs` runs the binary in a real window as
   a child process, since winit needs the main thread (plan, risk table).
+
+## Shots, the proof video and goldens
+
+`shot` and `video` (`crates/eng-cli/src/capture.rs`) run as `run` does,
+on the headless platform, and draw the top-down view offscreen from the
+client's state at alpha 1, so the pictures are exact.
+
+- **Files.** They open the GPU before the simulation runs; without an
+  adapter they exit 64 with `[E-NO-ADAPTER]` and write nothing (plan
+  decision 4). `shot` writes one PNG at its tick; `video` an animated PNG
+  of tick 0 and every K-th tick after it, each frame shown for K ticks.
+  The last frame is the last multiple of K not past N, so `--ticks` a
+  multiple of `--every` ends on the run's last state. Frames are kept in
+  memory and the file is written once the run reaches its last tick, so
+  a run that a budget stops early leaves none. Both files are 8-bit sRGB
+  RGBA with an `sRGB` chunk and nothing else, so the same pixels give the
+  same bytes. A frame that fails once the GPU is open (`[E-SCENE]`,
+  `[E-GPU]`) is a bug: it panics, and the hook writes `crash.json` (exit
+  12).
+- **Golden shots** (plan decision 3, spec 8.3):
+  `crates/game-testbed/tests/shots.rs` (with `shots/compare.rs` and the
+  GPU-free tests in `shots/parts.rs`) runs the binary's `shot` for four
+  320x240 pictures of seed 1 (dot-square at ticks 0, 120 and 240, ten dots
+  at tick 0) and compares each with `crates/game-testbed/golden/<name>.png`
+  as decoded RGBA8 pixels, never as PNG bytes. Without an adapter it
+  skips, unless `ENG_REQUIRE_GPU=1`.
+  - On the pinned configuration the pixels must be equal: Linux x64 with
+    Mesa 25.2.7's lavapipe (gfx-rs/ci-build build26), LLVM 18.1.3 and
+    256-bit vectors, as the report's `gpu` object names them. The harness
+    passes `LP_NATIVE_VECTOR_WIDTH=256`, and no other `LP_*` or
+    `GALLIVM_*` variable, to every shot. `ENG_SHOT_MODE=exact` fails on
+    any other configuration.
+  - Elsewhere FLIP's mean and its 99th and 99.9th percentiles must stay
+    within `golden/thresholds.toml`; the 99.9th sees a dot that is
+    missing, which the other two do not.
+  - `ENG_GOLDEN_DIR` compares with another directory, which must exist
+    outside `golden-candidates/` and hold every shot's golden: another
+    machine's candidates, or an edited copy. An edited copy fails only in
+    exact mode, as FLIP passes a single changed pixel by design, so
+    criterion 12's selftest (patch X5, gate G5) needs the pinned lavapipe.
+- **The golden flow.** `golden/` is the owner's, and the harness never
+  writes there; on main it does not exist yet. While it holds no golden,
+  each shot is saved as a candidate in `target/golden-candidates/` and
+  reported as `[W-NO-GOLDEN]`. A FLIP comparison with no
+  `thresholds.toml` beside the goldens (another machine's candidates
+  through `ENG_GOLDEN_DIR`, say) is measured and reported as
+  `[W-NO-THRESHOLDS]`. Neither fails the test, and neither is a pass for
+  acceptance: the run's `golden-candidates/shots.json` gives the
+  configuration, the machine and each shot's status. The owner commits
+  candidates from the pinned lavapipe as the goldens, byte for byte, and
+  the FLIP limits (gates G5 and G6). From then on every shot needs its
+  own golden, and a golden that no shot names fails. A failing shot is
+  saved as a candidate, and every FLIP comparison leaves its error map in
+  `flip/`.
 
 ## Invariants
 
@@ -468,7 +517,8 @@ eng-platform-winit (or headless) ──▶ App callbacks on eng-app's Frames
 | Cross-architecture equality | `cargo xtask compare-hashes` in CI's summary job | never changes |
 | `eng-math` known answers | `crates/eng-math/tests/known_answers.txt` | the owner |
 | Golden vectors | `crates/*/tests/golden.rs` | the owner |
-| Golden images and FLIP thresholds | `crates/game-testbed/golden/`, compared by `crates/game-testbed/tests/shots.rs` and `tests/shots/` | the owner |
+| Golden images and FLIP thresholds | `crates/game-testbed/golden/` (none yet), compared by `crates/game-testbed/tests/shots.rs` and `tests/shots/` | the owner |
+| Harnesses acceptance relies on | the test files `protected.toml` lists | the owner |
 | Semantic assertions | `crates/game-testbed/scenarios/*.assert.toml` | the owner |
 | Budgets | `budgets.toml` | the owner |
 | Hash streams (change detectors) | `crates/game-testbed/hashes/` | the PR, with a reason; the reviewer approves |
@@ -484,24 +534,25 @@ eng-platform-winit (or headless) ──▶ App callbacks on eng-app's Frames
   `hash_equality`), then the replays. Each step is an entry in the job's
   report (`target/ci/report.json`, copied to `target/ci/reports/`), which
   `cargo xtask acceptance` reads.
-- The probe (`eng-cli`, linked by every game) runs headless with scripted
-  input through the in-process session (above), on the headless platform,
-  writes reports, events,
-  hash streams and recordings, and verifies replays. `shot` and `video`
-  render offscreen PNG files and the proof video ("The frame"). Exit codes are listed
-  in `AGENTS.md`. Its panic hook (in
-  `exit.rs`) writes `crash-<game>-<pid>.json` beside the agent log and
-  exits 12. The file holds the version stamp's `build` object (below) as
-  `version`, the command line, seed, tick,
-  thread, the panic's message and location, the backtrace, and the log
-  file's path and last 50 lines. Only the
-  first panic writes the file. Nothing in the hook may panic or wait on a
-  lock for long, because a panic inside the hook aborts the process
-  instead. `crates/game-testbed/tests/exit_codes.rs` runs the real binary
-  for each exit code, and `crash_json.rs` uses `run --panic-at-tick` to
-  check every field of the crash file.
-- `<game> --version` and `<game> --version --json` print the version
-  stamp (below).
+- The probe (`eng-cli`, linked by every game) runs `run`, `dump-world`,
+  `shot`, `video` and `play` through the in-process session: headless
+  with scripted input, offscreen for `shot` and `video`, in a window for
+  `play` ("The frame"). It writes reports, events, hash streams and
+  recordings; `replay verify` steps the sim directly from a recording.
+  Exit codes are listed in `AGENTS.md`. `<game> --version` and `<game>
+  --version --json` print the version stamp (below).
+- **`crash.json`.** The probe's panic hook (`crates/eng-cli/src/exit.rs`),
+  installed for every command, `play` included, writes
+  `crash-<game>-<pid>.json` beside the agent log (`target/agent-logs/`,
+  or `$ENG_AGENT_LOG_DIR`) and exits 12. It holds `crash_version` 1, the
+  game, the version stamp's `build` object (below) as `version`, the
+  arguments, seed and tick, the thread, the panic's message and location,
+  the backtrace (cut at 400 lines), and the log file's path and last 50
+  records. Only the first panic writes the file. Nothing in the hook may
+  panic or wait on a lock for long, because a panic inside the hook
+  aborts the process instead. `crates/game-testbed/tests/exit_codes.rs`
+  runs the real binary for each exit code, and `crash_json.rs` uses `run
+  --panic-at-tick` to check every field of the crash file.
 - Claude Code hooks (`.claude/settings.json`) run a copy of xtask built
   from `main` into `<git dir>/eng-hooks/`: the guard (protected paths, bless
   commands), rustfmt after edits, `quick` at the end of a turn. Before the
@@ -524,17 +575,17 @@ and `gpu`. `ticks_requested` is `null` for a `play` without `--ticks`.
 - `budgets` holds each limit from `budgets.toml` (`null` when unset): the
   `[sim]` limits with the peaks seen, the four `[gpu]` limits, and
   `exceeded`, the first excess (exit 13).
-- `gpu` is `null` for `run` and for a `play` without a window. For
-  `play` it describes the window: its last size, the frames presented, and
-  `surface_format`, the format its surface got (`Bgra8UnormSrgb`, or
-  `Bgra8Unorm` drawn through an sRGB view).
-  For `shot` and `video` it is an object even
-  when a budget stopped the run before the first frame (`frames` 0,
-  `per_frame` `null`). It holds eng-gpu's capability report (`adapter`, `backend`, `device_type`,
-  `vendor`, `device`, `driver`, `driver_info`, `tier` and `capabilities`,
-  five booleans), the image's `width` and `height`, the `frames`
-  rendered, and `per_frame`: the largest `draws`, `pipeline_switches`,
-  `bind_group_switches` and `upload_bytes` of any frame.
+- `gpu` is `null` for `run` and for a `play` without a window. Otherwise
+  it holds eng-gpu's capability report (`adapter`, `backend`,
+  `device_type`, `vendor`, `device`, `driver`, `driver_info`, `tier` and
+  `capabilities`, five booleans), the image's `width` and `height` (for
+  `play`, the window's last size), the `frames` rendered or presented,
+  and `per_frame`: the largest `draws`, `pipeline_switches`,
+  `bind_group_switches` and `upload_bytes` of any frame (`null` before
+  the first). `play` adds `surface_format`, the format its surface got
+  (`Bgra8UnormSrgb`, or `Bgra8Unorm` drawn through an sRGB view). For
+  `shot` and `video` it is an object even when a budget stopped the run
+  before the first frame (`frames` 0).
 - Stability follows the stamp's rule: keys may be added within a version,
   as `gpu` and the `[gpu]` limits were in rung 1b, and readers look keys up
   by name. Renaming, removing or changing a key bumps `report_version`.

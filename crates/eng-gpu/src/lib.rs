@@ -18,11 +18,12 @@
 //! - **[`GpuReport`]**, the capability report: the adapter, its backend,
 //!   device type and driver, the tier, and what it supports beyond Tier 0
 //!   ([`Capabilities`]: timestamp queries and the later tiers' features).
-//! - **[`Graph`]**, the fixed render graph (decision 1). Passes declare what
-//!   they read and write ([`PassDecl`]): [`DRAW`] writes the
-//!   [`Resource::Scene`], [`TONEMAP`] reads it and writes the
-//!   [`Resource::Output`], and [`PRESENT`] reads the output and writes the
-//!   [`Resource::Surface`], in a [`Target::Surface`] graph only.
+//! - **[`Graph`]**, the fixed render graph (decision 1): three passes, not
+//!   the spec's two (ADR-0017, proposed). Passes declare what they read and
+//!   write ([`PassDecl`]): [`DRAW`] writes the [`Resource::Scene`],
+//!   [`TONEMAP`] reads it and writes the [`Resource::Output`], and
+//!   [`PRESENT`] reads the output and writes the [`Resource::Surface`], in a
+//!   [`Target::Surface`] graph only.
 //!   [`Graph::new`] checks the declarations; [`Graph::fixed`] is rung 1b's
 //!   list. Ordering, culling and pooling come in rung 2.
 //! - **[`Pass`]**: each frame, [`Graph::render`] has every pass record into a

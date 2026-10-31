@@ -14,7 +14,8 @@ The first games look like the first Doom. The owner's end goal is "highly optimi
 The GPU is used from rung 1. The Doom look is a set of passes on a modern linear HDR pipeline.
 
 - **Render graph.** Passes declare the virtual resources they read and write. This rule is fixed.
-  - Rung 1b: a fixed two-pass graph, draw then present.
+  - Rung 1b: a fixed two-pass graph, draw then present. (Built as three
+    passes, draw, tonemap and present: ADR-0017, proposed.)
   - Rung 2: ordering, culling of unused passes, transient-texture pooling, labels and offscreen targets.
   - The API grows by ADR.
 - **Colour and light.**

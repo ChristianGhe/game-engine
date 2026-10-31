@@ -13,26 +13,34 @@ and its `acceptance.json`. Append what you did to that rung's `PROGRESS.md`.
 cargo xtask quick              # before every commit: fmt, clippy, arch, size, docs, tests, replays
 cargo xtask ci --job lint      # CI jobs: lint test riscv wasm selftest summary all
 cargo xtask arch-check         # layering and core-set rules (architecture.toml)
-cargo xtask replay             # testbed scenarios vs committed hash streams
-cargo xtask replay --regen     # after an intended simulation change; say why in the commit
-cargo xtask selftest           # deliberate violations must fail
+cargo xtask replay [--regen]   # scenarios vs committed hash streams; --regen: see "Tests and oracles"
+cargo xtask selftest [CASE]    # deliberate violations must fail
+cargo xtask help               # the rest: docs-check, size-check, compare-hashes, acceptance, ...
 cargo test -p <crate>          # one crate
 cargo run -p game-testbed -- run --headless --ticks 120 --seed 1 --report r.json
 cargo run -p game-testbed -- dump-world --at-tick 60 --out world.json
 cargo run -p game-testbed -- shot --at-tick 60 --out shot.png --report r.json  # GPU, offscreen
 cargo run -p game-testbed -- video --ticks 240 --out proof.apng [--every K]    # animated PNG
 cargo run -p game-testbed -- play [--ticks 240 --input s.toml --hashes h.txt]  # window; Esc quits
-cargo run -p game-testbed -- replay verify rec.rec
-cargo run -p game-testbed -- --version --json   # build stamp, sim protocol, schema versions
+cargo run -p game-testbed -- replay verify rec.rec   # `replay dump rec.rec` prints it as JSON
+cargo run -p game-testbed -- --version --json   # build stamp; `help` lists the commands
 ```
 
-Probe exit codes: 0 ok, 10 assertion failed, 11 desync, 12 panic,
-13 budget exceeded, 64 usage (also `[E-NO-ADAPTER]`: no GPU for `shot`,
-`video` or `play`; `[E-NO-DISPLAY]`: no window for `play`). Full logs:
-`target/agent-logs/*.jsonl`; grep for tags such as `[E-DESYNC]`,
-`[E-ASSERT]`, `[E-NAN]`, `[E-ARCH-*]`. A panic also writes
-`target/agent-logs/crash-<game>-<pid>.json` (backtrace, seed, tick, last
-log lines).
+Probe exit codes: 0 ok, 10 assertion failed, 11 desync, 12 panic, 13 budget
+exceeded (also `[E-SNAPSHOT-SIZE]`), 64 usage (also `[E-NO-ADAPTER]`: no GPU
+for `shot`, `video` or `play`; `[E-NO-DISPLAY]`: no window for `play`). Full
+logs: `target/agent-logs/` (the probe's `*.jsonl`, xtask's `xtask-<step>.log`);
+grep for tags such as `[E-DESYNC]`, `[E-ASSERT]`, `[E-NAN]`, `[E-GPU]`,
+`[E-GOLDEN]`, `[W-NO-GOLDEN]`, `[W-TICK-DROP]`, `[E-ARCH-*]`. A panic also
+writes `crash-<game>-<pid>.json` there (backtrace, seed, tick, last log lines).
+
+Environment: `ENG_REQUIRE_GPU=1` and `ENG_REQUIRE_DISPLAY=1` make GPU and
+window tests fail instead of skipping; `ENG_GPU_ADAPTER=<name>` picks an
+adapter by name; `ENG_SHOT_MODE=exact` and `ENG_GOLDEN_DIR=<dir>` steer
+the golden shots; `ENG_AGENT_LOG_DIR` moves the logs; `WGPU_DEBUG=1` and
+`WGPU_VALIDATION=1` add GPU labels and validation; `CI` set to anything
+makes xtask use `--locked` and deny warnings. xtask sets `ENG_ENGINE_SHA`,
+`ENG_DIRTY`, `ENG_CI_RUN` and `SOURCE_DATE_EPOCH` for the version stamp.
 
 ## Conventions that differ from usual Rust
 
@@ -75,12 +83,10 @@ The simulation must give bit-identical results on every OS and CPU.
 
 ## Crates and layers
 
-L0 `eng-schema-core`, `eng-derive`, `eng-math`, `eng-core` < L1 `eng-ecs`,
-`eng-net-transport`, `eng-net-wire`, `eng-schema-json`, `eng-input`,
-`eng-platform-api`, `eng-platform-headless`, `eng-platform-winit` < L2
-`eng-sim`, `eng-session`, `eng-collision-api`, `kit-fps`, `game-testbed-sim`
-< L3 `eng-gpu`, `eng-render` < L4 `eng-cli`, `eng-app` < `game-testbed`
-(binary). `xtask` is the tool layer.
+L0 schema, derive, math, core < L1 ECS, transport, wire, JSON, input,
+platforms < L2 sim, session, collision, kits, `game-testbed-sim` < L3 GPU,
+render < L4 `eng-cli` (the probe), `eng-app` < `game-testbed`; `xtask` is
+tools. Each crate and edge: `docs/ARCHITECTURE.md`, "Layers".
 
 - A new crate goes in `crates/<name>/` and must be listed in
   `architecture.toml` (protected: ask the owner). Follow "Adding a crate"
@@ -110,7 +116,8 @@ L0 `eng-schema-core`, `eng-derive`, `eng-math`, `eng-core` < L1 `eng-ecs`,
 
 Listed in `protected.toml`: semantic assertions (`*.assert.toml`),
 acceptance lists, `budgets.toml`, known-answer hashes, golden vectors
-(`crates/*/tests/golden.rs`), snapshots, proptest regressions, and the check
+(`crates/*/tests/golden.rs`) and images (`**/golden/**`), snapshots,
+proptest regressions, acceptance harnesses (by name), and the check
 tooling (`xtask/`, `clippy.toml`, `architecture.toml`, `deny.toml`,
 `rust-toolchain.toml`, `.cargo/config.toml`, `.github/`, `.claude/`, and the
 `[workspace.lints]` and `[profile]` tables of the root `Cargo.toml`).
@@ -121,12 +128,11 @@ tooling (`xtask/`, `clippy.toml`, `architecture.toml`, `deny.toml`,
   or unlocks it by writing `.claude/guard-unlock` themselves.
 - With direct commits to `main` the guard is the gate (ADR-0014); CI's
   `oracle` check applies only to pull requests. The guard also refuses git
-  commands that would bring an old version of a protected file back
-  (`revert`, `reset`, `checkout` of a commit, ...), git settings that run
-  programs, code piped into a shell, and archive extraction in the repo
-  (ADR-0015). Its message says what to do instead. After each tool call
-  it puts back any protected file the call changed anyway, keeping what
-  was written under `target/guard-quarantine/`.
+  commands that bring an old protected file back (`revert`, `reset`,
+  `checkout` of a commit, ...), git settings that run programs, code piped
+  into a shell, and archive extraction in the repo (ADR-0015); its message
+  says what to do instead. It puts back any protected file a tool call
+  changed anyway, keeping what was written in `target/guard-quarantine/`.
 - `passes` in `acceptance.json` is computed by CI; never set it.
 
 ## Workflow
@@ -134,8 +140,7 @@ tooling (`xtask/`, `clippy.toml`, `architecture.toml`, `deny.toml`,
 - Commit directly to `main`; there are no PRs (ADR-0014). Before each
   commit run `cargo xtask quick`; for anything non-trivial, have the
   `reviewer` subagent check the diff against the rung's acceptance list.
-- Agents never push or change GitHub (`gh` writes); the owner pushes
-  (ADR-0015).
+- Agents never push or change GitHub (`gh` writes); the owner pushes (ADR-0015).
 - Under the open-pulsar loop (your instructions say the outer loop handles
   version control), commit nothing and only read jj: the loop records each
   task as a jj change. Finish each task with `cargo xtask quick` green.

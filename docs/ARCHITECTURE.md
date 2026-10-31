@@ -1,9 +1,9 @@
 # Architecture
 
-How the engine fits together as of rung 1a. The plan and its reasons are in
-`docs/superpowers/specs/2026-10-20-ai-built-engine-design.md`; decisions in
-`docs/adr/`. Keep this file short and true: update it in the commit that changes
-what it describes.
+How the engine fits together, as built so far in rung 1b. The plan and its
+reasons are in `docs/superpowers/specs/2026-10-20-ai-built-engine-design.md`;
+decisions in `docs/adr/`. Keep this file short and true: update it in the
+commit that changes what it describes.
 
 ## Layers
 
@@ -13,7 +13,7 @@ L1  eng-ecs  eng-net-transport  eng-net-wire                   (core set)
     eng-schema-json  eng-input  eng-platform-headless          (std)
     eng-platform-api*  eng-platform-winit*                     (std)
 L2  eng-sim  eng-collision-api  kit-fps  game-testbed-sim      (core set)
-    eng-session*                                               (core set)
+    eng-session                                                (core set)
 L3  eng-gpu*  eng-render*                                      (std)
 L4  eng-cli  eng-app*                                          (std)
 game  game-testbed (binary)        tool  xtask
@@ -101,9 +101,8 @@ KeyEvent (Down/Up of a Key, FocusLost) ──LiveInput::handle──▶ held key
 ## The wire format
 
 `eng-net-wire` turns session messages into bytes and back (spec 6.8).
-Nothing calls it yet; `eng-session` will (rung 1b, T6), in-process over
-Memory too, so there is one code path. The crate docs list the five
-messages and their layouts.
+`eng-session` calls it, in-process over Memory too, so there is one code
+path. The crate docs list the five messages and their layouts.
 
 - A message is its kind (`u8`), the low 32 bits of a server tick (`u32`)
   and a body; little-endian, fixed width.
@@ -115,13 +114,50 @@ messages and their layouts.
   restores a snapshot only from a session with the same constants.
 - Commands use eng-core's canonical `PlayerCommand` layout, the one
   recordings use: up to five per message, oldest first.
-- A snapshot's state is the sim's canonical bytes, opaque to the codec, at
-  most 65,535 of them.
+- A snapshot's state is opaque to the codec, at most 65,535 bytes.
+  `eng-session` sends `Sim::snapshot()`: the protocol version, then the
+  canonical state.
 - A `Hello` from another wire version is read only up to its version and
   answered with `Denied`. The two become frozen in rung 5, whose handshake
   fixes their final form; until then no two builds exchange messages.
 - Decoders never panic, cap every count and length, and accept only
   canonical bytes (`tests/never_panic.rs`).
+
+## The session
+
+`eng-session` runs a server and its clients over a `Transport` (spec 6.6,
+6.8), every message encoded with `eng-net-wire`. Single-player is the same
+server in-process over Memory: `run` and `dump-world` drive a server and
+player 0's client, and `play` will too (T11). The crate docs draw the
+exchange: `Hello`, then `Welcome` and the current state (or `Denied`),
+then `Commands` up and a `Snapshot` down every tick.
+
+- The server owns the authoritative `Sim`. At each tick a slot with a
+  client gets that client's command for the tick, else its last command
+  restamped. A slot without a client, never joined or gone, idles, keeping
+  its view angles. Commands may arrive up to 64 ticks early (`MAX_LEAD`);
+  the first copy of a tick's command is kept.
+- `Server::step` returns the commands it applied, one per slot: the session
+  recording. `Server::applied` keeps the last tick's, also when its
+  snapshot failed. The probe writes them to `--record`'s file, and `replay
+  verify` steps the sim directly from them.
+- The server keeps each client's newest acknowledged snapshot tick, its
+  baseline (contract 5), which also extends the ticks in that client's next
+  message. The client extends against its newest snapshot. Both start from
+  the `Welcome` tick.
+- A per-client relevance hook answers `Everything`, since rung 1b sends
+  whole states. Deltas, time sync and prediction come with loss (rung 5).
+- A snapshot message must fit one 1,200-byte datagram: 466 bytes for the
+  dot. A larger one fails with `[E-SNAPSHOT-SIZE]`, and `run` and
+  `dump-world` stop there with exit 13, as for a budget; the testbed
+  reaches it at 10 players. Fragmentation arrives in rung 5.
+- The probe reads the client's sim, which restores every snapshot, so the
+  committed hash streams check the whole round trip. It stops with
+  `[E-DESYNC]` (exit 11) if the client lacks the tick just stepped, and
+  with `[E-STEP]` (exit 64) if a command is not for that tick.
+- The session registers nothing in the sim and reads no clock. It drops
+  bytes a peer should not have sent instead of failing; the one error from
+  the network is a snapshot the client's sim refuses.
 
 ## Invariants
 
@@ -159,8 +195,9 @@ messages and their layouts.
   report (`target/ci/report.json`, copied to `target/ci/reports/`), which
   `cargo xtask acceptance` reads.
 - The probe (`eng-cli`, linked by every game) runs headless with scripted
-  input, writes reports, events, hash streams and recordings, and verifies
-  replays. Exit codes are listed in `AGENTS.md`. Its panic hook (in
+  input through the in-process session (above), writes reports, events,
+  hash streams and recordings, and verifies replays. Exit codes are listed
+  in `AGENTS.md`. Its panic hook (in
   `exit.rs`) writes `crash-<game>-<pid>.json` beside the agent log and
   exits 12. The file holds the version stamp's `build` object (below) as
   `version`, the command line, seed, tick,

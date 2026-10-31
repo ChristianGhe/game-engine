@@ -57,9 +57,11 @@ dependencies = [
  "eng-core",
  "eng-input",
  "eng-math",
+ "eng-net-transport",
  "eng-platform-headless",
  "eng-schema-core",
  "eng-schema-json",
+ "eng-session",
  "eng-sim",
  "serde",
 ]
@@ -171,6 +173,15 @@ dependencies = [
 [[package]]
 name = "eng-session"
 version = "0.1.0"
+dependencies = [
+ "eng-core",
+ "eng-ecs",
+ "eng-net-transport",
+ "eng-net-wire",
+ "eng-schema-core",
+ "eng-sim",
+ "proptest",
+]
 
 [[package]]
 name = "eng-sim"
@@ -193,7 +204,10 @@ name = "game-testbed"
 version = "0.1.0"
 dependencies = [
  "eng-cli",
+ "eng-core",
  "eng-input",
+ "eng-schema-json",
+ "eng-sim",
  "game-testbed-sim",
  "serde",
  "serde_json",

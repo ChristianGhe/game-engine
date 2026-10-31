@@ -1,0 +1,221 @@
+Patch T6 oracles (rung 1b, task T6): protect eng-session's hash-equality
+test, and run criterion 11's three test files as the `wire-session` step.
+
+- crates/eng-session/tests/hash_equality.rs joins protected.toml and
+  .github/CODEOWNERS (proposal 8, amendments 11 and 19): criterion 11's
+  "the session gives the same hashes as stepping the simulation
+  directly". Its header now says it is protected.
+- X7's `wire-session` step (amendment 18): `cargo xtask ci --job test`
+  runs eng-net-wire's `golden` and `never_panic` and eng-session's
+  `hash_equality` in one `cargo test`, after `live-input`. A row of
+  `HARNESSES` now lists its test files. The unit test checks that each
+  file exists, and that no other package in the same step has a test
+  target of that name (`tests/<name>.rs`, `tests/<name>/main.rs` or a
+  `[[test]]` entry), which the one `cargo test` would also run.
+- docs/ARCHITECTURE.md names the new step.
+
+Base: main with the commit that adds this file (rung 1b, T6). At the repo
+root, run `git apply` with this file, then `cargo xtask quick` and `cargo
+xtask ci --job test`. PROGRESS.md, session 17's T6 entry, says how it was
+tested.
+Text before the first `diff --git` line is ignored by `git apply`.
+
+diff --git a/.github/CODEOWNERS b/.github/CODEOWNERS
+index db4539f9b6d186cb8e61800062f4f53d7d0862c2..d4f25627425372a5ff5368740c102f0ed7b39bc5 100644
+--- a/.github/CODEOWNERS
++++ b/.github/CODEOWNERS
+@@ -14,6 +14,7 @@
+ /crates/game-testbed/tests/version.rs @ChristianGhe
+ /crates/eng-input/tests/live_input.rs @ChristianGhe
+ /crates/eng-net-wire/tests/never_panic.rs @ChristianGhe
++/crates/eng-session/tests/hash_equality.rs @ChristianGhe
+ /crates/game-testbed/scenarios/scenarios.toml @ChristianGhe
+ /crates/*/tests/golden.rs @ChristianGhe
+ **/golden/ @ChristianGhe
+diff --git a/crates/eng-session/tests/hash_equality.rs b/crates/eng-session/tests/hash_equality.rs
+index a6e9d1e3b88be33a3ec22da6500eba5129e706a3..0ddb9018130ee1c802d192314744d5c0959daf13 100644
+--- a/crates/eng-session/tests/hash_equality.rs
++++ b/crates/eng-session/tests/hash_equality.rs
+@@ -1,10 +1,9 @@
+ //! The session gives the same state hashes as stepping the simulation
+ //! directly (spec 6.8; rung 1b criterion 11, `wire-session`). PROTECTED
+-//! ORACLE once the owner applies `docs/rungs/1b/patches/t6-oracles.patch`:
+-//! "one code path" is safe only while a session over Memory, with every
+-//! message encoded to bytes, changes nothing in the simulation. The test sim
+-//! is defined here and not shared, so nothing outside this file can weaken
+-//! the check.
++//! ORACLE: "one code path" is safe only while a session over Memory, with
++//! every message encoded to bytes, changes nothing in the simulation. The
++//! test sim is defined here and not shared, so nothing outside this file
++//! can weaken the check.
+ //!
+ //! - Two clients drive the two player slots. At every tick from 0, the
+ //!   server's state and each client's restored state hash the same as a sim
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index 161237cbc54bf61558b70c9bb6927ebc84f53cc5..8eb27bf4b8730fba7d439f04dfc2020cc1f051e7 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -190,8 +190,10 @@ then `Commands` up and a `Snapshot` down every tick.
+ - `cargo xtask` is the only entry point; CI only calls it.
+ - CI's `test` job runs the workspace's tests, then, each as a step of its
+   own, the harnesses whose results acceptance relies on: `known-answers`,
+-  `exit-codes`, `crash-json`, `version` and `live-input` (`HARNESSES` in
+-  `xtask/src/ci.rs`), then the replays. Each step is an entry in the job's
++  `exit-codes`, `crash-json`, `version`, `live-input` and `wire-session`
++  (`HARNESSES` in `xtask/src/ci.rs`; `wire-session` runs eng-net-wire's
++  `golden` and `never_panic` and eng-session's `hash_equality`), then the
++  replays. Each step is an entry in the job's
+   report (`target/ci/report.json`, copied to `target/ci/reports/`), which
+   `cargo xtask acceptance` reads.
+ - The probe (`eng-cli`, linked by every game) runs headless with scripted
+diff --git a/protected.toml b/protected.toml
+index 4f6d660842afa77055f990ea96ba61890e03dca7..8189bd9b34a7b3312f1e93408689d2922c0749a4 100644
+--- a/protected.toml
++++ b/protected.toml
+@@ -26,6 +26,7 @@ paths = [
+   "crates/game-testbed/tests/version.rs",
+   "crates/eng-input/tests/live_input.rs",
+   "crates/eng-net-wire/tests/never_panic.rs",
++  "crates/eng-session/tests/hash_equality.rs",
+   "crates/game-testbed/scenarios/scenarios.toml",
+   "crates/*/tests/golden.rs",
+   "**/golden/**",
+diff --git a/xtask/src/ci.rs b/xtask/src/ci.rs
+index 8bd00832612a76cba85182a39387415a8adc9520..b763b8d83857729c0f8733c1aea455d401695568 100644
+--- a/xtask/src/ci.rs
++++ b/xtask/src/ci.rs
+@@ -68,25 +68,40 @@ fn tests(root: &Path) -> Result<String, String> {
+ }
+ 
+ /// The `test` job's named harness steps, in order: the step's name, then
+-/// the package and test target it runs (`crates/<package>/tests/<target>.rs`).
+-/// `tests` runs them as well; a step of their own gives each its own entry
+-/// in the job's report, where acceptance checks find steps by name, and its
+-/// own log. They build on the dev profile: `crash_json` looks for the
+-/// `eng_cli::run::run` frame, which a release build without debug info can
+-/// inline away. Like every cargo command here, they get the stamp's four
+-/// values from `util::cargo` (`stamp.rs`), so `version` checks a stamp with
+-/// all of them set.
+-const HARNESSES: [(&str, &str, &str); 5] = [
+-    ("known-answers", "eng-math", "known_answers"),
+-    ("exit-codes", "game-testbed", "exit_codes"),
+-    ("crash-json", "game-testbed", "crash_json"),
+-    ("version", "game-testbed", "version"),
+-    ("live-input", "eng-input", "live_input"),
++/// the test files it runs, each as a package and a test target
++/// (`crates/<package>/tests/<target>.rs`). `tests` runs them as well; a
++/// step of their own gives each its own entry in the job's report, where
++/// acceptance checks find steps by name, and its own log. They build on the
++/// dev profile: `crash_json` looks for the `eng_cli::run::run` frame, which
++/// a release build without debug info can inline away. Like every cargo
++/// command here, they get the stamp's four values from `util::cargo`
++/// (`stamp.rs`), so `version` checks a stamp with all of them set.
++const HARNESSES: [(&str, &[(&str, &str)]); 6] = [
++    ("known-answers", &[("eng-math", "known_answers")]),
++    ("exit-codes", &[("game-testbed", "exit_codes")]),
++    ("crash-json", &[("game-testbed", "crash_json")]),
++    ("version", &[("game-testbed", "version")]),
++    ("live-input", &[("eng-input", "live_input")]),
++    // Criterion 11: the wire format's golden vectors, decoders that never
++    // panic, and a session that hashes the same as stepping the sim.
++    (
++        "wire-session",
++        &[
++            ("eng-net-wire", "golden"),
++            ("eng-net-wire", "never_panic"),
++            ("eng-session", "hash_equality"),
++        ],
++    ),
+ ];
+ 
+-/// One harness from `HARNESSES`, logged under the step's name.
+-fn harness(root: &Path, step: &str, package: &str, target: &str) -> Result<String, String> {
+-    cargo_step(root, step, &["test", "-p", package, "--test", target])
++/// One step from `HARNESSES`, logged under the step's name: a single
++/// `cargo test` that names each of its packages and test targets.
++fn harness(root: &Path, step: &str, files: &[(&str, &str)]) -> Result<String, String> {
++    let mut args = vec!["test"];
++    for &(package, target) in files {
++        args.extend(["-p", package, "--test", target]);
++    }
++    cargo_step(root, step, &args)
+ }
+ 
+ fn core_crates(root: &Path) -> Result<Vec<String>, String> {
+@@ -209,8 +224,8 @@ fn lint(root: &Path, steps: &mut Steps) {
+ 
+ fn test(root: &Path, steps: &mut Steps) {
+     steps.run("tests", || tests(root));
+-    for (step, package, target) in HARNESSES {
+-        steps.run(step, || harness(root, step, package, target));
++    for (step, files) in HARNESSES {
++        steps.run(step, || harness(root, step, files));
+     }
+     steps.run("replay", || replay::run(root, &replay::Options::default()));
+ }
+@@ -378,20 +393,55 @@ mod tests {
+ 
+     use super::HARNESSES;
+ 
+-    /// Every named step runs a test file that exists, under a name of its
+-    /// own, so renaming a harness fails here and not only on CI.
++    /// Whether `package` has a test target named `target`: a file
++    /// `tests/<target>.rs` or `tests/<target>/main.rs`, or a `[[test]]` of
++    /// that name in its manifest.
++    fn has_test_target(root: &Path, package: &str, target: &str) -> bool {
++        let dir = root.join("crates").join(package);
++        let tests = dir.join("tests");
++        if tests.join(format!("{target}.rs")).is_file()
++            || tests.join(target).join("main.rs").is_file()
++        {
++            return true;
++        }
++        let manifest: toml::Table = std::fs::read_to_string(dir.join("Cargo.toml"))
++            .ok()
++            .and_then(|text| text.parse().ok())
++            .unwrap_or_default();
++        manifest
++            .get("test")
++            .and_then(toml::Value::as_array)
++            .is_some_and(|list| {
++                list.iter()
++                    .any(|t| t.get("name").and_then(toml::Value::as_str) == Some(target))
++            })
++    }
++
++    /// Every named step runs test files that exist, under a name of its
++    /// own, so renaming a harness fails here and not only on CI. A step's
++    /// one `cargo test` runs a target in each package it names that has
++    /// one, so a step's target names are each in one of its packages only.
+     #[test]
+-    fn every_harness_step_names_an_existing_test_file() {
++    fn every_harness_step_names_existing_test_files() {
+         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+             .parent()
+             .expect("xtask sits in the repo root");
+-        for (step, package, target) in HARNESSES {
+-            let file = root
+-                .join("crates")
+-                .join(package)
+-                .join("tests")
+-                .join(format!("{target}.rs"));
+-            assert!(file.is_file(), "step {step}: no {}", file.display());
++        for (step, files) in HARNESSES {
++            assert!(!files.is_empty(), "step {step} runs nothing");
++            for &(package, target) in files {
++                let path = root
++                    .join("crates")
++                    .join(package)
++                    .join("tests")
++                    .join(format!("{target}.rs"));
++                assert!(path.is_file(), "step {step}: no {}", path.display());
++                for &(other, _) in files.iter().filter(|f| f.0 != package) {
++                    assert!(
++                        !has_test_target(root, other, target),
++                        "step {step} also runs {other}'s test target {target}"
++                    );
++                }
++            }
+         }
+         // With the job's other two steps.
+         let mut names: Vec<&str> = HARNESSES.iter().map(|h| h.0).collect();

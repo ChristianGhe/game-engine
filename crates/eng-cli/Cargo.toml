@@ -11,9 +11,11 @@ publish.workspace = true
 eng-core.workspace = true
 eng-input.workspace = true
 eng-math.workspace = true
+eng-net-transport.workspace = true
 eng-platform-headless.workspace = true
 eng-schema-core.workspace = true
 eng-schema-json.workspace = true
+eng-session.workspace = true
 eng-sim.workspace = true
 serde.workspace = true
 

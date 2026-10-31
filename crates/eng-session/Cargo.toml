@@ -8,6 +8,15 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+eng-core.workspace = true
+eng-ecs.workspace = true
+eng-net-transport.workspace = true
+eng-net-wire.workspace = true
+eng-sim.workspace = true
+
+[dev-dependencies]
+eng-schema-core.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true

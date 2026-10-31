@@ -11,6 +11,11 @@
 //! <game> --version [--json]
 //! ```
 //!
+//! `run` and `dump-world` go through `eng-session` like every other mode: a
+//! server and player 0's client in-process over Memory, every message
+//! encoded to bytes. `replay verify` steps the sim directly from the
+//! recorded commands, the ones the server applied.
+//!
 //! `--version` prints the version stamp (spec 6.13) on one line and
 //! `--version --json` prints all of it; see the `version` module and
 //! `docs/ARCHITECTURE.md`, "The version stamp".

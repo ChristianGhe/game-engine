@@ -1926,6 +1926,297 @@ the prompt with `!`.
 before the owner applied it; `cargo xtask quick` green with it; the 5
 golden tests pass.
 
+## 2026-10-31, session 17 (continued): T6, `eng-session` (Claude Opus 5.5, subagent, owner away)
+
+The task: T6, the session loops. Its plan row asks for `eng-session`, with
+`run` and `dump-world` going through it. The recording writer (`eng-input`,
+std) stays in `eng-cli`, and core `eng-session` hands it plain data. Done
+when the hash streams are unchanged, missing commands repeat, and the
+applied-command record makes a recording that `replay verify` accepts. No
+new third-party crate, no protected path edited here, and no hash stream
+regenerated. A subagent built it while the owner was away, so it is left
+uncommitted for review.
+
+**The session** (the crate docs draw the exchange; `docs/ARCHITECTURE.md`
+gains "The session"):
+- `Server<T: Transport>` owns the authoritative `Sim`: `new(sim,
+  transport)`, `with_relevance(hook)`, `local_id()`, `sim()`, `ack(slot)`,
+  `applied()`, `poll()` and `step()`. `Client<T>`: `connect(sim,
+  transport, server)`, `poll()`, `send(command)`, `welcome()`, `latest()`
+  and `sim()`. Errors are one `SessionError` with six variants. Constants:
+  `SENT_COMMANDS = 3`, `MAX_LEAD = 64`.
+- The client says `Hello` (wire version, sim protocol). The server answers
+  with `Welcome` (tick, slot, players, seed) and at once a `Snapshot` of
+  its current state, or with `Denied` (another wire version, another sim
+  protocol, or every slot taken). Then, each tick, `Commands` (the client's
+  newest 3 and its ack) go up, the server steps, and a `Snapshot` of the
+  whole state goes down to each client.
+- `step` gives a slot with a client that client's command for the tick,
+  else its last command restamped. A slot without a client, never joined
+  or gone, idles, keeping its view angles. `step` returns those commands,
+  one per slot: the record. `applied()` keeps them, also after a failed
+  snapshot.
+- Baselines, as T5 left them: the server decodes a client's messages
+  against that client's previous ack, and the client against its newest
+  snapshot, both from the `Welcome` tick until then. A `Snapshot` over one
+  1,200-byte datagram fails with `[E-SNAPSHOT-SIZE]` (session 16, open
+  question 1). The dot's is 466 bytes: the 5-byte header, the 2-byte
+  length, the 8-byte protocol version and the 451-byte state.
+- `run` and `dump-world` (`crates/eng-cli/src/run.rs`) start a server and
+  player 0's client in-process over Memory, past the handshake. Each tick
+  the client sends the script's command (or an idle one), the server polls
+  and steps, and the client restores the snapshot. Hashes, events,
+  assertions, budgets, the report and the dump read the client's sim;
+  `--record` writes what `step` returned. `replay verify` still steps the
+  sim directly.
+
+**Decisions** (proposals; the owner can overrule any):
+1. **The probe reads the client's sim**, not the server's. It is what a
+   player sees, so the committed hash streams now check the whole round
+   trip: commands encoded, buffered and applied, snapshots encoded, sent
+   and restored. The two sims hash the same at every tick (the
+   hash-equality test).
+2. **The server keeps no record.** `step` returns the tick's applied
+   commands, and `eng-cli` appends them for `--record`, so a run without
+   it stores nothing. At 24 bytes per player per tick, a record kept
+   always would double the memory of a 10-million-tick run. A host's crash
+   buffer (spec 6.8) can append the same slices later. `applied()` holds
+   the last tick's, so a host that carries on after `SnapshotTooLarge`
+   records that tick too (from the review). The probe stops there instead,
+   and records only ticks its client received.
+3. **A snapshot carries `Sim::snapshot()`**: the protocol version (8
+   bytes), then the canonical state. `Sim::restore` takes it as it is and
+   checks the protocol on every snapshot, so eng-sim needs no new API.
+   T5's entry counted 458 bytes for the dot, without those 8.
+4. **The `Welcome` brings the current state**, so a client holds the
+   server's state from its first tick, and a state too large for a
+   datagram fails at tick 0, from `poll`.
+5. **`[E-SNAPSHOT-SIZE]` stops the probe with exit 13**, as a budget does;
+   the plan's decision 4 adds no exit code. The message goes into the
+   report's `budgets.exceeded`, and everything the probe writes shows the
+   client's last state, the tick before. `dump-world` then prints the
+   summary and writes no dump. The testbed's state grows by 85 bytes a
+   player, so `run --players 10` now stops at tick 1 and `--players 13`
+   at tick 0; both used to exit 0.
+6. **No `now` yet.** The plan's row says `now` is passed in, but nothing in
+   rung 1b depends on time: the caller decides when a tick is due and calls
+   `step`. The session reads no clock. Time sync, timeouts and resends add
+   `now` in rung 5. Amendment 20 proposes the plan's wording.
+7. **The command buffer.** Commands up to `MAX_LEAD` (64) ticks ahead wait
+   for their tick; later ones and past ones are dropped, and the first
+   copy of a tick's command is kept. `step` also drops anything older than
+   the tick it applies.
+8. **Bad datagrams are dropped**: bytes that do not decode, messages out of
+   turn, peers that are not clients. A `Commands` whose ack is ahead of
+   the server's tick is dropped whole, and an older ack never replaces a
+   newer one. The one error that comes from the network is a snapshot the
+   client's sim refuses (`Restore`). The rest are this process's own: a
+   snapshot too large, a denial, commands out of order or before the
+   `Welcome`, a failed send.
+9. **A vanished client is dropped** once the transport no longer knows it,
+   and its slot idles, keeping its view angles, like a slot no client ever
+   joined; a new `Hello` can take the slot. Its missing commands repeat
+   only while it is connected. This was "repeat the last command forever"
+   until the review; reconnection is rung 5's.
+10. **`DenyReason::FULL` (3)** joins `eng-net-wire`, for a server with
+    every slot taken (spec 6.8: "Denied (version mismatch or full)"). The
+    reason is an open `u8`, so the wire format and `golden.rs` stay as
+    they are.
+11. **The client takes a sim built for the session.** In-process the
+    caller knows the players and seed, and `Sim::restore` refuses
+    snapshots from any other session. A remote client (rung 5) learns them
+    from the `Welcome`, so `connect` will take a build function then.
+12. **The relevance hook** is `fn(&World, PlayerSlot) -> Relevance`, asked
+    for each client before each snapshot. `Relevance` has one variant,
+    `Everything`, and is `#[non_exhaustive]` for rung 5's narrower answers.
+13. **Tags in `run`.** A release build checks floats only when the client
+    restores a snapshot, so `run` reports that refusal as `[E-NAN]`, the
+    tag `hash()` gave before. Any other session error is a bug and panics
+    with `[E-SESSION]`. Two checks stop the probe without a panic (from the
+    review): a command that is not for the tick being stepped exits 64
+    with `[E-STEP]` (`Sim::step` refused one before; the server would
+    repeat the last command instead), and a client without the tick just
+    stepped exits 11 with `[E-DESYNC]`, before anything is hashed as that
+    tick.
+14. **The hash-equality test stands alone.**
+    `crates/eng-session/tests/hash_equality.rs` defines its own test sim
+    instead of sharing `tests/common/`, so nothing outside the file it
+    protects can weaken it. The plan gives this test no file name; the name
+    follows the plan's wording, as `never_panic.rs` did.
+
+**Tests** (35 after the review; expected values are written out or
+computed independently)
+- `crates/eng-session/tests/hash_equality.rs`, 2 tests, for the patch below
+  to protect:
+  - two clients drive a two-player test sim for 240 ticks, with commands
+    in which every field varies. The server's state and both clients'
+    restored states hash the same as a sim stepped directly, at every tick
+    from 0, and the applied commands are the ones sent;
+  - a proptest (32 cases, up to 90 ticks): random commands, a quarter of
+    them never sent, sent up to 3 ticks early. The applied commands follow
+    the missing-command rule, written out in the test, and stepping
+    directly with them gives the session's hashes.
+- `tests/server.rs`, 14 tests: the `Welcome`'s fields and slots; `Denied`
+  for a full server, another sim protocol and another wire version; a
+  repeated `Hello` keeps its slot; missing commands repeat, idle before the
+  first; a slot without a client idles; commands sent ahead; stale,
+  too-far and repeated commands, at the `MAX_LEAD` edge; the newest ack
+  kept, and a bad ack's message dropped; ticks extended across 2^32, from a
+  sim starting at 2^32 - 3, which fails with a baseline of 0 on either
+  side; exactly 1,200 bytes fits, 1,201 fails at the `Welcome`, and a
+  growing state fails at the step that outgrows a datagram, with that
+  tick's commands still in `applied()`; a vanished client's slot idles
+  with its view angles; the relevance hook asked for every snapshot of
+  every client.
+- `tests/client.rs`, 9 tests: each message carries the newest 3 commands
+  and the newest snapshot's tick; the `Welcome` tick is the ack before the
+  first snapshot; commands before the `Welcome` or out of order are
+  refused; a second `Welcome` and a late `Denied` change nothing; the
+  baseline follows the newest snapshot past `Welcome` + 2^31; older,
+  repeated and conflicting snapshots of a tick are ignored; datagrams
+  before the `Welcome` or from other peers are dropped; a snapshot from
+  another session is refused and the state kept.
+- `tests/hostile.rs`, 4 tests: datagrams a server cannot use; a stranger's
+  commands sent before the client's never reach its slot; and the
+  review's two proptests (256 cases each), adapted. In one, while slot
+  0's client plays, the client in slot 1 and a stranger send anything each
+  tick, and slot 0 still gets exactly its client's commands. In the other,
+  a welcomed client takes anything from the server's address without
+  panicking. They are in their own file because `server.rs` would pass
+  500 lines.
+- `crates/game-testbed/tests/session.rs`, 4 tests against the binary:
+  `[E-SNAPSHOT-SIZE]` with exit 13 at 10 players (tick 1) and 13 players
+  (tick 0), with the report and hash stream; the same for `dump-world`,
+  which prints the summary and writes no dump; a two-player recording,
+  slot 1 idle, that `replay verify` accepts; `dump-world`'s whole world
+  equals a sim stepped directly with the same script. The snapshot-size
+  tests failed before their changes (exit 0, then exit 64).
+- `eng-cli`, 2 unit tests in `run.rs`: a command for another tick is
+  refused with `[E-STEP]`, and a client without the tick just stepped
+  with `[E-DESYNC]`.
+- The protected `exit_codes.rs` (7) and `crash_json.rs` (2) pass
+  unchanged. Their recording and desync cases now replay the server's
+  record.
+- Mutation checks, each reverted: 15 planted bugs. 13 failed a test at
+  once, among them a baseline of 0 on either side, idle instead of repeat,
+  a snapshot sent before the step, no restore and no size check. Two
+  survived:
+  - restoring a same-tick snapshot again: the client test now sends a
+    conflicting copy;
+  - buffering a command for the current tick: no test could see it, but
+    such an entry would never leave the buffer, one more each tick. `step`
+    now drops everything up to its tick, which makes it harmless.
+- The review planted four more that survived: a stranger's `Commands`
+  routed to slot 0 (S20), a second `Welcome` or a late `Denied` taken (C7,
+  C8), and the client's baseline stuck at the `Welcome` tick (C10). Each
+  now fails the new tests above: S20 fails both of its tests, C7 two, C8
+  and C10 one each. The sources were restored byte for byte.
+- Failing proptests against the first stub and the planted bugs wrote
+  regression files three times (`hash_equality` twice, `hostile` once),
+  and the guard moved them to `target/guard-quarantine/` (`1793444285-…`,
+  `1793444869-…`, `1793447645-…`). Their seeds come from planted bugs, so
+  none is a candidate for the owner.
+
+**The oracle patch:** `docs/rungs/1b/patches/t6-oracles.patch`, against
+`main` with this task's commit. It changes 5 files: 89 lines added, 36
+removed.
+- `crates/eng-session/tests/hash_equality.rs` joins `protected.toml` and
+  `.github/CODEOWNERS` (proposal 8, amendments 11 and 19), and its header
+  says it is protected.
+- X7's `wire-session` step (amendment 18), small enough to go in the
+  patch. A row of `HARNESSES` now lists its test files, and the step runs
+  eng-net-wire's `golden` and `never_panic` and eng-session's
+  `hash_equality` in one `cargo test`, after `live-input`. The unit test
+  checks that each file exists, and that no other package in a step has a
+  test target of the same name, which the one `cargo test` would also run:
+  `tests/<name>.rs`, `tests/<name>/main.rs` or a `[[test]]` entry (the
+  last two from the review).
+- `docs/ARCHITECTURE.md`, "Agent tooling", names the step.
+
+How it was tested: a scratch clone of 13fcdaa with this task's files
+committed as its base, and `target/` seeded copy-on-write (4.8 GB, 10 s).
+With the patch, `cargo xtask ci --job test` passed 8 of 8 steps;
+`wire-session` ran 5 + 5 + 2 tests in 0.1 s, with its own log and report
+entry. `quick` passed 7 of 7 (10 s), `selftest` 17 of 17, `CI=1 cargo
+xtask ci --job lint` 7 of 7, and `cargo test -p xtask` 39 tests. A
+misspelt target fails both the unit test and the step; a `never_panic.rs`
+added to eng-session fails the unit test. After the review the patch was
+remade in a second clone, its base this task's final files: the same
+checks pass, and a `tests/never_panic/main.rs` or a `[[test]]` named
+`golden` added to eng-session now fails the unit test (the first passed
+before). The repo's file, applied with `git apply` to a fresh copy of the
+final files, gives the tested tree exactly, and `typos` passes on it.
+
+**Checked** (this repo, aarch64-apple-darwin)
+- `cargo xtask quick` green (17 s); `CI=1 cargo xtask ci --job lint` 7 of
+  7; `CI=1 cargo xtask ci --job wasm` green, and its log shows eng-session
+  checked for wasm32; `cargo xtask selftest` 17 of 17.
+- `RUSTDOCFLAGS=-Dwarnings cargo doc -p eng-session --no-deps` clean.
+- `cargo xtask replay`: 5 runs, and the hash streams equal the committed
+  ones byte for byte. Nothing was regenerated.
+- eng-session's tests also pass in release, and the hash-equality proptest
+  passes at 20,000 cases (10 s in release).
+- Not run: RISC-V. This Mac has no RISC-V target or `qemu-riscv64`; CI's
+  riscv job runs eng-session's tests with the rest of the core set.
+
+**Reviewer** (fresh context, read-only, run by the coordinator): changes
+needed, all small. Determinism, layering, protected paths and the hash
+streams were clean. Its findings, each fixed in this change:
+1. `dump-world --at-tick 5 --players 10` exited 64 with "the run stopped
+   at tick 0 before tick 5": the dump's tick check failed before the
+   summary holding `[E-SNAPSHOT-SIZE]` was printed. The dump is now skipped
+   when a budget stopped the run, so the summary prints and the exit is 13
+   (decision 5); a new test covers it.
+2. `Server::step` lost the tick's commands on `SnapshotTooLarge`, though
+   the sim had stepped, so a host that carries on would record a gap and
+   `replay verify` would desync from there. `Server::applied()` now keeps
+   them, and the variant's doc says what has stepped: from `step` the sim,
+   from `poll` nothing.
+3. Four planted bugs survived the tests: S20, C7, C8 and C10 (under
+   **Tests**). The review's tests, adapted, now catch each one;
+   `hash_equality.rs` was left as it was.
+4. Docs against the code. A vanished client's slot now idles, keeping its
+   view angles, so "a slot without a client idles" holds (decision 9; the
+   owner can overrule). The crate docs no longer say network bytes never
+   fail a session: `Client::poll` returns `Restore` for a snapshot its sim
+   refuses.
+5. `now`: the plan says contract 6 ("takes (now, incoming bytes)") is built
+   in full. Recorded as amendment 20, not only as an open question.
+6. Nits: the probe's `[E-STEP]` and `[E-DESYNC]` checks (decision 13);
+   the dump test compares the whole world with a sim stepped directly;
+   `docs/ARCHITECTURE.md`'s first line said "as of rung 1a"; the patch's
+   unit test missed `tests/<name>/main.rs` and `[[test]]` targets; the
+   amplification below.
+
+**Open questions**
+1. **Interpolation (T11).** The plan's frame draws `FrameSnapshot {
+   previous, current }` from the client, which keeps only the newest
+   state. `previous` needs a second sim: a second one at `connect`, a build
+   function, or `Clone` for `Sim`. T11 can choose with the frame loop.
+2. **Exit codes** (decisions 5 and 13): 13 for `[E-SNAPSHOT-SIZE]`, 64 for
+   `[E-STEP]`, 11 for `[E-DESYNC]`. Say if others fit better. While there
+   is one code path, the probe runs at most 9 testbed players until rung
+   5's fragmentation.
+3. **Amplification, for rung 5.** An unauthenticated 17-byte `Hello` gets
+   up to 1,219 bytes back, a 19-byte `Welcome` and a snapshot of up to
+   1,200: about 72 times its size, and over UDP the source can be forged.
+   Rung 5's padded handshake and stateless cookie must come before any
+   answer larger than the request.
+4. **Report timings.** `tick_time_ns` now times `Server::step`: the sim's
+   step plus encoding and sending the snapshot, a p50 of about 2 µs for
+   `dot-square` in a dev build. It is not an oracle.
+5. **The patch's base.** It applies to this task's files as they stand; a
+   change to `hash_equality.rs` before G5 means remaking it.
+
+**Costs and timings**
+- One subagent session, from about 12:20 to about 13:25 EET, while the
+  owner was away, then about 13:45 to 14:20 EET for the review's fixes.
+  The review itself ran in the coordinator's context.
+- Scratch clones: a copy-on-write seed of `target/` (4.8 GB) in 10 s; the
+  test job took 38 to 56 s there.
+- The mutation checks took about 6 minutes in all; each run rebuilt only
+  eng-session's tests.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1
@@ -2406,3 +2697,34 @@ path.
       hash-equality test, three test files in two crates, so `HARNESSES`
       needs a list of targets per row, or a `steps.run` of its own (session
       15, open question 1). One xtask change after T6 replaces two.
+
+19. **Amendment from session 17, T6** (to proposals 7 and 8, and
+    amendments 11 and 18; the text above is kept as written). T6 is
+    built, so this can be applied:
+    - `docs/rungs/1b/patches/t6-oracles.patch`, as one change. It adds
+      `crates/eng-session/tests/hash_equality.rs`, criterion 11's "the
+      session gives the same hashes as stepping the simulation directly",
+      to the protected paths and `.github/CODEOWNERS` (proposal 8,
+      amendment 11). It also adds X7's `wire-session` step to `cargo xtask
+      ci --job test` (amendment 18): one `cargo test` running eng-net-wire's
+      `golden` and `never_panic` and eng-session's `hash_equality`.
+    - After it, criterion 11's three test files are protected and run as
+      the step its checks name. The PROGRESS.md entry for T6 says how the
+      patch was tested.
+
+20. **Amendment from session 17, T6's review** (to `plan.md`, which is not
+    protected; its header is being edited elsewhere, so the owner applies
+    this). T6 built no `now`, and the plan says it did:
+    - The crate table, eng-session's row: "It has no clock (`now` is passed
+      in)". Proposed: "It has no clock: the caller says when a tick is due,
+      and time sync adds `now` in rung 5."
+    - Difference 10 says contracts 1, 2, 6 and 7 are built in full.
+      Contract 6 is "The protocol does no I/O: it takes (now, incoming
+      bytes) and returns outgoing bytes". Proposed: built except `now`.
+      Nothing in rung 1b needs time, since the caller steps the server when
+      a tick is due; rung 5's time sync, timeouts and resends add it. The
+      session also reads and writes through the `Transport` trait rather
+      than taking and returning bytes. Memory does no I/O, and the
+      bytes-in, bytes-out shape belongs to rung 5's `eng-net-proto`.
+    - If the owner wants the argument now, unused, it is one parameter on
+      `Server::poll`, `Server::step` and `Client::poll`.

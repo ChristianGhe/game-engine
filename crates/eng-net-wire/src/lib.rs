@@ -12,7 +12,7 @@
 //! | 2 | [`Welcome`] | the server's tick | the tick's high 32 bits `u32`, the client's player slot `u8`, players `u8`, seed `u64` |
 //! | 3 | [`Denied`] | the server's tick | the tick's high 32 bits `u32`, reason `u8`, the server's wire version `u32` and sim protocol `u64` |
 //! | 4 | [`Commands`] | the client's acknowledged snapshot tick | count `u8`, at most [`MAX_COMMANDS`]; each command in eng-core's canonical 19-byte layout, ticks strictly increasing |
-//! | 5 | [`Snapshot`] | the snapshot's tick | length `u16`, at most [`MAX_STATE_LEN`]; the sim's canonical state |
+//! | 5 | [`Snapshot`] | the snapshot's tick | length `u16`, at most [`MAX_STATE_LEN`]; the sim's state (`eng-session` sends `Sim::snapshot`: the protocol version, then the canonical state) |
 //!
 //! - **Ticks.** The receiver extends a 32-bit tick against its baseline,
 //!   its last acknowledged tick ([`extend_tick`]). The handshake has no
@@ -102,12 +102,16 @@ pub struct Denied {
     pub sim_protocol: u64,
 }
 
+/// Why a server refused a client. An open `u8`, so a reason a newer server
+/// sends reaches an older client intact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DenyReason(pub u8);
 
 impl DenyReason {
     pub const WIRE_VERSION: Self = Self(1);
     pub const SIM_PROTOCOL: Self = Self(2);
+    /// Every player slot is taken.
+    pub const FULL: Self = Self(3);
 }
 
 /// The client's newest commands, oldest first. Each packet repeats the

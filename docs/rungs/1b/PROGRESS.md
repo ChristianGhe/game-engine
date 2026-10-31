@@ -3524,6 +3524,284 @@ The proposals for the owner are amendments 35 to 39, in the block below.
   watchdog cases.
 - Reviewer subagent: 18 minutes, 231k tokens, 74 tool calls.
 
+## 2026-10-31, session 17 (continued): T9, `shot` and `video` (Claude Opus 5.5, subagent, owner away)
+
+The task: T9, the probe's pictures. Its plan row asks for eng-cli's `shot`
+and `video` and the testbed's extraction; done when `shot` writes the PNG
+and the `gpu` report and `video` writes the APNG. It builds on T6's
+session (`run` and `dump-world` already go through it), T7's eng-gpu
+(`Gpu`, `GpuReport`, `Targets::read_output`) and T8's eng-render
+(`TopDownScene`, `Renderer`, `FrameCounters`). It adds one third-party
+crate, `png =0.18.1` from crate batch 2, edits no protected path and
+regenerates no hash stream. A subagent built it in a scratch clone of main
+at 462feb5 while the owner was away, and left it uncommitted: `t9.patch`
+(below). T10 landed on main meanwhile; T9 touches nothing of it.
+
+**What the probe has** (eng-cli's crate docs and `docs/ARCHITECTURE.md`,
+"The frame" and "The report", have the rest):
+
+```text
+<game> shot --at-tick N --out shot.png [--size 320x240] [--seed S] [--players P]
+            [--input script.toml] [--budgets budgets.toml] [--report report.json]
+<game> video --ticks N --out proof.apng [--every K] [--size 320x240] [--seed S] [--players P]
+             [--input script.toml] [--budgets budgets.toml] [--report report.json]
+```
+
+```rust
+GameDef { ..., top_down: Option<fn(&TopDownFrame<'_>) -> TopDownScene> }   // eng-cli
+TopDownFrame { previous: &Sim, current: &Sim, alpha: f64, width: u32, height: u32 }
+```
+
+The testbed's extraction is `crates/game-testbed/src/top_down.rs` (plan
+difference 6), and `main.rs` passes it as `top_down: Some(top_down::scene)`.
+In eng-cli, `capture.rs` holds the GPU, the renderer and the frames,
+`image_file.rs` writes PNG and APNG, `session.rs` took `run.rs`'s session
+helpers (unchanged, so `run.rs` stays under 500 lines), and `budgets.rs`
+reads `[gpu]`.
+
+**Decisions** (proposals; the owner can overrule any):
+1. **One code path.** `shot` and `video` are `run` with frames: the same
+   input script, session over Memory, ticker and budgets, with the client's
+   state rendered at the ticks they need. `shot --at-tick N` is a run of N
+   ticks with a frame at N; `video --ticks N --every K` renders ticks 0, K,
+   2K, ... up to the last multiple of K not past N, so N / K + 1 frames,
+   each shown for K ticks. The report and the 20-line console summary are
+   `run`'s, plus two lines and the `gpu` object.
+2. **No adapter: exit 64, `[E-NO-ADAPTER]`**, as plan decision 4 says (no
+   new exit code). The GPU opens after the session is built (so a panic
+   there has the seed) and before the first tick, and eng-gpu's message is
+   printed as it is, without `[E-USAGE]` in front; nothing is written,
+   report included. A device that will not open (`[E-GPU]`) is treated the
+   same. Once the GPU is open, a frame that fails (`[E-SCENE]` from the
+   extraction, `[E-GPU]`, a shader) is a bug: it panics, so the hook
+   writes `crash.json` with the tick and seed (exit 12). Also exit 64: a
+   game without a view (`top_down: None`) and a frame delay APNG cannot
+   hold (K / tick rate must fit its 16-bit fraction).
+3. **The extraction gets both states, alpha and the image size**
+   (`TopDownFrame`), as the plan's "One frame" draws it, so T11's window
+   needs no new signature. `shot` and `video` pass one tick's state as both,
+   at alpha 1, so they are exact (T8 decision 12). The size lets a game fit
+   its view to the window. It is `Option` so a game without a view still
+   links the probe.
+4. **The testbed's view.** The camera looks at the room's centre, zoomed to
+   fit the room: `min(width / 8 m, height / 6 m)`, 40 px/m on the 320x240
+   shot, where the room fills the image exactly (T8 decision 4). The room
+   is two rectangles, wall colour under a floor inset by 0.1 m (4 pixels),
+   instead of four outlines (T8 open question 2): 2 shapes. Dots come last,
+   so a dot against a wall is drawn over it. Each dot is a disc as wide as
+   its hull (0.25 m), coloured by player slot from 8 colours (slots 8 and
+   9 repeat orange and blue). Dots keep their height (the renderer ignores
+   it). Interpolation is `a(1 - t) + bt`, exactly the previous state at 0
+   and the current one at 1; `a + (b - a)t` missed `b` by 5e-8 at 10^9 m
+   (tested).
+5. **Colours at the centre of an sRGB level.** Every channel of every
+   testbed colour decodes from an 8-bit sRGB level, so each is half a level
+   from either rounding boundary, as T8's known scene does with its `MID`.
+   The first choice put the floor's red at 52.53 levels: lavapipe stored
+   53, Metal 52, and 72,072 of the shot's 76,800 pixels differed by one
+   level. With centred colours the 320x240 shots (one dot at tick 120, ten
+   dots at tick 0) are byte-identical on Metal and on the pinned lavapipe,
+   and the 241-frame proof video differs in 12 pixels over 11 frames, each
+   a disc-edge pixel whose centre lies on the edge within float rounding.
+6. **Files.** 8-bit RGBA as the output stores it, an `sRGB` chunk
+   (perceptual) and nothing else: no time, text, `pHYs` or path, and fixed
+   compression settings (`Balanced`, adaptive filters), so the same pixels
+   give the same bytes (tested, chunk list included). Alpha stays in the
+   file, always 255, so decoders give the RGBA8 the goldens compare (plan
+   decision 3). The APNG loops forever, every frame replaces the whole
+   image, and its delay is K / tick rate seconds, reduced (1/60 s at
+   `--every 1`). Frames are encoded as they are rendered, in memory, and
+   the file is written only when the run reaches its last tick: a run a
+   budget stops early writes no partial file. A video holds at most 10,000
+   frames (2 min 47 s at 60 Hz); `--size` sides are 1 to 8,192 (Tier 0).
+   Encoding errors are `[E-IMAGE]` for a still and `[E-VIDEO]` for a video.
+7. **The report stays at version 2.** Every report gains `gpu`: `null` for
+   `run`; for `shot` and `video`, eng-gpu's capability report (adapter,
+   backend, device type, vendor and device ids, driver and driver info,
+   tier, five capabilities), the image size, the frames rendered and
+   `per_frame`, the largest of each counter over them (`frames` 0 and
+   `per_frame` `null` if a budget stopped the run first). `budgets` gains
+   the four `[gpu]` limits (`null` when unset). Only keys are added and
+   `command` gains two values, so the stamp's rule applies (keys may be
+   added within a version), and `docs/ARCHITECTURE.md` now says so for
+   reports, in a new section, "The report". Bumping to 3 would also fail
+   the protected `crates/game-testbed/tests/version.rs`, which pins
+   `"report": 2` in `--version --json`; that would be the owner's change.
+8. **`[gpu]` in `budgets.toml`.** `BudgetFile` reads an optional `[gpu]`
+   table, strict like `[sim]` (an unknown key is `[E-LOAD]`, exit 64), so
+   `run --budgets budgets.toml` and `cargo xtask replay` work with today's
+   file and with amendment 30's table (tested both ways; `quick` passes with
+   the table in the oracle clone). Each frame is held to the four limits
+   and an excess is reported like `[sim]`'s, `[E-BUDGET] <limit> exceeded
+   at tick N: used > limit`, exit 13. As with `[sim]`, an excess stops the
+   run at that tick: a shot's frame is its last tick, so its PNG is still
+   written; a video stops there and writes nothing (both tested). `run`
+   ignores `[gpu]`.
+9. **Flags.** The plan's lines, plus `--players` and `--budgets` on both,
+   `--size` and `--report` on `video`. `--assert`, `--hashes`, `--record`
+   and `--events` stay `run`'s. `plan.md`'s "Probe additions" block is
+   unchanged; the owner may want to copy these lines there.
+10. **`Command::Run` holds a `Box<RunArgs>`**: CI's clippy (`-D
+    warnings`) refused the larger enum (`large_enum_variant`) that the new
+    fields made.
+
+**Tests** (30 new, in 6 files; every earlier test unchanged):
+- eng-cli `budgets.rs`, 5, no GPU: the repo's `budgets.toml` loads (an
+  `include_str!`, so the owner's `[gpu]` must keep it loading; its values
+  are not pinned, as they are the owner's to change); amendment 30's table
+  is read; an unknown `[gpu]` key is refused; each counter is held to its
+  limit, at the limit passes, the first excess is the one reported; frame
+  peaks are kept per counter.
+- eng-cli `image_file.rs`, 6, no GPU: a PNG decodes to its pixels; the same
+  pixels give the same bytes, and the chunks are exactly IHDR, sRGB, IDAT,
+  IEND; an APNG holds every frame with its delay, offsets and operations,
+  and loops; the same frames give the same APNG; an APNG takes exactly its
+  frames (too few, too many, a wrong size, none); frame delays reduce and
+  refuse what 16 bits cannot hold.
+- eng-cli `args.rs`, 3, and `capture.rs`, 1, no GPU: `shot` and `video`
+  parse with their defaults; 28 bad command lines are refused (sizes, frame
+  counts, flags of other commands); a game without a view and an
+  unrepresentable delay are refused before the GPU opens.
+- game-testbed `src/top_down.rs`, 5, no GPU: the shot's scene, shape by
+  shape; the room fits any view; each player's dot in its slot colour; dots
+  between two states at alpha 0, 0.5 and 1; the interpolation's ends are
+  exact.
+- game-testbed `tests/shot_video.rs`, 10, through the real binary. Two need
+  no GPU and run in CI's test job: without an adapter both commands exit
+  64 with `[E-NO-ADAPTER]` and write nothing (forced with an
+  `ENG_GPU_ADAPTER` that matches nothing); `run` reads a `[gpu]` table and
+  refuses an unknown key. Eight render, and skip without an adapter unless
+  `ENG_REQUIRE_GPU=1`: the shot's PNG (the dot's centre where `dump-world`
+  puts it, the floor, the four walls) and its report (`gpu` object, 2
+  draws, 2 pipeline switches, 1 bind-group switch, 96 bytes); a shot shows
+  its own tick (dot-square at tick 30 at 1280x960, where the dot moves 5.4
+  pixels a tick: the disc's centroid within a pixel of `dump-world`'s
+  position; added after the review); `--size`; the video's frames equal
+  `shot` at ticks 0, 30 and 60 of dot-square, with delay 1/2 s; the same
+  run gives the same PNG and APNG bytes; `[gpu]` budgets hold every frame,
+  and 95 bytes against the shot's 96 exit 13 with the PNG still written; a
+  video that a `[sim]` budget, or a `[gpu]` one (added after the review),
+  stops at tick 0 writes no file.
+- Planted bugs, each reverted (`scratchpad/t9/scripts/mutate.py` and
+  `mutate2.py`, in a separate clone): 41, 40 caught. Three needed a
+  stronger test first: the APNG's own missing-frames check, which png's
+  sequence validation masked (the test now pins the message), and the
+  review's two, a frame one tick early and a video that renders on past a
+  frame over its `[gpu]` budget (both new tests catch them). The survivor
+  changes nothing: alpha 0 instead of 1, with both states the same.
+
+**Review** (the `reviewer` subagent, fresh context, read-only; 17 min,
+236k tokens, 78 tool calls): approve, no blockers. It ran `quick`, the lint
+job, rustdoc and the GPU tests on Metal, and checked by hand the frame ticks
+(tick N is rendered only after the client holds N), the frame count (N / K
++ 1; `--ticks 240 --every 7` gives 35), the early stop, the chunk list, the
+proof video's 241 frames and final hash (equal to
+`hashes/dot-square.seed1.txt`), exit 64 without an adapter, sizes 1x1 to
+8192x8192, the lock, the public API and the 500-line limit. Its should-fix
+points, all taken: a test that pins which tick a frame shows (the seed-1
+dot never moves without input, and video frames were compared with shots
+made by the same code); a test of a `[gpu]` excess in `video`, and the
+tick loop now uses `observe_frame`'s result instead of relying on
+`observe`'s; this entry, with amendment 30's numbers brought up to date
+(amendment 40); and the RISC-V build, since the riscv job's replay step
+builds the testbed, which now links wgpu and png: `cargo check --locked -p
+game-testbed --all-targets --target riscv64gc-unknown-linux-gnu` passes in
+T7's arm64 container (22 s). Its nits, all taken: two wrong statements in
+`docs/ARCHITECTURE.md` ("The report": `dump-world` writes no report, and a
+stopped shot reports a `gpu` object with 0 frames); still-PNG errors are
+now `[E-IMAGE]`, not `[E-VIDEO]`; the budgets test no longer pins the
+owner's `[sim]` values; the walls' comment (a dot against a wall covers
+it); the GPU now opens after the session is built, so a panic in
+`Renderer::new` has the seed in `crash.json`; and `--every` documents that
+the last frame is the last multiple of K not past N.
+
+**Linux: lavapipe in Docker.** T7's pinned image (`eng-t7-lavapipe:25.2.7-git`,
+Mesa 25.2.7 from gfx-rs/ci-build build26, emulated x86_64, `llvmpipe (LLVM
+18.1.3, 256 bits)`, driver `Mesa 25.2.7`), with `ENG_REQUIRE_GPU=1
+ENG_GPU_ADAPTER=llvmpipe`, on the final `t9.patch` (the verify clone):
+eng-cli, eng-gpu, eng-render and game-testbed, 121 tests, all passing,
+`shot_video`'s 10 among them (an earlier run, before the review, passed
+119 of 119). The shot and video comparisons in decision 5 used the same
+image. Nothing ran on Windows; the testbed type-checks for RISC-V.
+
+**Checks** (aarch64-apple-darwin, in the work clone, on the final code):
+- `cargo xtask quick`: 7 of 7.
+- `CI=1 cargo xtask ci --job lint`: 7 of 7, cargo-deny and typos on the
+  repo's own configs. (Before the `Box<RunArgs>` fix it failed on clippy's
+  `large_enum_variant`, which `quick`'s clippy does not deny.)
+- `CI=1 cargo xtask ci --job test`: 9 of 9 (100 s).
+- `CI=1 cargo xtask ci --job wasm`: ok. `cargo xtask selftest`: 17 of 17.
+- `RUSTDOCFLAGS=-Dwarnings cargo doc -p eng-cli --no-deps` (and eng-render,
+  eng-gpu): clean.
+- `cargo xtask replay`: 5 runs, assertions and budgets ok, hash streams
+  match `crates/game-testbed/hashes/`, no `--regen`; `git status` shows
+  them unchanged. `game-testbed-sim` is unchanged and nothing new is
+  registered in the sim's World (the protocol version is the same,
+  `0x69fd4996880a6508`).
+- eng-cli's, eng-gpu's, eng-render's and game-testbed's 121 tests on Metal
+  with `ENG_REQUIRE_GPU=1`.
+- `cargo check -p game-testbed --all-targets` for RISC-V (above).
+- AGENTS.md: 143 lines (two command lines and the no-adapter note).
+
+**The patches** (`scratchpad/t9/`):
+- `t9.patch`, the orchestrator's, nothing protected: 19 files, eng-cli,
+  eng-gpu's and eng-render's crate docs, game-testbed, `Cargo.toml`,
+  `Cargo.lock`, `AGENTS.md` and `docs/ARCHITECTURE.md`. Made with `git add
+  -A` and `git diff --cached --full-index 462feb5` in the work clone. On a
+  fresh clone at 462feb5 it passes `git apply --check`, applies, and gives
+  the work clone's tree (`git write-tree` 080f346). typos with the repo's
+  config: clean on this entry and `t9-oracles.patch`; on `t9.patch` it
+  flags only the deflate crate's name in `Cargo.lock`'s lines, which the
+  repo's config excludes from the check.
+- `t9-oracles.patch`, the owner's (G5; amendments 40 and 41):
+  `budgets.toml`, `protected.toml` and `.github/CODEOWNERS`. Made by
+  `scripts/make-t9-oracles.sh` on a fresh clone with `t9.patch` applied
+  and committed. There `cargo xtask quick` passes (7 of 7; its replay
+  passes the new `budgets.toml` to every run, and docs-check sees
+  CODEOWNERS cover the new path), `selftest` passes (17 of 17), and `run`,
+  `shot` (1 and 10 players) and `video` pass with the new file on Metal.
+  Its protected lines sit right after `version.rs`'s, so it applies in
+  either order with the queued oracle patches that add lines after
+  `shaders.rs`.
+- Scripts: `scratchpad/t9/scripts/` (`make-t9-oracles.sh`,
+  `verify-t9-patch.sh`, `checks.sh`, `graph.py`, `mutate.py`,
+  `mutate2.py`, `lvp-shots.sh`, `pngdiff.py`, `apngdiff.py`).
+
+**Open questions**
+1. **Golden ticks** (T12, G6). On Metal and lavapipe the testbed's flat
+   areas now match byte for byte; only disc-edge pixels whose centre lies
+   on an edge can differ (12 pixels in the 241-frame video). T12 can pick
+   shot ticks where no pixel centre is near a dot's edge, as T8's known
+   scene does, and then expect exact equality on Metal too. Suggested
+   shots: dot-square seed 1 at ticks 0, 120 and 240, checked for that.
+2. **The native job's steps** (X2, amendment 42): `gpu-budgets`,
+   `proof-video` and the golden candidates can call `shot` and `video` as
+   proposed there.
+3. **Report version** (decision 7): if the owner prefers a bump to 3 for
+   the `gpu` object, the protected `version.rs` changes with it.
+4. **A video that a GPU budget stops** writes nothing (decision 8). If the
+   owner would rather keep the frames, the run could go on to its end with
+   the excess recorded; `[sim]` budgets stop the run because state grows,
+   which frames do not.
+5. **CI time.** The testbed binary now links wgpu and png, so the riscv
+   job's replay step and every job that builds the testbed compile wgpu;
+   the test job already did, for eng-gpu's tests. `pr-duration` will show
+   the cost.
+
+**Costs and timings**
+- Session 17's T9 subagent, from 17:50 to 18:50 EET: reading and design to
+  18:00; budgets, the PNG and APNG writer, the parser and the extraction,
+  each test first, to 18:07; the end-to-end tests and `capture.rs` to
+  18:13; docs, the lock and graph checks and the lint fix to 18:17; the
+  review, the planted bugs, the oracle patch and its tests, and the
+  lavapipe runs from 18:17 to 18:35, side by side; the review's fixes and
+  the final checks to 18:50.
+- Reviewer subagent: 17 minutes, 236k tokens, 78 tool calls.
+- Builds: the seeded `target/` made wgpu free; `quick` 18 s to 68 s in the
+  clones. The proof video (241 frames of 320x240) renders in 0.27 s on
+  Metal and is 239 KB. Docker (emulated x86_64, T8's target cache): the
+  four crates' tests in about 3 minutes.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1
@@ -4244,3 +4522,55 @@ otherwise have to change; the owner applies it, or unlocks the path.
     `with_default_menu(false)`, so Cmd+Q is just keys, which leaves the
     Dock and logout; (c) intercepting `terminate:` needs Objective-C and
     `unsafe`, which the crate forbids.
+
+40. **Amendment from session 17, T9** (to proposal 6 and amendments 28 and
+    30; G5). `docs/rungs/1b/patches/t9-oracles.patch`, after T9's commit:
+    `budgets.toml` gains `[gpu]` with amendment 30's values (12 draws, 12
+    pipeline switches, 8 bind-group switches, 2,048 bytes per frame), and
+    `[sim]`'s comment names `shot` and `video` too. eng-cli reads the table
+    from T9 on, so it can land with or after T9's commit, not before. The
+    basis moves a little: the testbed draws its room as two rectangles, so
+    one player's frame is 3 shapes, 96 bytes, not 64. Ten players' frame,
+    at tick 0 only (their snapshot outgrows a datagram from tick 1,
+    `[E-SNAPSHOT-SIZE]`), is 12 shapes, 384 bytes, and nine players', the
+    most a running session holds, 352 (measured on Metal and lavapipe). The
+    limits still leave about four times the window's frame. `[ci]
+    native_job_minutes` stays with X3 (criterion 13).
+41. **Amendment from session 17, T9** (to proposal 8; optional, G5). The
+    same patch protects `crates/game-testbed/tests/shot_video.rs` in
+    `protected.toml` and `.github/CODEOWNERS`, each line right after
+    `version.rs`'s, so it applies in either order with the queued oracle
+    patches that add lines after `shaders.rs`. Criteria 9 and 15 rely on
+    what it pins: the `gpu` object, the per-frame counters held to
+    `[gpu]`, the PNG and the APNG, the frame's tick, and exit 64 without an
+    adapter.
+42. **Amendment from session 17, T9** (to proposal 7, X2). Commands for the
+    native job's steps, run from the repo root:
+    - `gpu-budgets`: `game-testbed shot --at-tick 240 --seed 1 --input
+      crates/game-testbed/scenarios/dot-square.input.toml --budgets
+      budgets.toml --report target/ci/shot.json --out target/ci/shot.png`;
+      exit 0 passes, 13 fails, and the step records `gpu.adapter`,
+      `gpu.driver` and `gpu.per_frame` from the report.
+    - `proof-video`: `game-testbed video --ticks 240 --seed 1 --input
+      crates/game-testbed/scenarios/dot-square.input.toml --out
+      target/ci/proof.apng --report target/ci/proof.json` (241 frames, 1/60
+      s each), uploaded as an artifact.
+    - `shot-exact` and `shot-flip` (T12): `shot` writes candidates under
+      `target/golden-candidates/`.
+43. **Amendment from session 17, T9** (to proposal 4 and "Crate batch 2").
+    Recomputed against the real lock (main at 462feb5 plus T9). The lock
+    gains 9 registry packages: `png` 0.18.1 and what it brings, `adler2`
+    2.0.1, `crc32fast` 1.5.3, `fdeflate` 0.3.7, the deflate crate 1.1.10,
+    `miniz_oxide` 0.8.9 and 0.9.1 and `simd-adler32` 0.3.10, all at the
+    table's versions, plus `zlib-rs` 0.6.8, locked but never built, as the
+    plan said. `cargo tree -e normal,build` for the seven targets: 98
+    third-party names and 101 versions, up from 91 and 93; the 8 new
+    versions are those above, on all seven targets, as the table says, and
+    nothing else changed. `cargo deny check` (the lint job) passes with the
+    approved policy. No difference from the table. At integration, main
+    (4129956) already held T10's winit crates, and both changes had
+    edited `Cargo.lock` and `[workspace.dependencies]` at the same place.
+    So the orchestrator took main's lock, added the `png` line, and ran
+    `cargo update --offline --workspace`. Cargo added these 9 packages at
+    these versions and changed nothing else; the lint job's `cargo deny
+    check` passes on the merged lock.

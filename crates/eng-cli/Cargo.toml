@@ -1,6 +1,6 @@
 [package]
 name = "eng-cli"
-description = "The probe command set every game binary links: run, replay verify, dump-world."
+description = "The probe command set every game binary links: run, replay verify, dump-world, shot and video."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,15 +9,18 @@ publish.workspace = true
 
 [dependencies]
 eng-core.workspace = true
+eng-gpu.workspace = true
 eng-input.workspace = true
 eng-math.workspace = true
 eng-net-transport.workspace = true
 eng-platform-api.workspace = true
 eng-platform-headless.workspace = true
+eng-render.workspace = true
 eng-schema-core.workspace = true
 eng-schema-json.workspace = true
 eng-session.workspace = true
 eng-sim.workspace = true
+png.workspace = true
 serde.workspace = true
 
 [lints]

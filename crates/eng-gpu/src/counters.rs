@@ -3,8 +3,9 @@
 
 /// What one frame asked of the GPU, counted from the commands
 /// [`crate::Graph::render`] encoded. The counts depend only on what the
-/// passes recorded, never on the adapter. From rung 1b's task T9, reports
-/// carry them in their `gpu` object and `budgets.toml [gpu]` limits them.
+/// passes recorded, never on the adapter. The probe's `shot` and `video`
+/// reports carry them in their `gpu` object, and `budgets.toml [gpu]`
+/// limits them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameCounters {
     /// Draw calls.

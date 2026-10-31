@@ -299,13 +299,14 @@ Graph::render ──▶ FrameCounters (draws, switches, uploaded bytes)
 ## The frame
 
 `eng-render` (spec 6.7, 6.13) draws rung 1b's top-down view, the one kept
-later as the automap and debug view, through eng-gpu's fixed graph.
-Nothing calls it yet: `shot` and `video` will (T9), and `play`'s window
-(T11). It reads only the scene a game's extraction hands it, never the
-simulation, and nothing flows back.
+later as the automap and debug view, through eng-gpu's fixed graph. The
+probe's `shot` and `video` call it, and `play`'s window will (T11). It
+reads only the scene a game's extraction hands it, never the simulation,
+and nothing flows back.
 
 ```
-game extraction (T9) ──▶ TopDownScene: camera, background, shapes (WorldPos, f64)
+GameDef::top_down(TopDownFrame { previous, current, alpha, width, height })
+  game extraction ──▶ TopDownScene: camera, background, shapes (WorldPos, f64)
      TopDownScene::quads: camera subtracted in f64, then clip space, then f32
 Renderer::render:
   draw     top_down.wgsl  background, then every quad in one instanced draw ──▶ scene
@@ -328,17 +329,40 @@ Renderer::render:
   clamps each channel to [0, 1] (plan decision 2), and the output's sRGB
   format encodes it, so 1 shows as full intensity. Light in nits and EV100
   exposure arrive with lights and the tone-mapping curve in rung 2.
+- **Extraction.** A game gives the probe a function from a `TopDownFrame`
+  to a `TopDownScene` (`GameDef::top_down`). It reads the previous and
+  current states and never writes. The testbed's is one small file,
+  `crates/game-testbed/src/top_down.rs` (plan difference 6): the camera on
+  the room's centre, zoomed so the room fits the image (40 px/m on the
+  320x240 shot, where it fills the image exactly); the room as a wall
+  rectangle under a floor inset by 0.1 m; one disc per dot, as wide as its
+  hull and coloured by player slot.
 - **Interpolation** is the extraction's: it builds the scene from the
-  previous and current states at the frame's alpha. `shot` and `video` use
-  alpha 1 at a tick, so they are exact.
+  previous and current states at the frame's alpha, exactly the previous
+  state at 0 and the current one at 1. `shot` and `video` pass one tick's
+  state as both, at alpha 1, so they are exact.
 - **Culling and checks.** A shape that covers none of the image is left
   out, so it costs nothing to upload. A scene that cannot be drawn (a
   value that is not finite, a rectangle inside out, a zoom that is not
   above 0) fails with `[E-SCENE]` before any GPU work.
 - **Cost.** Offscreen a frame is 2 draws, 2 pipeline switches, 1
   bind-group switch and 32 bytes per shape in view; presenting adds 1, 1
-  and 1. With nothing in view the top-down draw is skipped. From T9,
-  reports carry the counters and `budgets.toml [gpu]` holds them.
+  and 1. With nothing in view the top-down draw is skipped. `shot` and
+  `video` reports carry the counters (below), and `budgets.toml [gpu]`
+  holds them for every frame.
+- **`shot` and `video`** (`crates/eng-cli/src/capture.rs`) open the GPU
+  before the simulation runs; without an adapter they exit 64 with
+  `[E-NO-ADAPTER]` and write nothing (plan decision 4). They render the
+  frames they need from the client's state as the run reaches them and
+  keep them in memory: `shot` one PNG at its tick, `video` an animated PNG
+  of tick 0 and every K-th tick after it, each frame shown for K ticks.
+  The last frame is the last multiple of K not past N, so `--ticks` a
+  multiple of `--every` ends on the run's last state.
+  The file is written once the run reaches its last tick, so a run that a
+  budget stops early leaves none. Both files are 8-bit sRGB RGBA with an
+  `sRGB` chunk and nothing else, so the same pixels give the same bytes.
+  A frame that fails once the GPU is open (`[E-SCENE]`, `[E-GPU]`) is a
+  bug: it panics, and the hook writes `crash.json` (exit 12).
 
 ## Invariants
 
@@ -381,7 +405,8 @@ Renderer::render:
 - The probe (`eng-cli`, linked by every game) runs headless with scripted
   input through the in-process session (above), on the headless platform,
   writes reports, events,
-  hash streams and recordings, and verifies replays. Exit codes are listed
+  hash streams and recordings, and verifies replays. `shot` and `video`
+  render offscreen PNG files and the proof video ("The frame"). Exit codes are listed
   in `AGENTS.md`. Its panic hook (in
   `exit.rs`) writes `crash-<game>-<pid>.json` beside the agent log and
   exits 12. The file holds the version stamp's `build` object (below) as
@@ -404,6 +429,27 @@ Renderer::render:
   the obvious forms but runs as the agent's own OS user. CI runs every
   check on every push. If pull requests return, CI's `oracle` workflow
   (base-branch code only, owner approval or label) becomes the gate.
+
+## The report
+
+`--report` writes one JSON object (`crates/eng-cli/src/report.rs`),
+`report_version` 2. `run`, `shot` and `video` share it (`replay verify`
+writes its own): `command`, the stamp's `build`, the run (seed, players,
+ticks, hashes, state size, tick times), `assertions`, `budgets` and `gpu`.
+
+- `budgets` holds each limit from `budgets.toml` (`null` when unset): the
+  `[sim]` limits with the peaks seen, the four `[gpu]` limits, and
+  `exceeded`, the first excess (exit 13).
+- `gpu` is `null` for `run`. For `shot` and `video` it is an object even
+  when a budget stopped the run before the first frame (`frames` 0,
+  `per_frame` `null`). It holds eng-gpu's capability report (`adapter`, `backend`, `device_type`,
+  `vendor`, `device`, `driver`, `driver_info`, `tier` and `capabilities`,
+  five booleans), the image's `width` and `height`, the `frames`
+  rendered, and `per_frame`: the largest `draws`, `pipeline_switches`,
+  `bind_group_switches` and `upload_bytes` of any frame.
+- Stability follows the stamp's rule: keys may be added within a version,
+  as `gpu` and the `[gpu]` limits were in rung 1b, and readers look keys up
+  by name. Renaming, removing or changing a key bumps `report_version`.
 
 ## The version stamp
 

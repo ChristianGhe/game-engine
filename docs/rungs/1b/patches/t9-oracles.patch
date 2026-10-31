@@ -1,0 +1,53 @@
+diff --git a/.github/CODEOWNERS b/.github/CODEOWNERS
+index e665280b86ba69e23ef0cbdb2b7da0280bdbfc17..5c61caa1076ead6916c9ef7ca3801ebea982ef12 100644
+--- a/.github/CODEOWNERS
++++ b/.github/CODEOWNERS
+@@ -12,6 +12,7 @@
+ /crates/game-testbed/tests/exit_codes.rs @ChristianGhe
+ /crates/game-testbed/tests/crash_json.rs @ChristianGhe
+ /crates/game-testbed/tests/version.rs @ChristianGhe
++/crates/game-testbed/tests/shot_video.rs @ChristianGhe
+ /crates/eng-input/tests/live_input.rs @ChristianGhe
+ /crates/eng-net-wire/tests/never_panic.rs @ChristianGhe
+ /crates/eng-session/tests/hash_equality.rs @ChristianGhe
+diff --git a/budgets.toml b/budgets.toml
+index d085d7aa38f5cd3ea5a511b57a3df710d37cb37b..9f6acab8ddd38c5a4a62b1e6b339917b5a941d82 100644
+--- a/budgets.toml
++++ b/budgets.toml
+@@ -2,11 +2,23 @@
+ # owner approves changes.
+ version = 1
+ 
+-# Runner-independent simulation budgets, checked by `<game> run --budgets`.
++# Runner-independent simulation budgets, checked by `<game> run`, `shot` and
++# `video` with `--budgets`.
+ [sim]
+ max_state_bytes = 4096
+ max_entities = 16
+ 
++# Runner-independent per-frame GPU counters (spec 6.13), checked by
++# `<game> shot` and `video` with `--budgets` on every frame they render.
++# About four times the testbed's top-down view with a window (rung 1b,
++# amendment 30): 3 draws, 3 pipeline switches, 2 bind-group switches, and
++# 32 bytes per shape in view (96 with one player, 384 with ten).
++[gpu]
++max_draws_per_frame = 12
++max_pipeline_switches_per_frame = 12
++max_bind_group_switches_per_frame = 8
++max_upload_bytes_per_frame = 2048
++
+ # Read by cargo xtask.
+ [ci]
+ pr_tier_minutes = 15
+diff --git a/protected.toml b/protected.toml
+index f4a63c753c564deeb8e81fee640809eb57549dc0..021005e0370aab84fd82f6f59c6951f65d1584c9 100644
+--- a/protected.toml
++++ b/protected.toml
+@@ -24,6 +24,7 @@ paths = [
+   "crates/game-testbed/tests/exit_codes.rs",
+   "crates/game-testbed/tests/crash_json.rs",
+   "crates/game-testbed/tests/version.rs",
++  "crates/game-testbed/tests/shot_video.rs",
+   "crates/eng-input/tests/live_input.rs",
+   "crates/eng-net-wire/tests/never_panic.rs",
+   "crates/eng-session/tests/hash_equality.rs",

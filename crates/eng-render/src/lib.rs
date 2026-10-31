@@ -35,9 +35,9 @@
 //!   it encodes, so they are exact and the same on every adapter. Offscreen
 //!   a frame costs 2 draws, 2 pipeline switches, 1 bind-group switch and 32
 //!   bytes for each shape in view; presenting adds 1, 1 and 1. A scene with
-//!   nothing in view skips the top-down draw. From rung 1b's task T9,
-//!   reports carry them and `budgets.toml [gpu]` holds them per frame
-//!   (acceptance feature `gpu-report-budgets`).
+//!   nothing in view skips the top-down draw. The probe's `shot` and
+//!   `video` reports carry them, and `budgets.toml [gpu]` holds them per
+//!   frame (acceptance feature `gpu-report-budgets`).
 #![forbid(unsafe_code)]
 
 mod error;

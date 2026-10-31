@@ -8,10 +8,13 @@ use eng_sim::Sim;
 use crate::args::RunArgs;
 use crate::assertions::{Status, Tracker};
 use crate::budgets::BudgetTracker;
+use crate::capture::CaptureSummary;
 use crate::{Exit, GameDef, version};
 
 /// The report's format. Version 2 carries the version stamp's `build`
-/// object; version 1 (rung 1a) had a smaller one.
+/// object; version 1 (rung 1a) had a smaller one. Keys are added within a
+/// version, as the `gpu` object and the `[gpu]` budgets were in rung 1b;
+/// readers look keys up by name (`docs/ARCHITECTURE.md`, "The report").
 pub(crate) const REPORT_VERSION: u64 = 2;
 
 /// FNV-1a-64 over every `(tick, hash)` pair, for comparing whole streams.
@@ -33,6 +36,8 @@ pub(crate) struct RunSummary<'a> {
     pub events: u64,
     pub trackers: &'a [Tracker],
     pub budgets: &'a BudgetTracker,
+    /// `shot` and `video`: the adapter and the frames.
+    pub frames: Option<&'a CaptureSummary>,
     pub exit: Exit,
 }
 
@@ -85,16 +90,30 @@ impl RunSummary<'_> {
             .collect();
         let (max_bytes, max_entities) = self.budgets.limits();
         let limit = |l: Option<u64>| l.map_or(JsonValue::Null, JsonValue::U64);
+        let mut budgets = vec![
+            ("max_state_bytes", limit(max_bytes)),
+            (
+                "peak_state_bytes",
+                JsonValue::U64(self.budgets.peak_state_bytes),
+            ),
+            ("max_entities", limit(max_entities)),
+            ("peak_entities", JsonValue::U64(self.budgets.peak_entities)),
+        ];
+        budgets.extend(
+            self.budgets
+                .gpu_limits()
+                .map(|(name, max)| (name, limit(max))),
+        );
+        budgets.push((
+            "exceeded",
+            self.budgets
+                .exceeded
+                .as_ref()
+                .map_or(JsonValue::Null, |m| JsonValue::str(m.clone())),
+        ));
         JsonValue::object([
             ("report_version", JsonValue::U64(REPORT_VERSION)),
-            (
-                "command",
-                JsonValue::str(if self.args.dump.is_some() {
-                    "dump-world"
-                } else {
-                    "run"
-                }),
-            ),
+            ("command", JsonValue::str(self.args.command())),
             ("game", JsonValue::str(self.game.name)),
             ("build", version::build_json(self.game)),
             ("platform", JsonValue::str("headless")),
@@ -124,28 +143,93 @@ impl RunSummary<'_> {
                 JsonValue::object(self.percentiles().map(|(k, v)| (k, JsonValue::U64(v)))),
             ),
             ("assertions", JsonValue::Array(assertions)),
+            ("budgets", JsonValue::object(budgets)),
             (
-                "budgets",
-                JsonValue::object([
-                    ("max_state_bytes", limit(max_bytes)),
-                    (
-                        "peak_state_bytes",
-                        JsonValue::U64(self.budgets.peak_state_bytes),
-                    ),
-                    ("max_entities", limit(max_entities)),
-                    ("peak_entities", JsonValue::U64(self.budgets.peak_entities)),
-                    (
-                        "exceeded",
-                        self.budgets
-                            .exceeded
-                            .as_ref()
-                            .map_or(JsonValue::Null, |m| JsonValue::str(m.clone())),
-                    ),
-                ]),
+                "gpu",
+                self.frames.map_or(JsonValue::Null, |f| self.gpu_json(f)),
             ),
             ("exit_code", JsonValue::U64(self.exit.code().into())),
             ("exit", JsonValue::str(self.exit.label())),
         ])
+    }
+
+    /// The `gpu` object: the adapter (eng-gpu's `GpuReport`), the image
+    /// size, the frames rendered and, per frame, the largest of each counter
+    /// over them.
+    fn gpu_json(&self, frames: &CaptureSummary) -> JsonValue {
+        let r = &frames.report;
+        let c = r.capabilities;
+        let per_frame = self.budgets.peak_frame.map_or(JsonValue::Null, |p| {
+            JsonValue::object([
+                ("draws", JsonValue::U64(p.draws.into())),
+                (
+                    "pipeline_switches",
+                    JsonValue::U64(p.pipeline_switches.into()),
+                ),
+                (
+                    "bind_group_switches",
+                    JsonValue::U64(p.bind_group_switches.into()),
+                ),
+                ("upload_bytes", JsonValue::U64(p.upload_bytes)),
+            ])
+        });
+        JsonValue::object([
+            ("adapter", JsonValue::str(r.adapter.clone())),
+            ("backend", JsonValue::str(r.backend.as_str())),
+            ("device_type", JsonValue::str(r.device_type.as_str())),
+            ("vendor", JsonValue::U64(r.vendor.into())),
+            ("device", JsonValue::U64(r.device.into())),
+            ("driver", JsonValue::str(r.driver.clone())),
+            ("driver_info", JsonValue::str(r.driver_info.clone())),
+            ("tier", JsonValue::U64(r.tier.into())),
+            (
+                "capabilities",
+                JsonValue::object([
+                    ("timestamp_queries", JsonValue::Bool(c.timestamp_queries)),
+                    ("binding_arrays", JsonValue::Bool(c.binding_arrays)),
+                    (
+                        "multi_draw_indirect_count",
+                        JsonValue::Bool(c.multi_draw_indirect_count),
+                    ),
+                    ("ray_query", JsonValue::Bool(c.ray_query)),
+                    ("mesh_shaders", JsonValue::Bool(c.mesh_shaders)),
+                ]),
+            ),
+            ("width", JsonValue::U64(frames.width.into())),
+            ("height", JsonValue::U64(frames.height.into())),
+            ("frames", JsonValue::U64(frames.frames)),
+            ("per_frame", per_frame),
+        ])
+    }
+
+    /// `shot`'s and `video`'s two lines: the frames and the adapter, then
+    /// the per-frame counters.
+    fn frame_lines(&self, frames: &CaptureSummary) -> [String; 2] {
+        let r = &frames.report;
+        let written = if self.sim.tick().0 == self.args.ticks {
+            format!("written to {}", frames.out.display())
+        } else {
+            "not written: the run stopped early".to_string()
+        };
+        let counters = match self.budgets.peak_frame {
+            Some(p) => format!(
+                "per frame: draws {}, pipeline switches {}, bind-group switches {}, uploaded bytes {}",
+                p.draws, p.pipeline_switches, p.bind_group_switches, p.upload_bytes
+            ),
+            None => "no frame rendered".to_string(),
+        };
+        [
+            format!(
+                "{} frame(s) of {}x{} on {} ({}, {}), {written}",
+                frames.frames,
+                frames.width,
+                frames.height,
+                r.adapter,
+                r.backend.as_str(),
+                r.device_type.as_str()
+            ),
+            counters,
+        ]
     }
 
     /// At most about 20 lines.
@@ -159,11 +243,7 @@ impl RunSummary<'_> {
             format!(
                 "{} {}: {} of {} ticks, seed {}, {} player(s), headless",
                 self.game.name,
-                if self.args.dump.is_some() {
-                    "dump-world"
-                } else {
-                    "run"
-                },
+                self.args.command(),
                 self.sim.tick().0,
                 self.args.ticks,
                 self.args.seed,
@@ -191,6 +271,9 @@ impl RunSummary<'_> {
                 "... {} more failed assertions in the report",
                 failed.len() - 8
             ));
+        }
+        if let Some(frames) = self.frames {
+            lines.extend(self.frame_lines(frames));
         }
         if let Some(message) = &self.budgets.exceeded {
             lines.push(message.clone());

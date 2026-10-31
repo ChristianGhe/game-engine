@@ -1,10 +1,11 @@
-//! `run` and `dump-world`: drive the simulation headless for N ticks,
-//! through the same session as every other mode (spec 6.8): a server and
-//! player 0's client in-process over Memory, every message encoded to
-//! bytes. The probe reads the client's sim, the state the session
-//! delivered, and records the commands the server applied. The ticks run
-//! on the headless platform, one per frame of its virtual clock
-//! ([`Ticker`]).
+//! `run`, `dump-world`, `shot` and `video`: drive the simulation headless
+//! for N ticks, through the same session as every other mode (spec 6.8): a
+//! server and player 0's client in-process over Memory, every message
+//! encoded to bytes. The probe reads the client's sim, the state the
+//! session delivered, and records the commands the server applied. The
+//! ticks run on the headless platform, one per frame of its virtual clock
+//! ([`Ticker`]). `shot` and `video` also render frames of that state
+//! ([`Capture`]).
 
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -13,14 +14,14 @@ use std::time::Instant;
 
 use eng_core::{PlayerCommand, Tick};
 use eng_input::{InputScript, Recording, RecordingHeader, TickHash, write_recording};
-use eng_net_transport::memory::{MemoryEndpoint, MemoryNetwork};
 use eng_schema_json::JsonValue;
-use eng_session::{Client, Server, SessionError};
-use eng_sim::{RestoreError, Sim, SimConfig};
+use eng_sim::{Sim, SimConfig};
 
 use crate::args::RunArgs;
 use crate::assertions::{self, Tracker};
 use crate::budgets::BudgetTracker;
+use crate::capture::Capture;
+use crate::session::{Session, command_for, restored, session_bug, snapshot_limit};
 use crate::ticker::{Flow, Ticker};
 use crate::{ENGINE_SHA, Exit, GameDef, RUSTC_VERSION, exit, log, report, version};
 
@@ -96,85 +97,6 @@ fn load_inputs(a: &RunArgs) -> Result<Inputs, String> {
     })
 }
 
-/// The in-process session: the server owns the authoritative sim, and the
-/// client, player 0's, restores every snapshot into a sim of its own.
-struct Session {
-    server: Server<MemoryEndpoint>,
-    client: Client<MemoryEndpoint>,
-}
-
-impl Session {
-    /// A server and player 0's client, past the handshake. The other slots
-    /// have no client, so the server idles them. Also returns
-    /// `[E-SNAPSHOT-SIZE]` if the first snapshot does not fit a datagram.
-    fn start(game: &GameDef, players: u8, seed: u64) -> (Self, Option<String>) {
-        let net = MemoryNetwork::new();
-        let mut server = Server::new(build_sim(game, players, seed), net.endpoint());
-        let client = Client::connect(
-            build_sim(game, players, seed),
-            net.endpoint(),
-            server.local_id(),
-        );
-        let mut client = client.unwrap_or_else(|e| session_bug(&e, Tick::ZERO));
-        let first = server.poll().err().map(|e| snapshot_limit(e, Tick::ZERO));
-        client
-            .poll()
-            .unwrap_or_else(|e| session_bug(&e, Tick::ZERO));
-        (Self { server, client }, first)
-    }
-
-    /// The state the session delivered.
-    fn sim(&self) -> &Sim {
-        self.client.sim()
-    }
-}
-
-/// A snapshot that outgrows a datagram stops the run as a budget does (exit
-/// 13, `[E-SNAPSHOT-SIZE]`); fragmentation arrives in rung 5. Any other
-/// session error is a bug in this process.
-fn snapshot_limit(err: SessionError, tick: Tick) -> String {
-    match err {
-        SessionError::SnapshotTooLarge { .. } => err.to_string(),
-        other => session_bug(&other, tick),
-    }
-}
-
-fn session_bug(err: &SessionError, tick: Tick) -> ! {
-    match err {
-        // A release build checks floats only here, as the client restores
-        // the state: still a simulation bug.
-        SessionError::Restore(RestoreError::NonFinite(bad)) => panic!("[E-NAN] {bad} at {tick}"),
-        _ => panic!("[E-SESSION] {err} at {tick}"),
-    }
-}
-
-/// Player 0's command must be for the tick being stepped. The server would
-/// otherwise keep it for its own tick, or drop it as late, and repeat the
-/// last command, where `Sim::step` used to refuse it (`[E-STEP]`).
-fn command_for(tick: Tick, command: PlayerCommand) -> Result<PlayerCommand, String> {
-    if command.tick == tick {
-        Ok(command)
-    } else {
-        Err(format!(
-            "[E-STEP] player 0's command is for {}, but the sim is stepping to {tick}; \
-             input scripts start at tick 1",
-            command.tick
-        ))
-    }
-}
-
-/// The client must hold the state of the tick just stepped before the
-/// probe reports it as that tick's.
-fn restored(latest: Option<Tick>, tick: Tick) -> Result<(), String> {
-    match latest {
-        Some(latest) if latest == tick => Ok(()),
-        _ => Err(format!(
-            "[E-DESYNC] after the round trip for {tick} the client's newest snapshot is \
-             {latest:?}: the session lost a snapshot"
-        )),
-    }
-}
-
 /// Reports `message` and stops with `exit`, writing no other output.
 fn fail(exit: Exit, message: &str) -> Exit {
     eprintln!("{message}");
@@ -231,6 +153,15 @@ pub(crate) fn run(game: &GameDef, a: &RunArgs) -> Exit {
         None => None,
     };
     let (mut session, too_large) = Session::start(game, a.players, a.seed);
+    // After the session, so a panic while the GPU opens has the seed, and
+    // before the first tick, so a missing adapter costs no run.
+    let mut capture = match &a.capture {
+        Some(args) => match Capture::open(game, args, a.ticks) {
+            Ok(capture) => Some(capture),
+            Err(message) => return fail(Exit::Usage, &message),
+        },
+        None => None,
+    };
     if let Some(message) = too_large {
         inputs.budgets.exceeded.get_or_insert(message);
     }
@@ -248,6 +179,10 @@ pub(crate) fn run(game: &GameDef, a: &RunArgs) -> Exit {
         session.sim().state_len() as u64,
         session.sim().world().entity_count() as u64,
     );
+    if let Some(capture) = capture.as_mut().filter(|c| c.wants(0)) {
+        let counters = capture.frame(session.sim());
+        within_budget = inputs.budgets.observe_frame(0, &counters) && within_budget;
+    }
 
     // One tick per frame of the headless platform.
     let ticker = Ticker::new(game.tick_rate, a.ticks, || {
@@ -308,11 +243,19 @@ pub(crate) fn run(game: &GameDef, a: &RunArgs) -> Exit {
             }
         }
         observe(&mut inputs.trackers, sim);
+        // A frame over a `[gpu]` budget stops the run here, as `[sim]` does.
+        let frame_ok = match capture.as_mut().filter(|c| c.wants(tick.0)) {
+            Some(capture) => {
+                let counters = capture.frame(sim);
+                inputs.budgets.observe_frame(tick.0, &counters)
+            }
+            None => true,
+        };
         within_budget = inputs.budgets.observe(
             tick.0,
             sim.state_len() as u64,
             sim.world().entity_count() as u64,
-        );
+        ) && frame_ok;
         Flow::Next
     });
     if let Some(exit) = ticker.run() {
@@ -332,7 +275,9 @@ pub(crate) fn run(game: &GameDef, a: &RunArgs) -> Exit {
     };
 
     let stopped = inputs.budgets.exceeded.is_some();
-    let outputs = write_outputs(game, a, sim, &hashes, recorded, events_out, stopped);
+    let frames = capture.as_ref().map(Capture::summary);
+    let outputs = write_outputs(game, a, sim, &hashes, recorded, events_out, stopped)
+        .and_then(|()| write_frames(a, sim, capture));
     if let Err(message) = outputs {
         return exit::usage(game.name, &message);
     }
@@ -345,6 +290,7 @@ pub(crate) fn run(game: &GameDef, a: &RunArgs) -> Exit {
         events: event_count,
         trackers: &inputs.trackers,
         budgets: &inputs.budgets,
+        frames: frames.as_ref(),
         exit,
     };
     if let Some(path) = &a.report
@@ -416,6 +362,18 @@ fn write_outputs(
     Ok(())
 }
 
+/// Writes `shot`'s or `video`'s file if the run reached its last tick, so
+/// every frame is in; a run stopped early by a budget writes none.
+fn write_frames(a: &RunArgs, sim: &Sim, capture: Option<Capture>) -> Result<(), String> {
+    match capture {
+        Some(capture) if sim.tick().0 == a.ticks => {
+            let (path, bytes) = capture.finish();
+            write_file(&path, &bytes)
+        }
+        _ => Ok(()),
+    }
+}
+
 /// The hash stream's text format, in its first line.
 pub(crate) const HASH_STREAM_VERSION: u64 = 1;
 
@@ -434,31 +392,4 @@ fn hash_stream(game: &GameDef, a: &RunArgs, sim: &Sim, hashes: &[TickHash]) -> S
         out.push_str(&format!("{} {:#018x}\n", h.tick.0, h.hash));
     }
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use eng_core::{PlayerCommand, Tick};
-
-    use super::{command_for, restored};
-
-    #[test]
-    fn a_command_for_another_tick_is_refused() {
-        let at = |t| PlayerCommand::idle(Tick(t));
-        assert_eq!(command_for(Tick(3), at(3)), Ok(at(3)));
-        let err = command_for(Tick(6), at(1)).unwrap_err();
-        assert!(
-            err.starts_with("[E-STEP] player 0's command is for tick 1"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn the_client_must_hold_the_tick_just_stepped() {
-        assert_eq!(restored(Some(Tick(4)), Tick(4)), Ok(()));
-        for latest in [Some(Tick(3)), None] {
-            let err = restored(latest, Tick(4)).unwrap_err();
-            assert!(err.starts_with("[E-DESYNC] "), "{err}");
-        }
-    }
 }

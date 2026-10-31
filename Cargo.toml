@@ -56,6 +56,9 @@ naga = { version = "=30.0.1", features = ["wgsl-in", "spv-out", "msl-out", "hlsl
 # raw-window-handle 0.6 for the window seam, X11 and Wayland loaded at run
 # time, and no client-side decorations on Wayland.
 winit = { version = "=0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
+# PNG and APNG for eng-cli's `shot` and `video` (plan difference 5), and for
+# decoding them in tests. It has no default features.
+png = "=0.18.1"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

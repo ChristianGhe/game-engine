@@ -19,12 +19,15 @@ cargo xtask selftest           # deliberate violations must fail
 cargo test -p <crate>          # one crate
 cargo run -p game-testbed -- run --headless --ticks 120 --seed 1 --report r.json
 cargo run -p game-testbed -- dump-world --at-tick 60 --out world.json
+cargo run -p game-testbed -- shot --at-tick 60 --out shot.png --report r.json  # GPU, offscreen
+cargo run -p game-testbed -- video --ticks 240 --out proof.apng [--every K]    # animated PNG
 cargo run -p game-testbed -- replay verify rec.rec
 cargo run -p game-testbed -- --version --json   # build stamp, sim protocol, schema versions
 ```
 
 Probe exit codes: 0 ok, 10 assertion failed, 11 desync, 12 panic,
-13 budget exceeded, 64 usage. Full logs: `target/agent-logs/*.jsonl`; grep
+13 budget exceeded, 64 usage (also `[E-NO-ADAPTER]`: no GPU for `shot`
+or `video`). Full logs: `target/agent-logs/*.jsonl`; grep
 for tags such as `[E-DESYNC]`, `[E-ASSERT]`, `[E-NAN]`, `[E-ARCH-*]`. A
 panic also writes `target/agent-logs/crash-<game>-<pid>.json` (backtrace,
 seed, tick, last log lines).

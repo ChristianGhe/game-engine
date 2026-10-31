@@ -68,25 +68,43 @@ fn tests(root: &Path) -> Result<String, String> {
 }
 
 /// The `test` job's named harness steps, in order: the step's name, then
-/// the package and test target it runs (`crates/<package>/tests/<target>.rs`).
-/// `tests` runs them as well; a step of their own gives each its own entry
-/// in the job's report, where acceptance checks find steps by name, and its
-/// own log. They build on the dev profile: `crash_json` looks for the
-/// `eng_cli::run::run` frame, which a release build without debug info can
-/// inline away. Like every cargo command here, they get the stamp's four
-/// values from `util::cargo` (`stamp.rs`), so `version` checks a stamp with
-/// all of them set.
-const HARNESSES: [(&str, &str, &str); 5] = [
-    ("known-answers", "eng-math", "known_answers"),
-    ("exit-codes", "game-testbed", "exit_codes"),
-    ("crash-json", "game-testbed", "crash_json"),
-    ("version", "game-testbed", "version"),
-    ("live-input", "eng-input", "live_input"),
+/// the test files it runs, each as a package and a test target
+/// (`crates/<package>/tests/<target>.rs`). `tests` runs them as well; a
+/// step of their own gives each its own entry in the job's report, where
+/// acceptance checks find steps by name, and its own log. They build on the
+/// dev profile: `crash_json` looks for the `eng_cli::run::run` frame, which
+/// a release build without debug info can inline away. Like every cargo
+/// command here, they get the stamp's four values from `util::cargo`
+/// (`stamp.rs`), so `version` checks a stamp with all of them set.
+const HARNESSES: [(&str, &[(&str, &str)]); 7] = [
+    ("known-answers", &[("eng-math", "known_answers")]),
+    ("exit-codes", &[("game-testbed", "exit_codes")]),
+    ("crash-json", &[("game-testbed", "crash_json")]),
+    ("version", &[("game-testbed", "version")]),
+    ("live-input", &[("eng-input", "live_input")]),
+    // Criterion 11: the wire format's golden vectors, decoders that never
+    // panic, and a session that hashes the same as stepping the sim.
+    (
+        "wire-session",
+        &[
+            ("eng-net-wire", "golden"),
+            ("eng-net-wire", "never_panic"),
+            ("eng-session", "hash_equality"),
+        ],
+    ),
+    // Criterion 10: every WGSL file validates and translates for each
+    // backend.
+    ("shaders", &[("eng-gpu", "shaders")]),
 ];
 
-/// One harness from `HARNESSES`, logged under the step's name.
-fn harness(root: &Path, step: &str, package: &str, target: &str) -> Result<String, String> {
-    cargo_step(root, step, &["test", "-p", package, "--test", target])
+/// One step from `HARNESSES`, logged under the step's name: a single
+/// `cargo test` that names each of its packages and test targets.
+fn harness(root: &Path, step: &str, files: &[(&str, &str)]) -> Result<String, String> {
+    let mut args = vec!["test"];
+    for &(package, target) in files {
+        args.extend(["-p", package, "--test", target]);
+    }
+    cargo_step(root, step, &args)
 }
 
 fn core_crates(root: &Path) -> Result<Vec<String>, String> {
@@ -209,8 +227,8 @@ fn lint(root: &Path, steps: &mut Steps) {
 
 fn test(root: &Path, steps: &mut Steps) {
     steps.run("tests", || tests(root));
-    for (step, package, target) in HARNESSES {
-        steps.run(step, || harness(root, step, package, target));
+    for (step, files) in HARNESSES {
+        steps.run(step, || harness(root, step, files));
     }
     steps.run("replay", || replay::run(root, &replay::Options::default()));
 }
@@ -378,20 +396,55 @@ mod tests {
 
     use super::HARNESSES;
 
-    /// Every named step runs a test file that exists, under a name of its
-    /// own, so renaming a harness fails here and not only on CI.
+    /// Whether `package` has a test target named `target`: a file
+    /// `tests/<target>.rs` or `tests/<target>/main.rs`, or a `[[test]]` of
+    /// that name in its manifest.
+    fn has_test_target(root: &Path, package: &str, target: &str) -> bool {
+        let dir = root.join("crates").join(package);
+        let tests = dir.join("tests");
+        if tests.join(format!("{target}.rs")).is_file()
+            || tests.join(target).join("main.rs").is_file()
+        {
+            return true;
+        }
+        let manifest: toml::Table = std::fs::read_to_string(dir.join("Cargo.toml"))
+            .ok()
+            .and_then(|text| text.parse().ok())
+            .unwrap_or_default();
+        manifest
+            .get("test")
+            .and_then(toml::Value::as_array)
+            .is_some_and(|list| {
+                list.iter()
+                    .any(|t| t.get("name").and_then(toml::Value::as_str) == Some(target))
+            })
+    }
+
+    /// Every named step runs test files that exist, under a name of its
+    /// own, so renaming a harness fails here and not only on CI. A step's
+    /// one `cargo test` runs a target in each package it names that has
+    /// one, so a step's target names are each in one of its packages only.
     #[test]
-    fn every_harness_step_names_an_existing_test_file() {
+    fn every_harness_step_names_existing_test_files() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("xtask sits in the repo root");
-        for (step, package, target) in HARNESSES {
-            let file = root
-                .join("crates")
-                .join(package)
-                .join("tests")
-                .join(format!("{target}.rs"));
-            assert!(file.is_file(), "step {step}: no {}", file.display());
+        for (step, files) in HARNESSES {
+            assert!(!files.is_empty(), "step {step} runs nothing");
+            for &(package, target) in files {
+                let path = root
+                    .join("crates")
+                    .join(package)
+                    .join("tests")
+                    .join(format!("{target}.rs"));
+                assert!(path.is_file(), "step {step}: no {}", path.display());
+                for &(other, _) in files.iter().filter(|f| f.0 != package) {
+                    assert!(
+                        !has_test_target(root, other, target),
+                        "step {step} also runs {other}'s test target {target}"
+                    );
+                }
+            }
         }
         // With the job's other two steps.
         let mut names: Vec<&str> = HARNESSES.iter().map(|h| h.0).collect();

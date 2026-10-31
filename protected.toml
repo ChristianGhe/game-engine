@@ -26,6 +26,8 @@ paths = [
   "crates/game-testbed/tests/version.rs",
   "crates/eng-input/tests/live_input.rs",
   "crates/eng-net-wire/tests/never_panic.rs",
+  "crates/eng-session/tests/hash_equality.rs",
+  "crates/eng-gpu/tests/shaders.rs",
   "crates/game-testbed/scenarios/scenarios.toml",
   "crates/*/tests/golden.rs",
   "**/golden/**",

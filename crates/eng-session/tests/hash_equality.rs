@@ -1,10 +1,9 @@
 //! The session gives the same state hashes as stepping the simulation
 //! directly (spec 6.8; rung 1b criterion 11, `wire-session`). PROTECTED
-//! ORACLE once the owner applies `docs/rungs/1b/patches/t6-oracles.patch`:
-//! "one code path" is safe only while a session over Memory, with every
-//! message encoded to bytes, changes nothing in the simulation. The test sim
-//! is defined here and not shared, so nothing outside this file can weaken
-//! the check.
+//! ORACLE: "one code path" is safe only while a session over Memory, with
+//! every message encoded to bytes, changes nothing in the simulation. The
+//! test sim is defined here and not shared, so nothing outside this file
+//! can weaken the check.
 //!
 //! - Two clients drive the two player slots. At every tick from 0, the
 //!   server's state and each client's restored state hash the same as a sim

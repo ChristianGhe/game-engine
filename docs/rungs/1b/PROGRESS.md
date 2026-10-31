@@ -2948,9 +2948,11 @@ to 17, the protection of `crash_json.rs`, `version.rs`, `live_input.rs`
 and `**/*.proptest-regressions` (e14b533); amendment 18's oracle patch,
 which protects eng-net-wire's `golden.rs` and `never_panic.rs`
 (2026-10-31); proposal 5 (G4) as ADR-0016 (75e444f); proposal 4 (G3)
-with amendment 22 (37142b7); and amendment 25's libm pin, in one commit
-with T7 (84f0745). For G5, `t6-oracles.patch` and then
-`t7-oracles.patch` are ready. Nothing else below is applied. Each item is what an agent would
+with amendment 22 (37142b7); amendment 25's libm pin, in one commit with
+T7 (84f0745); and from G5, `t6-oracles.patch` and `t7-oracles.patch`
+(2026-10-31: `hash_equality.rs` and `shaders.rs` protected, the
+`wire-session` and `shaders` steps in `ci --job test`). Nothing else
+below is applied. Each item is what an agent would
 otherwise have to change; the owner applies it, or unlocks the path.
 
 1. **`docs/rungs/1b/acceptance.json`** (G1). Make it from the table in

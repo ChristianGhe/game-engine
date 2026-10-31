@@ -292,8 +292,10 @@ Graph::fixed(Surface) adds present: output ──▶ surface (T8, T11)
 - `cargo xtask` is the only entry point; CI only calls it.
 - CI's `test` job runs the workspace's tests, then, each as a step of its
   own, the harnesses whose results acceptance relies on: `known-answers`,
-  `exit-codes`, `crash-json`, `version` and `live-input` (`HARNESSES` in
-  `xtask/src/ci.rs`), then the replays. Each step is an entry in the job's
+  `exit-codes`, `crash-json`, `version`, `live-input`, `wire-session` and
+  `shaders` (`HARNESSES` in `xtask/src/ci.rs`; `wire-session` runs
+  eng-net-wire's `golden` and `never_panic` and eng-session's
+  `hash_equality`), then the replays. Each step is an entry in the job's
   report (`target/ci/report.json`, copied to `target/ci/reports/`), which
   `cargo xtask acceptance` reads.
 - The probe (`eng-cli`, linked by every game) runs headless with scripted

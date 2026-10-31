@@ -13,6 +13,7 @@
 /crates/game-testbed/tests/crash_json.rs @ChristianGhe
 /crates/game-testbed/tests/version.rs @ChristianGhe
 /crates/eng-input/tests/live_input.rs @ChristianGhe
+/crates/eng-net-wire/tests/never_panic.rs @ChristianGhe
 /crates/game-testbed/scenarios/scenarios.toml @ChristianGhe
 /crates/*/tests/golden.rs @ChristianGhe
 **/golden/ @ChristianGhe

@@ -1,5 +1,5 @@
 //! The codec's behaviour: tick extension, round trips, caps and every
-//! decode error. Byte layouts are pinned in `layout.rs`.
+//! decode error. Byte layouts are pinned in `golden.rs`.
 
 use eng_core::{PlayerCommand, PlayerSlot, Tick};
 use eng_net_wire::{

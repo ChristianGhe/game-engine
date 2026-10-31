@@ -1,8 +1,9 @@
-//! The byte layout of each message kind, wire version 1 (spec 6.8, contract
-//! 7). Every byte below is written out by hand. The header (kind, then the
-//! tick's low 32 bits), `Hello`'s first three fields and `Denied` are how
-//! builds of different versions deny each other; rung 5 fixes their final
-//! form with eng-net-proto's handshake.
+//! Golden vectors: the byte layout of each message kind, wire version 1
+//! (spec 6.8, contract 7). PROTECTED ORACLE: builds of the engine talk to
+//! each other in these bytes. Every byte below is written out by hand. The
+//! header (kind, then the tick's low 32 bits), `Hello`'s first three fields
+//! and `Denied` are how builds of different versions deny each other; rung
+//! 5 fixes their final form with eng-net-proto's handshake.
 
 use eng_core::{PlayerCommand, PlayerSlot, Tick};
 use eng_net_wire::{Commands, Denied, DenyReason, Hello, Message, Snapshot, Welcome};

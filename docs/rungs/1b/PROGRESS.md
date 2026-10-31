@@ -1907,14 +1907,35 @@ matches. Its findings:
 - Scratch clones: a copy-on-write seed of `target/` (4.2 GB) in 12 s;
   `quick` in a clone takes 31 to 53 s, because the path crates rebuild.
 
+## 2026-10-31, session 17 (continued): T5's oracle patch applied (Claude Opus 5.5, with the owner)
+
+The owner applied `docs/rungs/1b/patches/t5-oracles.patch` (amendment
+18's first item) with `git apply`, since the guard refuses agents a patch
+that touches protected paths. eng-net-wire's `tests/golden.rs` and
+`tests/never_panic.rs` are now protected oracles: a change to the wire
+format's bytes goes through the owner. The `wire-session` step still
+waits for T6.
+
+The owner also asked the agent to push and to abandon `uvvsrxtz`. The
+guard refuses agents both whatever the conversation says, because it
+cannot tell the owner's permission from a forged one (ADR-0015), and
+`.claude/settings.json` denies `git push` too. The owner runs them from
+the prompt with `!`.
+
+**Checked:** the patch applied cleanly to 7bfff92 in a scratch clone
+before the owner applied it; `cargo xtask quick` green with it; the 5
+golden tests pass.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1
-and X7 from proposal 7 (2026-10-25); and from proposal 8 and amendments
-14 to 17, the protection of `crash_json.rs`, `version.rs`,
-`live_input.rs` and `**/*.proptest-regressions` (e14b533). Nothing else
-below is applied. Each item is what an agent would otherwise have to
-change; the owner applies it, or unlocks the path.
+and X7 from proposal 7 (2026-10-25); from proposal 8 and amendments 14
+to 17, the protection of `crash_json.rs`, `version.rs`, `live_input.rs`
+and `**/*.proptest-regressions` (e14b533); and amendment 18's oracle
+patch, which protects eng-net-wire's `golden.rs` and `never_panic.rs`
+(2026-10-31). Nothing else below is applied. Each item is what an agent
+would otherwise have to change; the owner applies it, or unlocks the
+path.
 
 1. **`docs/rungs/1b/acceptance.json`** (G1). Make it from the table in
    `plan.md`, "Acceptance", in 1a's format: rung `1b`, spec section 9.2,

@@ -1724,6 +1724,189 @@ write: `docs/rungs/1b/acceptance.json`, `architecture.toml` and
   jobs of X2 and X6. The computed copy was deleted, so the SessionStart
   hook still reports CI's result.
 
+## 2026-10-31, session 17 (continued): T5, `eng-net-wire` (Claude Opus 5.5, with the owner)
+
+The task: T5, the wire codec. Its plan row asks for the codec, the four
+messages and tick extension; round trips and never-panic proptests; golden
+vectors as a patch, because `tests/golden.rs` is protected; and builds for
+RISC-V and wasm32. No new third-party crate (`proptest` is already a
+dev-dependency of five core crates) and no protected path is edited here.
+Nothing calls the codec yet: `eng-session` will, in T6. At the owner's
+request the G1 and G2 commits were made with git (6a38c66, 5a9a83a),
+because the guard refuses jj writes. The old jj working-copy change
+(`uvvsrxtz`) stayed behind as a duplicate of their content, for the owner
+to abandon.
+
+**The format** (the crate docs hold the full table; `docs/ARCHITECTURE.md`
+gains "The wire format"):
+- Every message starts with a 5-byte header: its kind (`u8`), then the low
+  32 bits of a server tick (`u32`). Integers are little-endian and fixed
+  width.
+
+  | Kind | Message | Header tick | Body | Bytes |
+  |---|---|---|---|---|
+  | 1 | `Hello` | 0 | wire version `u32`, sim protocol `u64` | 17 |
+  | 2 | `Welcome` | the server's tick | high 32 bits of the tick, the client's slot `u8`, players `u8`, seed `u64` | 19 |
+  | 3 | `Denied` | the server's tick | high 32 bits of the tick, reason `u8`, the server's wire version and sim protocol | 22 |
+  | 4 | `Commands` | the acknowledged snapshot tick | count `u8` (at most 5), then each `PlayerCommand` in eng-core's 19-byte canonical layout, ticks strictly increasing | 6 + 19 each |
+  | 5 | `Snapshot` | the snapshot's tick | length `u16` (at most 65,535), then the state bytes | 7 + state |
+
+  With the plan's 451-byte dot state, a `Snapshot` is 458 bytes, well
+  inside one 1,200-byte datagram.
+- `extend_tick(baseline, low)` gives the one tick with those low 32 bits in
+  `[baseline - 2^31, baseline + 2^31 - 1]`, or `None` before tick 0 or past
+  `u64::MAX`. `Message::decode(bytes, baseline)` uses it for `Commands` and
+  `Snapshot`. The baseline is the receiver's last acknowledged tick, and
+  the `Welcome` tick until the first one.
+- `Message::encode` returns an `EncodeError` for more than 5 commands,
+  ticks out of order or a state over 65,535 bytes. `Message::decode`
+  returns one of eight `DecodeError`s and never panics.
+
+**Decisions** (proposals; the owner can overrule any):
+1. **Commands keep their u64 tick.** Each command travels in eng-core's
+   canonical layout, which `crates/eng-core/tests/golden.rs` already
+   describes as the bytes "recordings and the network carry". Contract 1's
+   32-bit tick is the header's. The cost is 4 bytes per command (12 per
+   packet of 3) over a 32-bit command tick, and there is no second command
+   encoding to keep in step. A test checks the bytes against
+   `eng_schema_core::to_bytes`.
+2. **The handshake carries full ticks.** A new client has no baseline to
+   extend against, so `Welcome` and `Denied` add the tick's high 32 bits.
+   Without them a client joining a server past tick 2^31 (414 days at 60
+   Hz) would misread the tick.
+3. **`Welcome` carries the session constants.** It names the client's
+   player slot, since `Sim::step` takes one command per slot. It also
+   carries the player count and the seed, because `Sim::restore` refuses a
+   snapshot from a session with other constants (`SimInfo`); the tick rate
+   is part of the sim protocol, which `Hello` compares.
+4. **Version negotiation, not frozen yet.** A `Hello` from another wire
+   version decodes to `DecodeError::WireVersion { found }` without reading
+   further, and the server answers with `Denied`. `DenyReason` is an open
+   `u8` (named values 1 and 2), so a newer server's reason can reach an
+   older client. The header, `Hello`'s version and `Denied` must stay
+   readable across versions for this to work, but they are not frozen
+   now. No two builds exchange messages before rung 5, and rung 5's
+   handshake (magic, client salt, padding, `eng-net-proto`) decides their
+   final form. Until then a change to them is a wire version change like
+   any other, through `golden.rs` and the owner.
+5. **Caps.** `MAX_COMMANDS = 5`, the top of spec 6.8's "3-5 commands";
+   1b's client sends 3. `MAX_STATE_LEN = 65,535`, a `u16` length, as a hard
+   cap for when rung 5 reassembles fragments. The 1,200-byte datagram check
+   stays in `eng-session` (session 16, open question 1).
+6. **Canonical decoding.** Decoders accept only bytes they would write: no
+   trailing bytes, commands in strictly increasing tick order, a `Hello`
+   tick of 0. So every accepted message has exactly one encoding.
+
+**Tests** (24; the expected values are written out by hand)
+- `tests/wire.rs`, 14 tests:
+  - tick extension at its edges: both ends of the window, the 32-bit wrap,
+    a window that starts below 0, the last tick, before 0 and past the
+    maximum;
+  - round trips at the caps: 5 commands, none, 65,535 and 0 state bytes;
+  - each encode error, and the canonical command bytes;
+  - every truncation of every kind, trailing bytes and unknown kinds;
+  - another wire version (its tick and the rest unread), and a non-zero
+    `Hello` tick;
+  - the count checked before reading; commands out of order, also at the
+    third of three; ticks that cannot be extended; an unknown deny reason
+    kept.
+- `tests/layout.rs`, 5 tests: one message of each kind, every byte written
+  out. It becomes the protected `tests/golden.rs` through the patch below.
+- `tests/never_panic.rs`, 5 proptests:
+  - arbitrary bytes and baselines never panic;
+  - damaged valid messages (a byte flipped, inserted or removed, or the
+    message cut short) never panic, and any that decode re-encode to the
+    same bytes;
+  - random valid messages round-trip from any baseline whose window holds
+    their tick;
+  - extension recovers every tick in the window and keeps the low bits.
+- Mutation checks, each reverted:
+  - mine: accepting a non-zero `Hello` tick, reading without a length
+    check, reading the tick distance as unsigned and ignoring trailing
+    bytes. Each fails at least one property. The failing runs wrote
+    `never_panic.proptest-regressions`, which the guard moved to
+    `target/guard-quarantine/`. Its seeds come from planted bugs, so it is
+    not a candidate for the owner;
+  - the reviewer's 14: 13 failed the suite. The survivor compared each
+    command's tick with the first one, not the one before it. The
+    three-command case now fails it, which was checked by planting it.
+- Two of the new properties placed the baseline at `tick + offset`, which
+  for `i32::MIN` lies one past the window. This was fixed before the runs
+  above.
+
+**The oracle patch:** `docs/rungs/1b/patches/t5-oracles.patch`, against
+`main` with this commit. It changes 4 files: 9 lines added, 6 removed.
+- `tests/layout.rs` becomes `tests/golden.rs` (proposal 9), with a
+  "PROTECTED ORACLE" header; `crates/*/tests/golden.rs` is protected
+  already.
+- `crates/eng-net-wire/tests/never_panic.rs` joins `protected.toml` and
+  `.github/CODEOWNERS` (proposal 8, amendment 11).
+- `tests/wire.rs`'s header names `golden.rs`.
+
+How it was tested, in a scratch clone with this commit's files as its
+base: `cargo xtask quick` green with the patch applied (31 s, docs-check
+included), and the 5 golden tests pass. The repo's file, applied with `git
+apply` to a fresh base, gives the tested diff exactly; `typos` passes on
+it.
+
+**Checked** (this repo, aarch64-apple-darwin)
+- `cargo xtask quick` green (12 s); `CI=1 cargo xtask ci --job lint` 7 of
+  7; `CI=1 cargo xtask ci --job wasm` green, and its log shows
+  eng-net-wire checked for wasm32; `cargo xtask selftest` 17 of 17.
+- `RUSTDOCFLAGS=-Dwarnings cargo doc -p eng-net-wire` is clean, and the
+  tests also pass in release.
+- Not run: RISC-V. This Mac has no RISC-V target or `qemu-riscv64`; CI's
+  riscv job runs eng-net-wire's tests with the rest of the core set.
+- Hash streams unchanged: nothing in the sim changed.
+
+**Reviewer** (fresh context, read-only): changes needed, nothing wrong in
+the codec. It found no panic, no unbounded allocation and no accepted
+bytes that re-encode differently. It checked `extend_tick` against an
+independent reference over 252,928 (baseline, low) pairs, and ran the
+proptests at 300,000 cases each. It also checked the committed
+`acceptance.json` against the plan: every check of all 19 features
+matches. Its findings:
+1. The golden-vector patch and this entry were missing. They were waiting
+   for the review, and are now in this commit. Not done: the `wire-session`
+   rows in xtask. That step runs three files in two crates, and the third
+   is eng-session's test (T6), so it is one xtask change after T6
+   (amendment 18).
+2. `Welcome` lacked the player count and seed that `Sim::restore` needs
+   (decision 3). Added.
+3. Freezing the header, `Hello`'s prefix and `Denied` "forever" bound rung
+   5's handshake to a layout without magic, salt or padding. The freeze
+   now starts with rung 5 (decision 4).
+4. The decode-side order test missed comparing with the first command.
+   Three-command case added, plus extension rows for exactly `u64::MAX`
+   and a window that starts below 0.
+5. The docs did not say what the baseline is before the first ack, nor
+   what a wrong one does. `decode`'s and `Commands::ack`'s docs now say.
+
+**Open questions**
+1. **Rung 5's fields.** Time sync needs each snapshot to report the
+   client's buffer slack, and prediction needs the last command the server
+   applied. Both change `Snapshot`, so wire version 2, and with it
+   `golden.rs` through the owner. Adding them now would carry fields 1b
+   never sets.
+2. **Commands' tick width** (decision 1). 32-bit command ticks would save
+   12 bytes a packet, at the price of a second command layout. Say if the
+   wire should use them.
+3. **The AI budget.** Counting the 16 sessions before approval (the
+   `acceptance.json` note), this conversation is session 17, which leaves
+   13 sessions for 13 tasks: T3 and T6 to T17. The plan's margin is gone.
+   Say if the 30 should count from approval instead.
+4. **Windows arm64** (from the review, for T13). A report's `target` is
+   `rustc -vV`'s host, so the `windows-11-arm` runner must run a native
+   aarch64 toolchain. An emulated x64 one would report
+   `x86_64-pc-windows-msvc` and fail every check aimed at arm64 Windows.
+
+**Costs and timings**
+- Session 17, from about 07:30 to 08:55 EET, with the owner: G1 and G2,
+  then T5.
+- Reviewer subagent: about 19 minutes, 232k tokens, 61 tool calls.
+- Scratch clones: a copy-on-write seed of `target/` (4.2 GB) in 12 s;
+  `quick` in a clone takes 31 to 53 s, because the path crates rebuild.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1
@@ -2188,3 +2371,17 @@ change; the owner applies it, or unlocks the path.
       failing proptest's regression file is not protected, and the guard
       would let an agent commit or delete one. Amendment 11's plan (the
       file reaches the owner with the fix) still applies.
+
+18. **Amendment from session 17** (to proposals 7, 8 and 9; the text above
+    is kept as written). T5 is built, so these can be applied:
+    - Proposals 8 and 9: `docs/rungs/1b/patches/t5-oracles.patch`, as one
+      change. It renames `crates/eng-net-wire/tests/layout.rs` to
+      `tests/golden.rs`, which `crates/*/tests/golden.rs` protects, and
+      adds `crates/eng-net-wire/tests/never_panic.rs` to the protected
+      paths and `.github/CODEOWNERS`. After it, any change to the wire
+      format's bytes goes through the owner.
+    - Proposal 7, X7: the `wire-session` step waits for T6. It runs
+      eng-net-wire's `golden` and `never_panic` and eng-session's
+      hash-equality test, three test files in two crates, so `HARNESSES`
+      needs a list of targets per row, or a `steps.run` of its own (session
+      15, open question 1). One xtask change after T6 replaces two.

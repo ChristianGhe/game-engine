@@ -8,6 +8,11 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+eng-core.workspace = true
+
+[dev-dependencies]
+eng-schema-core.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true

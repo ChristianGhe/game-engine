@@ -1,0 +1,74 @@
+Patch T5 oracles (rung 1b, task T5): protect eng-net-wire's golden vectors
+and its never-panic harness.
+
+- crates/eng-net-wire/tests/layout.rs becomes tests/golden.rs, the wire
+  format's golden vectors (PROGRESS.md proposal 9): one message of each
+  kind, every byte written out by hand. crates/*/tests/golden.rs is
+  protected already, so the rename is what protects them.
+- crates/eng-net-wire/tests/never_panic.rs joins protected.toml and
+  .github/CODEOWNERS (proposal 8, amendment 11): criterion 11's
+  never-panic, canonical-bytes and round-trip properties.
+- tests/wire.rs's header names golden.rs.
+
+Base: main with the commit that adds this file (rung 1b, T5). At the repo
+root, run `git apply` with this file, then `cargo xtask quick`. Session
+17's PROGRESS.md entry says how it was tested.
+Text before the first `diff --git` line is ignored by `git apply`.
+
+diff --git a/.github/CODEOWNERS b/.github/CODEOWNERS
+index 4bedf8eb7be821f82dc381b6d534157cfe26bbb1..db4539f9b6d186cb8e61800062f4f53d7d0862c2 100644
+--- a/.github/CODEOWNERS
++++ b/.github/CODEOWNERS
+@@ -13,6 +13,7 @@
+ /crates/game-testbed/tests/crash_json.rs @ChristianGhe
+ /crates/game-testbed/tests/version.rs @ChristianGhe
+ /crates/eng-input/tests/live_input.rs @ChristianGhe
++/crates/eng-net-wire/tests/never_panic.rs @ChristianGhe
+ /crates/game-testbed/scenarios/scenarios.toml @ChristianGhe
+ /crates/*/tests/golden.rs @ChristianGhe
+ **/golden/ @ChristianGhe
+diff --git a/crates/eng-net-wire/tests/layout.rs b/crates/eng-net-wire/tests/golden.rs
+similarity index 90%
+rename from crates/eng-net-wire/tests/layout.rs
+rename to crates/eng-net-wire/tests/golden.rs
+index 2ef2600587863de6f0a7ffacce0d800462f0ea63..158660e5c8eb90aec387af4e514e9d914bb0e379 100644
+--- a/crates/eng-net-wire/tests/layout.rs
++++ b/crates/eng-net-wire/tests/golden.rs
+@@ -1,8 +1,9 @@
+-//! The byte layout of each message kind, wire version 1 (spec 6.8, contract
+-//! 7). Every byte below is written out by hand. The header (kind, then the
+-//! tick's low 32 bits), `Hello`'s first three fields and `Denied` are how
+-//! builds of different versions deny each other; rung 5 fixes their final
+-//! form with eng-net-proto's handshake.
++//! Golden vectors: the byte layout of each message kind, wire version 1
++//! (spec 6.8, contract 7). PROTECTED ORACLE: builds of the engine talk to
++//! each other in these bytes. Every byte below is written out by hand. The
++//! header (kind, then the tick's low 32 bits), `Hello`'s first three fields
++//! and `Denied` are how builds of different versions deny each other; rung
++//! 5 fixes their final form with eng-net-proto's handshake.
+ 
+ use eng_core::{PlayerCommand, PlayerSlot, Tick};
+ use eng_net_wire::{Commands, Denied, DenyReason, Hello, Message, Snapshot, Welcome};
+diff --git a/crates/eng-net-wire/tests/wire.rs b/crates/eng-net-wire/tests/wire.rs
+index d8e9fbc5f28af766350e004e3494e729cb66e53d..6d7fd039619a4d0efbe205d5485c3bc86439b454 100644
+--- a/crates/eng-net-wire/tests/wire.rs
++++ b/crates/eng-net-wire/tests/wire.rs
+@@ -1,5 +1,5 @@
+ //! The codec's behaviour: tick extension, round trips, caps and every
+-//! decode error. Byte layouts are pinned in `layout.rs`.
++//! decode error. Byte layouts are pinned in `golden.rs`.
+ 
+ use eng_core::{PlayerCommand, PlayerSlot, Tick};
+ use eng_net_wire::{
+diff --git a/protected.toml b/protected.toml
+index fb0d040857e133ca58e7210bc5f660fbee6e3cde..4f6d660842afa77055f990ea96ba61890e03dca7 100644
+--- a/protected.toml
++++ b/protected.toml
+@@ -25,6 +25,7 @@ paths = [
+   "crates/game-testbed/tests/crash_json.rs",
+   "crates/game-testbed/tests/version.rs",
+   "crates/eng-input/tests/live_input.rs",
++  "crates/eng-net-wire/tests/never_panic.rs",
+   "crates/game-testbed/scenarios/scenarios.toml",
+   "crates/*/tests/golden.rs",
+   "**/golden/**",

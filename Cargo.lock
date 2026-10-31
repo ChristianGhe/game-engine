@@ -129,6 +129,11 @@ version = "0.1.0"
 [[package]]
 name = "eng-net-wire"
 version = "0.1.0"
+dependencies = [
+ "eng-core",
+ "eng-schema-core",
+ "proptest",
+]
 
 [[package]]
 name = "eng-platform-api"

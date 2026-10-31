@@ -9,7 +9,7 @@ what it describes.
 
 ```
 L0  eng-schema-core  eng-derive  eng-math  eng-core           (core set)
-L1  eng-ecs  eng-net-transport  eng-net-wire*                  (core set)
+L1  eng-ecs  eng-net-transport  eng-net-wire                   (core set)
     eng-schema-json  eng-input  eng-platform-headless          (std)
     eng-platform-api*  eng-platform-winit*                     (std)
 L2  eng-sim  eng-collision-api  kit-fps  game-testbed-sim      (core set)
@@ -97,6 +97,31 @@ KeyEvent (Down/Up of a Key, FocusLost) ──LiveInput::handle──▶ held key
   that is not a list of names, an unknown top-level key and a key bound
   twice fail with `[E-BINDINGS] <file>:<line>: ...`, the first in the file
   being reported; `eng_schema_json::TomlSpans` finds the line.
+
+## The wire format
+
+`eng-net-wire` turns session messages into bytes and back (spec 6.8).
+Nothing calls it yet; `eng-session` will (rung 1b, T6), in-process over
+Memory too, so there is one code path. The crate docs list the five
+messages and their layouts.
+
+- A message is its kind (`u8`), the low 32 bits of a server tick (`u32`)
+  and a body; little-endian, fixed width.
+- The receiver extends a 32-bit tick against its baseline, its last
+  acknowledged tick, to the one tick within 2^31 of it (`extend_tick`). A
+  new client has no baseline, so `Welcome` and `Denied` carry the high 32
+  bits too; the `Welcome` tick is the baseline until the first ack.
+- `Welcome` also carries the session's player count and seed: a sim
+  restores a snapshot only from a session with the same constants.
+- Commands use eng-core's canonical `PlayerCommand` layout, the one
+  recordings use: up to five per message, oldest first.
+- A snapshot's state is the sim's canonical bytes, opaque to the codec, at
+  most 65,535 of them.
+- A `Hello` from another wire version is read only up to its version and
+  answered with `Denied`. The two become frozen in rung 5, whose handshake
+  fixes their final form; until then no two builds exchange messages.
+- Decoders never panic, cap every count and length, and accept only
+  canonical bytes (`tests/never_panic.rs`).
 
 ## Invariants
 

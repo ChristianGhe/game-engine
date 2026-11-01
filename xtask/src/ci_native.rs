@@ -257,12 +257,20 @@ fn arg(root: &Path, path: &str) -> String {
     root.join(path).display().to_string()
 }
 
-/// The workspace and every test target build (criterion 1).
+/// The workspace and every test target build (criterion 1). Not xtask's: it
+/// is the program running this, which cargo cannot replace on Windows, and
+/// `cargo xtask` and the `tests` step build its binary and its tests anyway.
 fn build(root: &Path) -> Result<Done, String> {
     pass(ci::cargo_step(
         root,
         "native-build",
-        &["build", "--workspace", "--all-targets"],
+        &[
+            "build",
+            "--workspace",
+            "--exclude",
+            "xtask",
+            "--all-targets",
+        ],
     ))
 }
 

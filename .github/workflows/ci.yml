@@ -243,11 +243,11 @@ jobs:
           # would resolve to the pinned library if that one loaded first. The
           # shots, the budget shot and the proof video name the pinned
           # adapter; windows can only open on Ubuntu's (xtask, ci_native.rs).
-          # Named, not globbed: an i686 ICD would sort first and the 64-bit
-          # loader would skip it.
-          distro=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          # The name mesa-vulkan-drivers 25.2.8-0ubuntu0.24.04.4 gives it: one
+          # file for every architecture, with no architecture in its name.
+          distro=/usr/share/vulkan/icd.d/lvp_icd.json
           if [ ! -f "$distro" ]; then
-            echo "::error::mesa-vulkan-drivers installed no x86_64 lavapipe ICD ($distro)"
+            echo "::error::mesa-vulkan-drivers installed no lavapipe ICD ($distro)"
             exit 1
           fi
           echo "VK_DRIVER_FILES=$distro:$mesa/lvp_icd.json" >> "$GITHUB_ENV"

@@ -3,7 +3,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::push;
@@ -36,8 +36,12 @@ fn setup() -> (PathBuf, PathBuf) {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(dir.join("work")).unwrap();
     let dir = fs::canonicalize(dir).unwrap();
+    // Without Windows' `\\?\`: git would read such a path as a host name.
+    let dir = PathBuf::from(dir.to_str().unwrap().trim_start_matches(r"\\?\"));
     let (hub, work) = (dir.join("hub.git"), dir.join("work"));
-    git(&dir, &["init", "-q", "--bare", "hub.git"]);
+    // `-b`, because a clone checks out what HEAD names and git's default
+    // branch depends on the machine: `main` from Xcode's git, `master` on CI.
+    git(&dir, &["init", "-q", "--bare", "-b", "main", "hub.git"]);
     git(&work, &["init", "-q", "-b", "main"]);
     fs::write(work.join(".gitignore"), "target/\n").unwrap();
     fs::write(work.join("deny.toml"), "").unwrap();
@@ -174,6 +178,7 @@ fn fetches_githubs_main_when_it_is_missing() {
             .arg("-C")
             .arg(&work)
             .args(["cat-file", "-e", &format!("{id}^{{commit}}")])
+            .stderr(Stdio::null())
             .status()
             .unwrap()
             .success()

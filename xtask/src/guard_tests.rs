@@ -87,12 +87,11 @@ fn root_manifest_tables() {
 }
 
 #[test]
+#[cfg(unix)]
 fn symlinks_into_the_repo_are_followed() {
     let root = repo();
     let link = root.join("crates/innocent.toml");
-    #[cfg(unix)]
     std::os::unix::fs::symlink(root.join("deny.toml"), &link).unwrap();
-    #[cfg(unix)]
     assert!(matches!(
         decide_in(&root, "Write", json!({ "file_path": link }), &[]),
         Decision::Block(_)

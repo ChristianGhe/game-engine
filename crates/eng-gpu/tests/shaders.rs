@@ -238,6 +238,7 @@ fn the_scan_skips_only_the_build_and_hidden_directories_at_the_root() {
                 .expect("inside")
                 .display()
                 .to_string()
+                .replace('\\', "/")
         })
         .collect();
     assert_eq!(

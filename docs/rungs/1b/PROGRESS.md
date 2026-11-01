@@ -6439,7 +6439,8 @@ T7 (84f0745); from G5, `t6-oracles.patch` and `t7-oracles.patch`
 `wire-session` and `shaders` steps in `ci --job test`); and the rest of
 G5 on 2026-11-01: the oracle patches for T10, T3, T9, T11, T12 and T8,
 and `t13-x2-x6.patch` (X2 to X6, with the `golden-update` skill and the
-`visual-qa` agent); and amendment 95, `agent-push.patch` (2026-11-01).
+`visual-qa` agent); amendment 95, `agent-push.patch` (2026-11-01); and
+`ci-first-run.patch`, with the second half of amendment 98 (2026-11-01).
 Nothing else below is applied. Each item is what an agent would
 otherwise have to change; the owner applies it, or unlocks the path.
 

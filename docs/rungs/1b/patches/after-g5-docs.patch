@@ -1,0 +1,266 @@
+The doc lines that land in the same commit as gate G5 (T14's "After G5"
+list, with T13's final names). Nothing here is protected: an agent applies
+it with `git apply docs/rungs/1b/patches/after-g5-docs.patch` right after
+the owner has applied the seven G5 patches, runs `cargo xtask quick`, and
+commits both. Before G5 these lines would describe tooling main does not
+have yet. AGENTS.md comes to 150 of its 150 lines.
+
+diff --git a/AGENTS.md b/AGENTS.md
+index b1247d2489597e818dcdeb0e80cf116f471ccb41..0e51c38fb92bbef96e2981ba537a84044853a787 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -11,7 +11,7 @@ and its `acceptance.json`. Append what you did to that rung's `PROGRESS.md`.
+ 
+ ```sh
+ cargo xtask quick              # before every commit: fmt, clippy, arch, size, docs, tests, replays
+-cargo xtask ci --job lint      # CI jobs: lint test riscv wasm selftest summary all
++cargo xtask ci --job lint      # CI jobs: lint test riscv wasm selftest native summary all
+ cargo xtask arch-check         # layering and core-set rules (architecture.toml)
+ cargo xtask replay [--regen]   # scenarios vs committed hash streams; --regen: see "Tests and oracles"
+ cargo xtask selftest [CASE]    # deliberate violations must fail
+@@ -110,7 +110,8 @@ tools. Each crate and edge: `docs/ARCHITECTURE.md`, "Layers".
+   required. A difference there is a determinism bug, never a baseline to update.
+ - Debug a divergence with `dump-world --at-tick N` on both sides and diff
+   the JSON (the `replay-debug` skill).
+-- Vision models may sort failures but never decide pass or fail.
++- The owner commits goldens; the `golden-update` skill hands over CI's candidates.
++- Vision models (`visual-qa` agent) may sort failures, never decide pass or fail.
+ 
+ ## Protected paths
+ 
+diff --git a/crates/eng-gpu/src/gpu.rs b/crates/eng-gpu/src/gpu.rs
+index 902d92b791769bb831d53770d461fc4576ed8b6a..972ae015e99790cd4036f457e57c60bb2fb8ccd5 100644
+--- a/crates/eng-gpu/src/gpu.rs
++++ b/crates/eng-gpu/src/gpu.rs
+@@ -46,7 +46,7 @@ impl GpuOptions {
+ }
+ 
+ /// Whether a missing adapter fails rather than skips: `ENG_REQUIRE_GPU=1`,
+-/// which CI's native jobs set (plan decision 4; from gate G5).
++/// which CI's native jobs set (plan decision 4).
+ pub fn gpu_required() -> bool {
+     std::env::var("ENG_REQUIRE_GPU").is_ok_and(|value| value == "1")
+ }
+diff --git a/crates/eng-render/src/lib.rs b/crates/eng-render/src/lib.rs
+index a7ad1cc20bce051c5b96d64e228a2e3d660c1f5e..80844130a6a3cd8200f51f752cb20398bea4a472 100644
+--- a/crates/eng-render/src/lib.rs
++++ b/crates/eng-render/src/lib.rs
+@@ -40,8 +40,8 @@
+ //!   bytes for each shape in view; presenting adds 1, 1 and 1. A scene with
+ //!   nothing in view skips the top-down draw. The probe's `shot`, `video`
+ //!   and `play` reports carry them; a budgets file's `[gpu]` table, when it
+-//!   has one, limits `shot` and `video` frames (acceptance feature
+-//!   `gpu-report-budgets`; `budgets.toml`'s is proposed for gate G5).
++//!   has one, limits `shot` and `video` frames (`budgets.toml` has one;
++//!   acceptance feature `gpu-report-budgets`).
+ #![forbid(unsafe_code)]
+ 
+ mod error;
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index 4799ef66b664775796a36f6dc5f76e10febc7c99..e4c2827fa17e609525c7f88b371c0c60161afa68 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -147,8 +147,9 @@ Platform::run(&mut app):  start ─▶ window (windowed only)
+   `crates/eng-platform-winit/tests/conformance.rs` (`harness = false`:
+   the main thread), which adds real window handles, a clock that restarts
+   each run, and more timed frames than a window's opening brings. Without
+-  a display (CI's test job) it skips, unless `ENG_REQUIRE_DISPLAY=1`; a
+-  watchdog fails it after a minute.
++  a display (CI's test job) it skips, unless `ENG_REQUIRE_DISPLAY=1`
++  makes it fail, as in CI's native jobs; a watchdog fails it after a
++  minute.
+ 
+ ## Live input
+ 
+@@ -272,10 +273,10 @@ Graph::render ──▶ FrameCounters (draws, switches, uploaded bytes)
+ - **Adapters.** `ENG_GPU_ADAPTER` picks the first adapter whose name
+   contains it, ignoring case; otherwise wgpu chooses, software last. With
+   no adapter `Gpu::new` fails with `[E-NO-ADAPTER]`, and GPU tests skip
+-  unless `ENG_REQUIRE_GPU=1` makes them fail (CI's native jobs set it,
+-  from gate G5; no job sets it yet). Each OS has one backend, so machines
+-  agree: Metal on macOS, Vulkan on Linux, and DX12 on Windows, which
+-  compiles shaders with FXC, part of Windows.
++  unless `ENG_REQUIRE_GPU=1` makes them fail (CI's native jobs set it).
++  Each OS has one backend, so machines agree: Metal on macOS, Vulkan on
++  Linux, and DX12 on Windows, which compiles shaders with FXC, part of
++  Windows.
+ - **Flags.** Debug builds use wgpu's release flags, as the game does;
+   `WGPU_DEBUG=1` and `WGPU_VALIDATION=1` add debug labels and the
+   backend's validation layer when debugging.
+@@ -376,10 +377,12 @@ Renderer::render_to: the same three passes, into a window's SurfaceFrame
+ - **Cost.** Offscreen a frame is 2 draws, 2 pipeline switches, 1
+   bind-group switch and 32 bytes per shape in view; presenting adds 1, 1
+   and 1. With nothing in view the top-down draw is skipped. Reports carry
+-  each frame's peaks ("The report"). A `[gpu]` table in `budgets.toml`
++  each frame's peaks ("The report"). The `[gpu]` table in `budgets.toml`
+   limits them for each frame of `shot` and `video` (`[E-BUDGET]`, exit
+-  13); its values are proposed for gate G5, and until then nothing is
+-  limited.
++  13): 12 draws, 12 pipeline switches, 8 bind-group switches and 2,048
++  bytes, about four times the testbed's view with a window. `play` is not
++  limited, but the native job's `gpu-budgets` step holds its window's
++  peaks to the same limits.
+ 
+ ## The frame
+ 
+@@ -486,21 +489,28 @@ client's state at alpha 1, so the pictures are exact.
+     outside `golden-candidates/` and hold every shot's golden: another
+     machine's candidates, or an edited copy. An edited copy fails only in
+     exact mode, as FLIP passes a single changed pixel by design, so
+-    criterion 12's selftest (patch X5, gate G5) needs the pinned lavapipe.
++    `cargo xtask selftest golden-edit` (criterion 12) needs the pinned
++    lavapipe. It changes one level of one pixel of a copy and expects
++    `[E-GOLDEN]` for that shot alone. CI's `selftest` job and its
++    `ubuntu-24.04` native job download the pinned build (Mesa 25.2.7 from
++    gfx-rs/ci-build build26, SHA-256 checked) and point `VK_DRIVER_FILES`
++    at it; on any other machine the case says it could not run.
+ - **The golden flow.** `golden/` is the owner's, and the harness never
+-  writes there; on main it does not exist yet. While it holds no golden,
+-  each shot is saved as a candidate in `target/golden-candidates/` and
+-  reported as `[W-NO-GOLDEN]`. A FLIP comparison with no
+-  `thresholds.toml` beside the goldens (another machine's candidates
+-  through `ENG_GOLDEN_DIR`, say) is measured and reported as
+-  `[W-NO-THRESHOLDS]`. Neither fails the test, and neither is a pass for
+-  acceptance: the run's `golden-candidates/shots.json` gives the
+-  configuration, the machine and each shot's status. The owner commits
+-  candidates from the pinned lavapipe as the goldens, byte for byte, and
+-  the FLIP limits (gates G5 and G6). From then on every shot needs its
+-  own golden, and a golden that no shot names fails. A failing shot is
+-  saved as a candidate, and every FLIP comparison leaves its error map in
+-  `flip/`.
++  writes there. It holds `thresholds.toml`, the owner's FLIP limits; the
++  goldens come with gate G6. While it holds no golden, each shot is saved
++  as a candidate in `target/golden-candidates/` and reported as
++  `[W-NO-GOLDEN]`. A FLIP comparison with no `thresholds.toml` beside the
++  goldens (another machine's candidates through `ENG_GOLDEN_DIR`, say) is
++  measured and reported as `[W-NO-THRESHOLDS]`. Neither fails the test,
++  and neither is a pass for acceptance (the native job's `shot-exact` and
++  `shot-flip` steps are pending): the run's `golden-candidates/shots.json`
++  gives the configuration, the machine and each shot's status. The owner
++  commits candidates from the pinned lavapipe as the goldens, byte for
++  byte. From then on every shot needs its own golden, and a golden that no
++  shot names fails. A failing shot is saved as a candidate, and every FLIP
++  comparison leaves its error map in `flip/`. Each native runner uploads
++  these as `golden-candidates-<runner>`, and the `golden-update` skill
++  brings them to the owner.
+ 
+ ## Invariants
+ 
+@@ -525,7 +535,7 @@ client's state at alpha 1, so the pictures are exact.
+ | Cross-architecture equality | `cargo xtask compare-hashes` in CI's summary job | never changes |
+ | `eng-math` known answers | `crates/eng-math/tests/known_answers.txt` | the owner |
+ | Golden vectors | `crates/*/tests/golden.rs` | the owner |
+-| Golden images and FLIP thresholds | `crates/game-testbed/golden/` (none yet), compared by `crates/game-testbed/tests/shots.rs` and `tests/shots/` | the owner |
++| Golden images and FLIP thresholds | `crates/game-testbed/golden/` (thresholds only, no images yet), compared by `crates/game-testbed/tests/shots.rs` and `tests/shots/` | the owner |
+ | Harnesses acceptance relies on | the test files `protected.toml` lists | the owner |
+ | Semantic assertions | `crates/game-testbed/scenarios/*.assert.toml` | the owner |
+ | Budgets | `budgets.toml` | the owner |
+@@ -542,6 +552,60 @@ client's state at alpha 1, so the pictures are exact.
+   `hash_equality`), then the replays. Each step is an entry in the job's
+   report (`target/ci/report.json`, copied to `target/ci/reports/`), which
+   `cargo xtask acceptance` reads.
++- CI's `native` job runs on each of the five native runners
++  (`ubuntu-24.04`, `ubuntu-24.04-arm`, `windows-2025`, `windows-11-arm`
++  and `macos-26`; the Linux ones under `xvfb-run`). It sets
++  `ENG_REQUIRE_GPU=1` and `ENG_REQUIRE_DISPLAY=1` for the steps that
++  render or open a window (the shot steps need only the GPU), so none can
++  skip. Its steps are `STEPS` in `xtask/src/ci_native.rs`;
++  `ENG_CI_STEPS=<names>` runs only the named ones. Each is an entry in the
++  job's report, `target/ci/reports/native-<host>.json`, which also records
++  the adapter and driver (`gpu`). The steps:
++  - every runner: `build`, `tests`, `replay`, `crash-json`, `version`
++    (both forms of the stamp, every build value set), `window` (`play` in
++    a real window gives the committed hash stream and presents frames)
++    and `gpu-budgets` (a `shot` held to the `[gpu]` limits, and the
++    window's peaks too);
++  - `shot-exact` on Linux x64 and `shot-flip` on the others: the shot
++    harness against the goldens, pending (not a pass) while a golden is
++    missing;
++  - Linux x64 also runs `esc` (Escape through XTEST quits `play` within
++    5 s) and `proof-video` (the scripted session, 241 frames);
++  - the macOS runner also runs `check-intel-mac`, a compile check of
++    `x86_64-apple-darwin`.
++
++  On Linux x64 the offscreen renders ask for the pinned lavapipe by name,
++  and `play` takes Ubuntu's own lavapipe, installed beside it, since the
++  pinned build offers no window surface. Each runner uploads
++  `report-native-<runner>` (the report and the step outputs),
++  `hashes-native-<runner>`, `golden-candidates-<runner>`,
++  `crash-native-<runner>` and `logs-native-<runner>`.
++- CI's `summary` job waits for all of those. `compare-hashes` needs the
++  hash streams of both `test` runners, `riscv` and the five native
++  runners, and holds each to the committed streams, so all agree
++  (`[E-CROSS-ARCH]`). `pr-duration` times the PR tier, from the run's
++  start to the end of its last job. `native-duration` times each native
++  job. Going over `budgets.toml`'s `[ci]` limits (`pr_tier_minutes`, and
++  `native_job_minutes` for the slowest native job) is reported, never
++  failed; a missing or unfinished job fails (`[E-DURATION]`).
++- `cargo xtask acceptance DIR` reads every job report under DIR and
++  computes each feature's `passes` into `target/ci/acceptance.json`;
++  CI's summary job runs it. A feature prints `PASS`, `FAIL` or `PENDING`:
++  a pending step, such as a shot without its golden, is not a pass and
++  fails no job; its feature gets `passes: false` and `pending: true`. A
++  feature with `owner: true` and no checks prints `OWNER`: the owner
++  plays the rung and accepts it, and its `passes` is `null`.
++- `cargo xtask selftest [CASE]` runs deliberate violations that a check
++  must refuse: a change to a copy of the workspace (or of the goldens),
++  or a command given to the real guard. CI's `selftest` job runs every
++  case as a step. Rung 1b added `wgpu-outside-gpu`,
++  `winit-outside-platform` and `core-depends-on-gpu` (arch-check),
++  `rwh-outside-seam` (`cargo deny check bans`, ADR-0016) and
++  `golden-edit` ("Shots, the proof video and goldens"). A case that needs
++  what the machine lacks (cargo-deny, the pinned lavapipe) is never a
++  pass: it prints `[W-SELFTEST-NOT-RUN]` and is pending in the job, and
++  with `CI` set or `ENG_REQUIRE_GPU=1` it fails as
++  `[E-SELFTEST-NOT-RUN]`.
+ - The probe (`eng-cli`, linked by every game) runs `run`, `dump-world`,
+   `shot`, `video` and `play` through the in-process session: headless
+   with scripted input, offscreen for `shot` and `video`, in a window for
+@@ -560,7 +624,10 @@ client's state at alpha 1, so the pictures are exact.
+   panic or wait on a lock for long, because a panic inside the hook
+   aborts the process instead. `crates/game-testbed/tests/exit_codes.rs`
+   runs the real binary for each exit code, and `crash_json.rs` uses `run
+-  --panic-at-tick` to check every field of the crash file.
++  --panic-at-tick` to check every field of the crash file, and `play
++  --panic-at-tick` to check it again from a window. That half skips
++  without a display or a GPU, unless `ENG_REQUIRE_DISPLAY=1` or
++  `ENG_REQUIRE_GPU=1`, which CI's native jobs set.
+ - Claude Code hooks (`.claude/settings.json`) run a copy of xtask built
+   from `main` into `<git dir>/eng-hooks/`: the guard (protected paths, bless
+   commands), rustfmt after edits, `quick` at the end of a turn. Before the
+diff --git a/docs/adr/0016-window-handle-traits.md b/docs/adr/0016-window-handle-traits.md
+index 7a7e53a795af27eedb84b6f383b0a2657a9aca77..4679e98c0f5fb5e8089192ed2e7e80f308c30317 100644
+--- a/docs/adr/0016-window-handle-traits.md
++++ b/docs/adr/0016-window-handle-traits.md
+@@ -60,10 +60,12 @@ Rung 1b draws the dot in a real window.
+     day and applied (37142b7).
+   - That change also puts the crate on the allow-list (crate batch 2),
+     so the crate is never allowed without its ban.
+-- **A selftest will prove the ban.** Patch X5 (gate G5) adds `cargo
+-  xtask selftest rwh-outside-seam`, which expects a use of the crate
+-  outside the seam to fail. It is part of acceptance criterion 12,
+-  `violations-1b`. Until then cargo-deny alone enforces the ban.
++- **A selftest proves the ban.** `cargo xtask selftest
++  rwh-outside-seam` adds the crate as a dependency of `eng-render` in a
++  copy of the workspace and expects `cargo deny check bans` to refuse it,
++  naming `eng-render` as the user. It is part of acceptance criterion 12,
++  `violations-1b`, and CI's `selftest` job runs it. A machine without
++  cargo-deny reports the case as not run, never as a pass.
+ - **`arch-check` needs no change.** The crate is not in
+   `[core_third_party]`, so core-set purity already keeps it out of every
+   core crate and `game-*-sim`. `[floor]` gives each crate one wrapper, so
+diff --git a/docs/adr/0017-three-pass-graph.md b/docs/adr/0017-three-pass-graph.md
+index 12f30193e8275367c696e2f3d1901d828249c965..32919ec1e3b5e56e24b67cd54e0d89b43f14443f 100644
+--- a/docs/adr/0017-three-pass-graph.md
++++ b/docs/adr/0017-three-pass-graph.md
+@@ -56,8 +56,8 @@ the surface, which shots cannot read. Three passes meet every rule. Rung
+ 
+ - A frame offscreen costs 2 draws, 2 pipeline switches and 1 bind-group
+   switch, plus 32 bytes per shape in view; presenting adds 1, 1 and 1
+-  (eng-gpu's `FrameCounters`). The proposed `budgets.toml [gpu]` limits
+-  are sized from these numbers (rung 1b, amendment 40).
++  (eng-gpu's `FrameCounters`). The `budgets.toml [gpu]` limits are
++  sized from these numbers (rung 1b, amendment 40).
+ - Shots and goldens test the tone-mapped image that every window
+   presents, not a swapchain image, so they need no window.
+ - Rung 2's tone-mapping curve and EV100 exposure change the tone-map

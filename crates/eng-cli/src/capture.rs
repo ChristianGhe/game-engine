@@ -177,6 +177,7 @@ mod tests {
             tick_rate,
             build,
             top_down: view.then_some(empty as fn(&crate::TopDownFrame<'_>) -> _),
+            view_yaw: 0,
         }
     }
 

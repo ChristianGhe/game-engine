@@ -49,6 +49,33 @@ fn script_expands_with_held_angles() {
     );
 }
 
+/// `into_commands` keeps the script, so a run can hold its commands without
+/// borrowing it (`play` leaked the script for that), and gives exactly
+/// `iter_commands`'s, past the end too. A segment of 0 ticks, which only a
+/// script built in code can have, gives nothing, not even its angles.
+#[test]
+fn an_owned_script_gives_the_same_commands() {
+    let parsed = InputScript::parse(SCRIPT, "test.toml").unwrap();
+    let mut built = parsed.clone();
+    let mut empty = built.segment[1].clone();
+    (empty.ticks, empty.forward, empty.yaw_deg) = (0, 9, Some(45.0));
+    built.segment.insert(1, empty);
+    assert_eq!(
+        built.commands(7),
+        parsed.commands(7),
+        "0 ticks give nothing"
+    );
+    for script in [
+        parsed,
+        built,
+        InputScript::parse("version = 1", "none").unwrap(),
+    ] {
+        let borrowed: Vec<PlayerCommand> = script.iter_commands().take(7).collect();
+        let owned: Box<dyn Iterator<Item = PlayerCommand>> = Box::new(script.into_commands());
+        assert_eq!(owned.take(7).collect::<Vec<_>>(), borrowed);
+    }
+}
+
 #[test]
 fn quantization() {
     assert_eq!(degrees_to_angle(0.0), 0);

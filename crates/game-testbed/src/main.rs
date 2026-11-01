@@ -13,6 +13,8 @@ static GAME: eng_cli::GameDef = eng_cli::GameDef {
     tick_rate: game_testbed_sim::TICK_RATE,
     build: game_testbed_sim::build,
     top_down: Some(top_down::scene),
+    // +Y, up the top-down view: W moves the dot up the window, D right.
+    view_yaw: 0x4000,
 };
 
 fn main() -> ExitCode {

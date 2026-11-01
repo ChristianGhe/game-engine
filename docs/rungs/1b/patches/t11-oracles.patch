@@ -1,24 +1,32 @@
 Patch T11 oracles (rung 1b, task T11; gate G5): protect the windowed-run
-and Esc tests, and add `play` to the crash harness.
+and Esc tests, and add `play` to the crash harness. Regenerated in session
+18 by T15's fixes from the first rung review.
 
-- crates/game-testbed/tests/play.rs (criteria 2 and 3: the window's hash
-  stream, Escape through XTEST, no display) and
+- crates/game-testbed/tests/play.rs (criteria 2, 3 and 18: the window's
+  hash stream, Escape through XTEST, no display, no adapter, the binary's
+  view yaw in live commands) and
   crates/game-testbed/tests/twin.rs (criterion 3's headless twin: Escape,
-  a close request, `--ticks`, live input, dropped ticks, `play --input`'s
-  stream) join protected.toml and .github/CODEOWNERS (amendment 45).
+  a close request, `--ticks`, live input, W up the view and D to its
+  right, the live recording through `replay verify`, dropped ticks, `play
+  --input`'s stream) join protected.toml and .github/CODEOWNERS
+  (amendment 45).
 - crates/game-testbed/tests/crash_json.rs gains its `play` half
   (criterion 6): `play --ticks 5 --seed 7 --panic-at-tick 3` in a window
   exits 12 and writes every field. It skips without a display unless
   ENG_REQUIRE_DISPLAY=1, and without an adapter unless ENG_REQUIRE_GPU=1,
   so the native jobs set both. The `run` half is unchanged in
-  substance, moved into a shared `check_crash`.
+  substance, moved into a shared `check_crash`. Every run of the probe,
+  in both halves, is killed after 120 s and fails, so a window or a GPU
+  that never answers cannot hang a CI job (T15, finding 3).
 - No xtask step: the native jobs' `tests` run all three files; amendment
   46 gives the native job's `window`, `esc` and `crash-json` commands.
 
-Base: main with T11's commit. Its lines sit right after known_answers.rs's,
-so it applies before or after the other queued oracle patches. At the
-repo root, run `git apply` with this file, then `cargo xtask quick`.
-Session 17's T11 entry in PROGRESS.md says how it was tested.
+Base: main with T11's commit. T15's fixes change play.rs and twin.rs,
+which this protects, and none of the three files it changes, so it applies
+before or after them. Its lines sit right after known_answers.rs's, so it
+applies before or after the other queued oracle patches. At the repo root,
+run `git apply` with this file, then `cargo xtask quick`. Session 17's T11
+entry and session 18's T15 entry in PROGRESS.md say how it was tested.
 Text before the first `diff --git` line is ignored by `git apply`.
 
 diff --git a/.github/CODEOWNERS b/.github/CODEOWNERS
@@ -35,20 +43,68 @@ index e665280b86ba69e23ef0cbdb2b7da0280bdbfc17..e1d3af81ac0a4e38d2ccc1425f249090
  /crates/game-testbed/tests/crash_json.rs @ChristianGhe
  /crates/game-testbed/tests/version.rs @ChristianGhe
 diff --git a/crates/game-testbed/tests/crash_json.rs b/crates/game-testbed/tests/crash_json.rs
-index 555a4486c139c29d042edbcae8d6eff87ac8b884..b187a287df7245beffbcbbeac15e02ca20c30716 100644
+index 555a4486c139c29d042edbcae8d6eff87ac8b884..9134d595df31ae785305e4cc24f6f091b6bb85de 100644
 --- a/crates/game-testbed/tests/crash_json.rs
 +++ b/crates/game-testbed/tests/crash_json.rs
-@@ -1,6 +1,8 @@
+@@ -1,9 +1,14 @@
  //! `crash.json` from the panic hook (rung 1b, spec 9.2 done-when 4 and
  //! 6.13), run against the real binary: a panic writes every field and
 -//! exits 12.
 +//! exits 12, in `run` and in the window of `play`. `play` skips without a
 +//! display unless `ENG_REQUIRE_DISPLAY=1`, and without a GPU adapter unless
 +//! `ENG_REQUIRE_GPU=1`; CI's native jobs set both, so it cannot skip there.
++//! Every run is killed after [`LIMIT`] and its test fails, so a window or a
++//! GPU that never answers cannot hang a CI job.
  
  use std::path::{Path, PathBuf};
- use std::process::{Command, Output};
-@@ -44,6 +46,16 @@ const PANIC_RUN: [&str; 8] = [
+-use std::process::{Command, Output};
++use std::process::{Command, Output, Stdio};
++use std::time::{Duration, Instant};
+ 
+ use serde_json::Value;
+ 
+@@ -16,13 +21,37 @@ fn scratch(name: &str) -> PathBuf {
+     dir
+ }
+ 
++/// How long a run may take: far longer than any run here takes, and far
++/// shorter than a CI job's limit.
++const LIMIT: Duration = Duration::from_secs(120);
++
++/// Runs the probe to its end, as `Command::output` does, but kills it after
++/// [`LIMIT`] and fails with what it printed. The probe prints a few lines,
++/// so its pipes cannot fill while it runs.
+ fn probe(dir: &Path, log_dir: &Path, args: &[&str]) -> Output {
+-    Command::new(env!("CARGO_BIN_EXE_game-testbed"))
++    let mut child = Command::new(env!("CARGO_BIN_EXE_game-testbed"))
+         .args(args)
+         .current_dir(dir)
+         .env("ENG_AGENT_LOG_DIR", log_dir)
+-        .output()
+-        .expect("run game-testbed")
++        .stdin(Stdio::null())
++        .stdout(Stdio::piped())
++        .stderr(Stdio::piped())
++        .spawn()
++        .expect("run game-testbed");
++    let start = Instant::now();
++    let finished = loop {
++        if child.try_wait().unwrap().is_some() {
++            break true;
++        }
++        if start.elapsed() > LIMIT {
++            let _ = child.kill();
++            break false;
++        }
++        std::thread::sleep(Duration::from_millis(20));
++    };
++    let out = child.wait_with_output().unwrap();
++    assert!(finished, "{args:?} killed after {LIMIT:?}: {}", text(&out));
++    out
+ }
+ 
+ fn text(out: &Output) -> String {
+@@ -44,6 +73,16 @@ const PANIC_RUN: [&str; 8] = [
      "3",
  ];
  
@@ -65,7 +121,7 @@ index 555a4486c139c29d042edbcae8d6eff87ac8b884..b187a287df7245beffbcbbeac15e02ca
  fn crash_files(log_dir: &Path) -> Vec<PathBuf> {
      let mut files: Vec<PathBuf> = std::fs::read_dir(log_dir)
          .unwrap()
-@@ -69,17 +81,44 @@ fn run_panic_writes_crash_json_with_every_field() {
+@@ -69,17 +108,44 @@ fn run_panic_writes_crash_json_with_every_field() {
      let dir = scratch("run");
      let logs = dir.join("logs");
      let out = probe(&dir, &logs, &PANIC_RUN);
@@ -116,7 +172,7 @@ index 555a4486c139c29d042edbcae8d6eff87ac8b884..b187a287df7245beffbcbbeac15e02ca
      );
      let crash: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
  
-@@ -93,15 +132,15 @@ fn run_panic_writes_crash_json_with_every_field() {
+@@ -93,15 +159,15 @@ fn run_panic_writes_crash_json_with_every_field() {
      );
      let version_dir = dir.join("version");
      std::fs::create_dir_all(&version_dir).unwrap();
@@ -136,7 +192,7 @@ index 555a4486c139c29d042edbcae8d6eff87ac8b884..b187a287df7245beffbcbbeac15e02ca
      assert_eq!(crash["seed"], 7);
      assert_eq!(crash["tick"], 3);
  
-@@ -114,7 +153,7 @@ fn run_panic_writes_crash_json_with_every_field() {
+@@ -114,7 +180,7 @@ fn run_panic_writes_crash_json_with_every_field() {
          crash["panic"]["message"],
          "deliberate panic at tick 3 (--panic-at-tick)"
      );
@@ -145,7 +201,7 @@ index 555a4486c139c29d042edbcae8d6eff87ac8b884..b187a287df7245beffbcbbeac15e02ca
  
      // Backtrace: one string per line, through the probe's own frames.
      let backtrace = crash["backtrace"].as_array().expect("backtrace array");
-@@ -122,7 +161,7 @@ fn run_panic_writes_crash_json_with_every_field() {
+@@ -122,7 +188,7 @@ fn run_panic_writes_crash_json_with_every_field() {
      assert!(
          backtrace
              .iter()
@@ -154,7 +210,7 @@ index 555a4486c139c29d042edbcae8d6eff87ac8b884..b187a287df7245beffbcbbeac15e02ca
          "{backtrace:#?}"
      );
  
-@@ -136,7 +175,10 @@ fn run_panic_writes_crash_json_with_every_field() {
+@@ -136,7 +202,10 @@ fn run_panic_writes_crash_json_with_every_field() {
          );
      }
      let first = tail[0]["msg"].as_str().unwrap();

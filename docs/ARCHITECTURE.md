@@ -172,6 +172,10 @@ PlatformEvent ──key_event()──▶ KeyEvent (Down/Up of a Key, FocusLost)
   A `Down` for a key already held (OS key repeat) changes nothing.
   `FocusLost` releases every key. Opposite actions cancel; movement is
   full speed (127).
+- Each command carries the view angles the caller holds with `set_view`.
+  Movement goes along the yaw, so `play` holds the game's
+  `GameDef::view_yaw`: 0x4000 (+Y, up the top-down view) for the testbed,
+  where W then moves the dot up the window and D to its right.
 - App actions (`quit`) are reported in `TickInput::actions` and never
   change the command.
 - Bindings files are `version = 1` plus `[actions] move_forward = ["KeyW",
@@ -314,7 +318,9 @@ Graph::render ──▶ FrameCounters (draws, switches, uploaded bytes)
 - **Errors.** wgpu's errors, validation included, are caught around each
   call that returns a `Result` and come back as `GpuError` (`[E-GPU]`,
   `[E-SHADER]`, `[E-GRAPH]`). Any other one panics, so validation errors
-  are fatal in tests.
+  are fatal in tests. A readback waits at most 60 s for the GPU
+  (`READBACK_LIMIT`), then fails with `[E-GPU]`, so a driver that never
+  finishes ends the run instead of hanging it.
 - **Shaders.** `tests/shaders.rs` validates every WGSL file in the repo at
   Tier 0 with naga and translates it to SPIR-V 1.0, MSL 2.1 and HLSL
   shader model 5.1, the lowest each backend runs at. Every shader is
@@ -405,7 +411,8 @@ stop   PlayRun::finish ─▶ --hashes, --record, --report, the console summary
   clock moves past the rest, which are counted in the report's
   `dropped_ticks` and logged as `[W-TICK-DROP]`. The simulation never
   skips a tick; it falls behind the clock.
-- **Input.** Each tick samples `LiveInput` once, before its step. `quit`
+- **Input.** Each tick samples `LiveInput` once, before its step, with
+  the game's view yaw held ("Live input"). `quit`
   (Esc by default) ends the run before that tick and never reaches the
   simulation; so does a close request. With `--input` the script's
   commands replace the keyboard's and only `quit` is read, so `play
@@ -424,9 +431,10 @@ stop   PlayRun::finish ─▶ --hashes, --record, --report, the console summary
 - **Occlusion.** Nothing is acquired while the window is minimised or
   occluded (on macOS acquiring can block for a second); ticks go on. On
   macOS wgpu 30 also refuses to acquire while the window is not visible,
-  so a locked or sleeping screen presents nothing. Each frame compares
-  the window's size with the surface's, so a resize whose event never
-  came is caught.
+  so a locked or sleeping screen presents nothing. Each frame that is not
+  occluded reads the window's size before acquiring (0 x 0 is minimised)
+  and compares it with the surface's, so a resize whose event never came
+  is caught, and so is a window back from minimised without one.
 - **The end.** `--ticks N` ends after tick N; `quit` and a close request
   end it with exit 0. `stop` writes the files, so they are saved even
   where a desktop's quit command ends the process right after it (macOS).
@@ -618,7 +626,7 @@ The JSON object, `stamp_version` 1:
 | `game` | string | the game's name |
 | `build` | object | the build (below). Reports carry the same object as `build`, and `crash.json` as `version` |
 | `sim` | object | the simulation (below) |
-| `formats` | object | the version of each file the probe reads or writes, as integers: `report`, `crash`, `recording`, `hash_stream`, `input_script`, `assertions`, `budgets` |
+| `formats` | object | the versions, as integers, of the report, crash file, recording and hash stream the probe writes and of the input script, assertions and budgets files it reads: `report`, `crash`, `recording`, `hash_stream`, `input_script`, `assertions`, `budgets`. The bindings file that `play --bindings` reads (version 1) is not listed yet |
 
 `build` has the fields of spec 6.13's `version.json`. Facts about the
 compilation come from `crates/eng-cli/build.rs`. Facts about the source

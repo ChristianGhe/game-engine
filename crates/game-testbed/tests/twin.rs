@@ -11,22 +11,33 @@
 //!   releases them.
 //! - Ticks a late frame cannot catch up are dropped, counted in the report
 //!   and logged as `[W-TICK-DROP]`.
+//! - W moves the dot up the top-down view and D to its right, and the
+//!   recording of a live run passes the real binary's `replay verify`.
 
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+use std::time::Duration;
 
 use eng_app::play_on;
 use eng_cli::{Exit, GameDef, PlayRun};
 use eng_platform_api::{App, Control, Instant, Key, Platform, PlatformError, PlatformEvent, Wake};
 use eng_platform_headless::HeadlessPlatform;
+use eng_sim::{Sim, SimConfig};
+use game_testbed_sim::Dot;
+use kit_fps::MoveState;
 use serde_json::Value;
 
+/// The testbed's own definition (`src/main.rs`) without the top-down view,
+/// which the headless platform never draws. Its commit is the engine's, as
+/// there, so the binary's `replay verify` accepts the twin's recordings.
 static GAME: GameDef = GameDef {
     name: "game-testbed",
     version: "0.0.0",
-    build_sha: eng_cli::UNKNOWN,
+    build_sha: eng_cli::ENGINE_SHA,
     tick_rate: game_testbed_sim::TICK_RATE,
     build: game_testbed_sim::build,
     top_down: None,
+    view_yaw: 0x4000,
 };
 
 /// A tick at 60 Hz in nanoseconds, as the frame loop's clock counts it.
@@ -193,6 +204,107 @@ fn live_keys_become_one_command_per_tick() {
     }
     expected[13 - 1] = -127;
     assert_eq!(forwards(&dir), expected);
+}
+
+/// The dot's position (x, y) at ticks 0, 1, 2, ... of a run's recording:
+/// a fresh simulation stepped through the commands the server applied.
+fn dot_path(dir: &Path) -> Vec<(f64, f64)> {
+    let recording = eng_input::read_recording(&std::fs::read(dir.join("r.rec")).unwrap()).unwrap();
+    let config = SimConfig {
+        tick_rate: GAME.tick_rate,
+        players: 1,
+        seed: recording.header.seed,
+    };
+    let mut sim = (GAME.build)(config).unwrap();
+    let dot = |sim: &Sim| {
+        let world = sim.world();
+        let (dot, Dot) = world.storage::<Dot>().iter().next().expect("one dot");
+        let pos = world.get::<MoveState>(dot).expect("a dot moves").pos;
+        (pos.x, pos.y)
+    };
+    let mut path = vec![dot(&sim)];
+    for command in &recording.commands {
+        sim.step(std::slice::from_ref(command)).unwrap();
+        path.push(dot(&sim));
+    }
+    path
+}
+
+/// How long a child process may run before it is killed: far longer than
+/// any run here takes, and far shorter than a CI job's limit.
+const CHILD_LIMIT: Duration = Duration::from_secs(120);
+
+/// The real binary's `replay verify` of `recording`: it steps the
+/// simulation directly from the recorded commands and checks every hash.
+/// Killed after [`CHILD_LIMIT`], so it cannot hang the test.
+fn replay_verify(recording: &Path) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_game-testbed"))
+        .args(["replay", "verify"])
+        .arg(recording)
+        .env("ENG_AGENT_LOG_DIR", recording.with_file_name("logs"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run game-testbed");
+    let start = std::time::Instant::now();
+    let finished = loop {
+        if child.try_wait().unwrap().is_some() {
+            break true;
+        }
+        if start.elapsed() > CHILD_LIMIT {
+            let _ = child.kill();
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let out = child.wait_with_output().unwrap();
+    let text = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        finished,
+        "replay verify killed after {CHILD_LIMIT:?}: {text}"
+    );
+    out
+}
+
+/// The top-down view draws +X to the right and +Y up, so `play` holds the
+/// game's view yaw for live input: 0x4000 (90 degrees, +Y) for the testbed,
+/// with which W (`move_forward`) moves the dot up the view and D
+/// (`move_right`) to its right. At yaw 0 W moved it right and D down (rung
+/// 1b, T15's first review). The recording of the live run then passes the
+/// real binary's `replay verify`: live play is the same simulation.
+#[test]
+fn w_moves_the_dot_up_the_view_and_d_to_its_right() {
+    // W for ticks 1 to 15, D for ticks 41 to 55; the dot stops in between.
+    let script = [
+        (1, PlatformEvent::KeyDown(Key::KeyW)),
+        (TICK * 15 + 1, PlatformEvent::KeyUp(Key::KeyW)),
+        (TICK * 40 + 1, PlatformEvent::KeyDown(Key::KeyD)),
+        (TICK * 55 + 1, PlatformEvent::KeyUp(Key::KeyD)),
+    ];
+    let (exit, dir) = play("view-yaw", &["--ticks", "80"], &script);
+    assert_eq!(exit, Exit::Ok);
+    let path = dot_path(&dir);
+    let moved = |from: usize, to: usize| (path[to].0 - path[from].0, path[to].1 - path[from].1);
+    let (dx, dy) = moved(0, 40);
+    assert!(
+        dy > 0.3 && dx.abs() < 0.01,
+        "W moved the dot by ({dx}, {dy}), not up the view (+Y)"
+    );
+    let (dx, dy) = moved(40, 80);
+    assert!(
+        dx > 0.3 && dy.abs() < 0.01,
+        "D moved the dot by ({dx}, {dy}), not to the view's right (+X)"
+    );
+
+    let out = replay_verify(&dir.join("r.rec"));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]

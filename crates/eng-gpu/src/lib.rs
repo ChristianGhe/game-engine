@@ -89,4 +89,4 @@ pub use instanced::{Attribute, InstancedDesc, InstancedPipeline};
 pub use pass::{LinearRgba, Pass, PassRecorder};
 pub use report::{Backend, Capabilities, DeviceType, GpuReport};
 pub use surface::{SurfaceFrame, WindowSurface};
-pub use targets::{Image, Targets};
+pub use targets::{Image, READBACK_LIMIT, Targets};

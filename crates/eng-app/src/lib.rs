@@ -33,8 +33,10 @@
 //!   `[W-TICK-DROP]`. The simulation never skips a tick, it falls behind.
 //! - **Input** is sampled once per tick from the keys held, with a latch so a
 //!   tap shorter than a tick counts (`eng-input`'s `LiveInput`); losing
-//!   focus releases every key. `quit` and a close request end the run, exit
-//!   0, and never reach the simulation (plan decision 8).
+//!   focus releases every key. Movement goes along the game's view yaw
+//!   (`GameDef::view_yaw`, held for every command): up the top-down view
+//!   for the testbed. `quit` and a close request end the run, exit 0, and
+//!   never reach the simulation (plan decision 8).
 //! - **Each tick** goes through eng-cli's [`PlayRun`]: the same session over
 //!   Memory, tick, hash stream, recording and report as `run`.
 //! - **Drawing**: the game's extraction builds a top-down scene from the

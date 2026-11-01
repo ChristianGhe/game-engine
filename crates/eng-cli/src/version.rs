@@ -17,7 +17,8 @@
 //! - the simulation, built with 1 player and seed 0 (the protocol version
 //!   depends on neither): tick rate, protocol version, system order and
 //!   schema versions;
-//! - the probe's own file formats.
+//! - the versions of seven of the probe's file formats (not yet the
+//!   bindings file).
 
 use std::collections::BTreeMap;
 
@@ -314,7 +315,11 @@ fn named(desc: &TypeDesc, found: &mut BTreeMap<(&'static str, u32), &'static str
     nested(desc, found);
 }
 
-/// The versions of the files the probe reads and writes.
+/// The versions of seven of the probe's file formats: the report, crash
+/// file, recording and hash stream it writes, and the input script,
+/// assertions and budgets files it reads. The bindings file that `play
+/// --bindings` reads (version 1) is not listed yet: the protected
+/// `tests/version.rs` pins these keys (rung 1b, amendment 90).
 fn formats() -> JsonValue {
     JsonValue::object([
         ("report", JsonValue::U64(report::REPORT_VERSION)),

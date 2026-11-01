@@ -92,6 +92,12 @@ pub struct GameDef {
     /// (`shot`, `video`, and `play`'s window). `None` for a game without
     /// one, where `shot` and `video` exit 64.
     pub top_down: Option<fn(&TopDownFrame<'_>) -> TopDownScene>,
+    /// The view yaw `play` holds for live input, as a `PlayerCommand`
+    /// carries it (65,536 to a turn; 0 looks along +X, 0x4000 along +Y).
+    /// Movement goes along it: the top-down view draws +Y up the image, so
+    /// at 0x4000 forward (W, the up arrow) moves up the view and right (D,
+    /// the right arrow) to its right. A script's commands carry their own.
+    pub view_yaw: u16,
 }
 
 /// What an extraction builds one frame from (plan, "One frame"). It reads

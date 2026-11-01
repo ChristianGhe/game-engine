@@ -7,6 +7,10 @@
 //! (rung 1b amendment 36); without a GPU adapter it skips, unless
 //! `ENG_REQUIRE_GPU=1` (plan decision 4). CI's test job has neither, and
 //! its native jobs set both.
+//!
+//! Every child is killed after [`LIMIT`] and its test fails, so a present
+//! or a GPU wait that never returns (an adapter no runner has confirmed
+//! yet) cannot hang a CI job.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -64,19 +68,70 @@ fn report(dir: &Path) -> Value {
     serde_json::from_slice(&std::fs::read(dir.join("r.json")).unwrap()).unwrap()
 }
 
+/// How long a child may run: far longer than any run here takes (240 ticks
+/// are 4 s), and far shorter than a CI job's limit.
+const LIMIT: Duration = Duration::from_secs(120);
+
+/// Runs `command` to its end, as `Command::output` does, but kills it after
+/// [`LIMIT`] and fails with what it printed. The probe prints a few lines,
+/// so its pipes cannot fill while it runs.
+fn output(command: &mut Command) -> Output {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run game-testbed");
+    let status = wait(&mut child, LIMIT);
+    if status.is_none() {
+        let _ = child.kill();
+    }
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        status.is_some(),
+        "{command:?} killed after {LIMIT:?}: {}",
+        text(&out)
+    );
+    out
+}
+
+/// Live play holds the game's view yaw: every command the binary records
+/// without `--input` carries the testbed's `0x4000` (+Y, up the top-down
+/// view), so W moves the dot up the window and D to its right (rung 1b,
+/// T15). The headless twin checks that movement on a copy of the testbed's
+/// definition; this checks the binary's own (`src/main.rs`).
+#[test]
+fn live_commands_carry_the_testbeds_view_yaw() {
+    let dir = scratch("view-yaw");
+    let out = output(&mut command(
+        &dir,
+        &[
+            "play", "--ticks", "5", "--seed", "1", "--record", "r.rec", "--report", "r.json",
+        ],
+    ));
+    if skipped(&out) {
+        return;
+    }
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let recording = std::fs::read(dir.join("r.rec")).unwrap();
+    let commands = eng_input::read_recording(&recording).unwrap().commands;
+    assert!(!commands.is_empty(), "{}", text(&out));
+    for command in &commands {
+        assert_eq!(command.view_yaw, 0x4000, "{command:?}");
+    }
+}
+
 #[test]
 fn windowed_play_gives_the_committed_hash_stream() {
     let dir = scratch("dot-square");
     let input = testbed("scenarios/dot-square.input.toml");
-    let out = command(
+    let out = output(&mut command(
         &dir,
         &[
             "play", "--ticks", "240", "--seed", "1", "--input", &input, "--hashes", "h.txt",
             "--report", "r.json",
         ],
-    )
-    .output()
-    .unwrap();
+    ));
     if skipped(&out) {
         return;
     }
@@ -240,17 +295,17 @@ fn escape_from_the_keyboard_quits_within_5_seconds() {
 #[test]
 fn without_a_display_play_exits_64_and_writes_nothing() {
     let dir = scratch("no-display");
-    let out = command(
-        &dir,
-        &[
-            "play", "--ticks", "5", "--hashes", "h.txt", "--report", "r.json",
-        ],
-    )
-    .env_remove("DISPLAY")
-    .env_remove("WAYLAND_DISPLAY")
-    .env_remove("WAYLAND_SOCKET")
-    .output()
-    .unwrap();
+    let out = output(
+        command(
+            &dir,
+            &[
+                "play", "--ticks", "5", "--hashes", "h.txt", "--report", "r.json",
+            ],
+        )
+        .env_remove("DISPLAY")
+        .env_remove("WAYLAND_DISPLAY")
+        .env_remove("WAYLAND_SOCKET"),
+    );
     assert_eq!(out.status.code(), Some(64), "{}", text(&out));
     assert!(text(&out).contains("[E-NO-DISPLAY]"), "{}", text(&out));
     assert!(!dir.join("h.txt").exists() && !dir.join("r.json").exists());
@@ -271,12 +326,45 @@ fn bad_play_flags_exit_64_before_a_window_opens() {
         &["play", "--input", "missing.toml"],
         &["play", "--bindings", "bad.toml"],
     ] {
-        let out = command(&dir, args).output().unwrap();
+        let out = output(&mut command(&dir, args));
         assert_eq!(out.status.code(), Some(64), "{args:?}: {}", text(&out));
         assert!(text(&out).contains("[E-USAGE]"), "{args:?}: {}", text(&out));
     }
-    let out = command(&dir, &["play", "--bindings", "bad.toml"])
-        .output()
-        .unwrap();
+    let out = output(&mut command(&dir, &["play", "--bindings", "bad.toml"]));
     assert!(text(&out).contains("[E-BINDINGS]"), "{}", text(&out));
+}
+
+/// Without a GPU adapter `play` exits 64 with `[E-NO-ADAPTER]` before its
+/// first tick, writing nothing (plan decision 4), as `shot` and `video` do
+/// (`tests/shot_video.rs`). The window opens first, so this needs a display:
+/// without one it skips, unless `ENG_REQUIRE_DISPLAY=1`.
+#[test]
+fn without_an_adapter_play_exits_64_and_writes_nothing() {
+    let dir = scratch("no-adapter");
+    let out = output(
+        command(
+            &dir,
+            &[
+                "play", "--ticks", "5", "--hashes", "h.txt", "--record", "r.rec", "--report",
+                "r.json",
+            ],
+        )
+        .env("ENG_GPU_ADAPTER", "no adapter is called this"),
+    );
+    let text = text(&out);
+    if out.status.code() == Some(64)
+        && text.contains("[E-NO-DISPLAY]")
+        && !eng_platform_winit::display_required()
+    {
+        eprintln!("skipped: {text}");
+        return;
+    }
+    assert_eq!(out.status.code(), Some(64), "{text}");
+    assert!(
+        text.contains("[E-NO-ADAPTER] no GPU adapter's name contains"),
+        "{text}"
+    );
+    for file in ["h.txt", "r.rec", "r.json"] {
+        assert!(!dir.join(file).exists(), "{file} written: {text}");
+    }
 }

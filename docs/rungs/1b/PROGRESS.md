@@ -4926,6 +4926,254 @@ one after another; `scratchpad/t14/checks.sh`):
   2 minutes and 13 tool calls for the re-check (the harness reported 386k
   tokens for the agent at its end, context included).
 
+## 2026-11-01, session 18: T15, fixes from the first rung review (Claude Opus 5.5, subagent, owner away)
+
+The task: T15's fixes (plan row T15: "two fresh-context `reviewer` passes
+over the rung, then fixes") for the findings of the first pass (reviewer
+A, fresh context, on main at f5367f2). Each finding was checked against
+the code before it was fixed, and none was wrong. Each fix had a test that
+failed first, except where said. Built in a scratch clone of main at
+f5367f2. No protected path edited on main: `crash_json.rs` changes only
+through the regenerated `t11-oracles.patch`. No hash stream regenerated,
+`game-testbed-sim` unchanged, nothing new registered in the sim's World
+(the protocol is still `0x69fd4996880a6508`). Left uncommitted as
+`t15-fixes.patch`, with `t11-oracles.patch` for the owner.
+
+**The findings and what was done**
+1. **W moved the dot right (blocker; criteria 16 and 18).** Confirmed:
+   `Frames::new` never called `LiveInput::set_view`, so every live command
+   had yaw 0. kit-fps's `wish` takes forward from the yaw (`(1, 0)` at 0)
+   and right as `(forward.y, -forward.x)`, so W went along +X and D along
+   -Y, while the top-down view draws +X to the right and +Y up. T4's
+   decision 5 had asked T11 to hold `0x4000`.
+   - Fix: `GameDef::view_yaw: u16`, the view yaw `play` holds for live
+     input. `Frames::new` passes it to `LiveInput::set_view` once, since
+     the angle is held. The testbed's is `0x4000` (+Y, up the view).
+     Scripted commands carry their own angles, so `--input` runs and the
+     hash streams are unchanged.
+   - Test: twin.rs `w_moves_the_dot_up_the_view_and_d_to_its_right`. W is
+     held for ticks 1 to 15 and D for ticks 41 to 55, through the headless
+     twin. A fresh testbed sim stepped through the run's recording gives
+     the dot's position: W must raise y by more than 0.3 m with x within
+     0.01 m, and D the same for x. Red first: "W moved the dot by (1.308,
+     0), not up the view (+Y)". Green after the fix. Taking the `set_view`
+     line out again fails it.
+   - Finding 7, in the same test: the live run's recording goes through
+     the real binary's `replay verify` (a child process, bounded), so live
+     play's session gives the same hashes as stepping the sim directly.
+     For that the twin's `GameDef` now has `build_sha:
+     eng_cli::ENGINE_SHA`, as the testbed's own has: `replay verify`
+     compares the game's commit.
+   - The binary's own value (from the review): play.rs
+     `live_commands_carry_the_testbeds_view_yaw` runs `play --ticks 5
+     --record` in a window, without `--input`, and requires `0x4000` in
+     every recorded command. Red with `src/main.rs` at `view_yaw: 0`
+     ("left: 0, right: 16384"), green at `0x4000`. Without a display or an
+     adapter it skips, as the other windowed tests do.
+2. **`formats` said more than it held (should-fix; criterion 8).**
+   Confirmed: the bindings file (an `Authored` format, version 1) is the
+   only versioned file format the list leaves out; the world dump, the
+   events and the replay dump carry no version. `formats()`'s docs,
+   `version.rs`'s crate docs and ARCHITECTURE.md's row now name the seven
+   formats listed and say the bindings file is not listed yet. Amendment
+   90 proposes the key, with the protected test's change. Docs only, so
+   no test.
+3. **Unbounded waits (should-fix; criteria 2 and 6).** Confirmed: play.rs,
+   shot_video.rs, shots.rs and crash_json.rs waited with `.output()`, and
+   the readback polled with `wait_indefinitely`.
+   - play.rs: `output()` spawns the child (stdin null, both pipes), waits
+     with the Esc test's `wait` for at most `LIMIT` (120 s), then kills it
+     and fails with "killed after 120s" and what it printed. Every play.rs
+     child goes through it.
+   - shot_video.rs and shots.rs: the same bound, on main. They become
+     protected at G5 (t9 and t12), but those patches hold only their
+     protection lines, so they apply unchanged.
+   - twin.rs's `replay verify` child: the same.
+   - crash_json.rs (protected): its `probe`, which both halves use, gets
+     the same bound in the regenerated `t11-oracles.patch`.
+   - Left alone: exit_codes.rs and version.rs (protected), session.rs and
+     version_testbed.rs. They run headless commands with no window and no
+     GPU (amendment 92).
+   - eng-gpu, the optional part, taken: the readback waits with
+     `PollType::Wait { submission_index: None, timeout:
+     Some(READBACK_LIMIT) }`, 60 s, then fails with `[E-GPU] waiting for
+     the readback (at most 60 s): ...`; `shot` and `video` then panic into
+     `crash.json`, as for any frame that fails. Each wgpu 30 backend's
+     `wait` takes the timeout (Metal, Vulkan, DX12), and the path that
+     succeeds is unchanged. It also bounds the GPU tests that run in the
+     test process and so have no child to kill (eng-gpu's `counters.rs`,
+     eng-render's). No test: a readback cannot be made to hang on demand.
+   - Evidence: in a copy of the clone, a tick planted to never end made
+     play.rs's windowed test fail at 120.03 s with "killed after 120s",
+     and no `play` process was left.
+4. **`play` without an adapter had no test (should-fix; criterion 2).**
+   play.rs `without_an_adapter_play_exits_64_and_writes_nothing`:
+   `ENG_GPU_ADAPTER` names no adapter; exit 64, `[E-NO-ADAPTER] no GPU
+   adapter's name contains`, and no hashes, recording or report. Without a
+   display it skips, unless `display_required()`. It passed at once, as it
+   covers what the code already did; a planted bug (`window` ignoring
+   `View::open`'s error) fails it.
+5. **A window back from minimised (nit).** Confirmed: `draw` returned on
+   a `minimised` flag that only a `Resized` event cleared, before reading
+   the window's size. The code is fixed, not the claim: the flag is gone.
+   `draw` returns while occluded, then reads the window's size, returns on
+   0 x 0 (minimised), and otherwise resizes, which does nothing when
+   nothing changed. ARCHITECTURE.md's "Occlusion" says so. No test: it
+   needs a window minimised and restored without its resize event, and no
+   test here shows a window (Windows sends 0 x 0; macOS sends `Occluded`).
+6. **The leaked script (nit).** `InputScript::into_commands(self)` is an
+   iterator that keeps the script. It and `iter_commands` share one
+   private `Cursor` (the tick, the segment, the ticks used from it, the
+   angles held), so the script's rules exist once. `PlayRun` keeps
+   `into_commands`'s iterator, and nothing leaks. Test first (eng-input
+   `tests/input.rs`, `an_owned_script_gives_the_same_commands`; red as the
+   missing method): the owned and borrowed commands agree past the end,
+   and a segment of 0 ticks changes nothing. Planted bugs: an off-by-one
+   in the cursor fails `script_expands_with_held_angles`; 0 ticks counted
+   as 1 fails the new test. `run`'s streams are unchanged (replay).
+7. Done with 1.
+
+**Decisions** (proposals; the owner can overrule any):
+1. **The view yaw is a `GameDef` field**, as reviewer A suggested, rather
+   than an engine constant for the top-down view: the view is the
+   engine's, but which way forward goes on the screen is the game's.
+   `Frames::new` passes it once and `LiveInput` holds it.
+2. **The twin copies the testbed's `GameDef`**: the testbed is a binary
+   crate, so a test cannot import its `GAME`. Both say `view_yaw: 0x4000`.
+   The binary's own value is read by play.rs's new test, which needs a
+   window, so CI's test job skips it and the native jobs run it
+   (amendment 93).
+3. **120 s for every child, 60 s for a readback.** The longest run here
+   (240 ticks in a window) takes 4 s; the four golden shots took 3.5 s
+   together on emulated lavapipe. Both limits only bound a hang.
+4. **Each test file keeps its own small bounded wait.** A shared module
+   would make the protected harnesses lean on unprotected code
+   (amendment 61's first point). play.rs reuses its Esc test's `wait`.
+5. **The helpers do not drain the pipes while waiting.** The probe prints
+   a few lines (the tests hold its console to 20), far below a pipe's
+   buffer.
+
+**Tests** (4 new, each red first or shown to bite by a planted bug):
+- twin.rs, 1: W up the view and D to its right, then `replay verify` of
+  the live recording by the binary (findings 1 and 7).
+- play.rs, 2: the binary's view yaw in live commands (finding 1, from the
+  review); `play` without an adapter (finding 4). Every child bounded
+  (finding 3).
+- eng-input `tests/input.rs`, 1: the owned script's commands (finding 6).
+- shot_video.rs and shots.rs: every child bounded (finding 3).
+- `crash_json.rs`, in `t11-oracles.patch`: every child bounded.
+- Planted bugs, each reverted exactly (`scratchpad/t15fix/mutate.py` and
+  `hang-demo.sh`): the yaw not held; the binary's yaw at 0;
+  `View::open`'s error ignored; a tick that never ends; the cursor's
+  off-by-one; 0 ticks as 1. All caught.
+
+**Review** (the `reviewer` subagent, fresh context, read-only, in its own
+clone; 14 minutes, 191k tokens, 77 tool calls): approve with changes, no
+blockers. It ran `quick` on main plus the patch (7 of 7) and the twin and
+play.rs with the GPU required; reproduced the red run; traced the cursor
+against the old `flat_map` and `repeat_n` iterator (the same ticks, 0-tick
+segments give nothing and set no angles, idle with the angles held after
+the end); ran the twin's recording through `replay verify` ("80 ticks, 81
+hashes checked"; the dump shows `view_yaw` 16384); and checked the
+direction math, the bounded waits, wgpu 30's `Wait` timeout on Metal,
+`view.rs` on Windows and macOS, the `formats` wording, and the oracle
+patch (the anchors identical; it applies on main plus T15 in the stacked
+order, and with T15 last). Its points:
+1. **No test read the binary's own view yaw (should-fix).** With
+   `src/main.rs` at `view_yaw: 0` every test passed: the twin uses a copy,
+   and play.rs's windowed run uses `--input`. Taken: the play.rs test
+   under finding 1, also named in the oracle patch's header.
+2. **The staged diff lacked this entry, the regenerated oracle patch and
+   an unstaged assertion (should-fix).** The entry and the oracle patch
+   are separate deliverables that the orchestrator merges, which is where
+   `version.rs`'s "amendment 90" and the header's "session 18's T15
+   entry" point. The assertion is in the final patch.
+3. **The script test compared two forms of one cursor (nit):** the same
+   assertion ("0 ticks give nothing") fixes it.
+4. **ARCHITECTURE.md's "before anything else" (nit):** `draw` checks
+   occlusion first. Now "each frame that is not occluded reads the
+   window's size before acquiring".
+5. **Nits:** `shot_video.rs` over 500 lines (open question 3); the copied
+   helpers, kept (decision 4); play.rs's timeout message now names the
+   command; twin.rs's child now gets a null stdin.
+
+**Checks** (this Mac, aarch64-apple-darwin, the work clone, one after
+another; on the final tree unless said):
+- `cargo xtask quick`: 7 of 7 (102 s, then 53 s warm on the final tree).
+  size-check warns, as on main, for `shot_video.rs`: 592 lines (565 on
+  main).
+- `CI=1 cargo xtask ci --job lint`: 7 of 7, deny and typos included.
+- Before the review's play.rs test (test code only has changed since):
+  `CI=1 cargo xtask ci --job test` 9 of 9 (116 s); `cargo xtask selftest`
+  17 of 17; `RUSTDOCFLAGS=-Dwarnings cargo doc --no-deps` for eng-app,
+  eng-cli, eng-gpu and eng-input, clean.
+- `cargo xtask replay`: 5 runs, assertions and budgets ok, the streams
+  equal to the committed ones; nothing under `hashes/`, `scenarios/` or
+  `game-testbed-sim` changed.
+- With `ENG_REQUIRE_GPU=1` on Metal, crate by crate: eng-gpu, eng-render,
+  eng-app and game-testbed, all green; play.rs again on the final tree, 5
+  of 5 (the no-display test is Linux only). The screen is locked, so the
+  windowed runs tick and record but present nothing (T11 decision 13).
+- `typos` with the repo's config on this entry and both patches: clean.
+- **The oracle stack** (`scratchpad/t15fix/stack-test.sh`), on fresh
+  clones of main with `t15-fixes.patch` and the regenerated
+  `t11-oracles.patch` in place of the queued one, run twice, the second
+  time on the final patches: t10, t3, t9, t11, t12 and t8 apply in one
+  command; docs-check ok (AGENTS.md 149 of 150 lines); `quick` 7 of 7
+  (105 s); the lint job 7 of 7; `crash_json` with `ENG_REQUIRE_DISPLAY=1
+  ENG_REQUIRE_GPU=1` 3 of 3, its `play` half included; twin 13, play 5,
+  shot_video 10 and shots 13 with the GPU required. The other order (t12,
+  t11, t9, t10 with t3, t8) gives the same files. The other five patches
+  are the repo's, unchanged. Alone, t3 needs t10 first and t8 the others,
+  as before: T15 touches neither `protected.toml` nor `CODEOWNERS`.
+- **Docker** (`eng-escfix:gxx`, arm64: Xvfb and Debian's lavapipe,
+  `llvmpipe (LLVM 19.1.7, 128 bits)`), on main with `t15-fixes.patch` and
+  the six oracle patches, with `ENG_REQUIRE_DISPLAY=1 ENG_REQUIRE_GPU=1`,
+  on the final patches, two rounds and one more with one test at a time:
+  twin 13 of 13; play.rs 6 of 6 (the window's stream, Escape through
+  XTEST, no display, no adapter, bad flags, the binary's view yaw);
+  `crash_json` 3 of 3. By hand, `play --ticks 240 --seed 1 --input
+  dot-square` presented 241 frames of 800x600 with `per_frame` 3, 3, 2,
+  96, no tick dropped, and its stream equal to the committed one.
+
+**The patches** (`scratchpad/t15fix/`):
+- `t15-fixes.patch`, the orchestrator's, nothing protected: 17 files.
+  Made with `git add -A` and `git diff --cached --full-index f5367f2` in
+  the work clone; it applies with `git apply` on a fresh clone of f5367f2.
+- `t11-oracles.patch`, the owner's, to replace
+  `docs/rungs/1b/patches/t11-oracles.patch` (amendment 91). Made by
+  `make-t11-oracles.sh`: a fresh clone with `t15-fixes.patch` committed,
+  the queued patch applied, then crash_json.rs's bounded wait
+  (`crash_bound.py`) and rustfmt. Its `protected.toml` and `CODEOWNERS`
+  hunks are byte for byte the old ones; the header names T15's additions.
+
+**Open questions**
+1. **The binary's own view yaw** is read only where a window opens
+   (decision 2): the native jobs and a desktop. A library target for
+   game-testbed would let the headless twin use the binary's `GAME`
+   (amendment 93).
+2. **Frames on a real display**: Docker under Xvfb presented them; the
+   Mac's window was occluded all night, so W moving the dot up on Metal is
+   first seen by the owner (criterion 16).
+3. **`shot_video.rs` is over 500 lines** (592; 565 on main). Splitting it
+   before G5 protects it would keep the warning away.
+
+**Costs and timings**
+- Session 18's T15 subagent, from 01:10 to about 02:00 EET: reading to
+  01:18; finding 1 red at 01:19 and green at 01:22; play.rs's bounded
+  waits, the no-adapter test and the planted bugs to 01:24; the hang demo
+  (01:24 to 01:27, mostly its 120 s limit) alongside shot_video.rs,
+  shots.rs, eng-gpu, view.rs and the script cursor; `quick` green at
+  01:31; the oracle patch at 01:33; the stack test (01:34 to 01:37) and
+  Docker (01:36 to 01:37) while the review ran (01:35 to 01:50); the
+  review's changes, the final checks, the stack test and Docker again,
+  and this entry, to about 02:00. The harness reported 48 minutes, 436k
+  tokens and 195 tool calls for the subagent (the orchestrator's note).
+- Builds: the seeded `target/` made wgpu and winit free. `quick` took
+  102 s the first time and 53 s warm; the stack clone's `quick` 101 s.
+  Docker (arm64, T11's Linux target copied): 12 s to build, 20 s of tests.
+- Reviewer subagent: 14 minutes, 191k tokens, 77 tool calls.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1
@@ -5887,3 +6135,40 @@ otherwise have to change; the owner applies it, or unlocks the path.
       `video` also `--size`, `--players`, `--budgets` and `--report`.
       Proposed: the usage text `<game> help` prints, which eng-cli's crate
       docs and AGENTS.md follow.
+
+90. **Amendment from session 18, T15** (to criterion 8 and
+    `crates/game-testbed/tests/version.rs`, protected; G5 or later). Add
+    `bindings` to the version stamp's `formats`, after `budgets`: in
+    `crates/eng-cli/src/version.rs`'s `formats()`, `("bindings",
+    JsonValue::U64(eng_input::BINDINGS_VERSION.into()))`, with eng-input
+    exporting `pub const BINDINGS_VERSION: u32 = 1` and using it in `impl
+    Authored for BindingsFile`; in the protected test, `"bindings"` after
+    `"budgets"` in the key list and `"bindings": 1` in the `json!`. Both
+    halves land in one commit, or main goes red. Then `formats()`'s docs,
+    `version.rs`'s crate docs and ARCHITECTURE.md's row can say "every
+    versioned file the probe reads or writes" again.
+91. **Amendment from session 18, T15** (to amendment 45; G5).
+    `docs/rungs/1b/patches/t11-oracles.patch` is regenerated: the crash
+    harness's `probe` kills a run after 120 s and fails, in both halves,
+    so a window or a GPU that never answers cannot hang a CI job; the
+    header names what T15 added to play.rs and twin.rs, which the patch
+    protects. Its `protected.toml` and `CODEOWNERS` hunks are the old ones
+    byte for byte, so it applies with the five other queued patches as
+    before (t10, t3, t9, t11, t12, t8 in one command).
+92. **Amendment from session 18, T15** (to proposal 8; optional, G5).
+    `exit_codes.rs` and `version.rs` (protected), and `session.rs` and
+    `version_testbed.rs`, still wait for the probe with `Command::output`
+    and no deadline, and eng-platform-winit's `conformance.rs` (protected
+    by t10) waits so for its own child, which opens a window. None of them
+    touches a GPU, so an adapter cannot hang them; the same 120 s bound
+    would make every harness that runs a child alike.
+93. **Amendment from session 18, T15** (to `plan.md`, the owner's text:
+    decision 8 and criterion 16). Live input holds a per-game view yaw,
+    `GameDef::view_yaw`, `0x4000` for the testbed, so W moves the dot up
+    the window and D to its right. Proposed for decision 8: "Movement goes
+    along the game's view yaw (`GameDef::view_yaw`), which `play` holds
+    for every live command." The twin checks the movement on a copy of the
+    testbed's `GameDef`, and play.rs reads the binary's own value where a
+    window opens. A library target for game-testbed would let the twin use
+    the binary's `GAME`, so CI's test job (no display) would catch a wrong
+    value in `src/main.rs` too.

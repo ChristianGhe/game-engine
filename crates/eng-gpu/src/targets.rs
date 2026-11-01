@@ -22,6 +22,12 @@ const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
 /// The longest side a target may have: Tier 0's largest 2D texture.
 pub(crate) const MAX_SIDE: u32 = 8192;
 
+/// How long a readback waits for the GPU: far longer than any frame takes
+/// (the four golden shots take 3.5 s together on emulated lavapipe), so only
+/// a driver that never finishes reaches it, and the run fails with
+/// `[E-GPU]` instead of hanging.
+pub const READBACK_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// The texture format a resource is drawn in.
 pub(crate) fn format(resource: Resource) -> wgpu::TextureFormat {
     match resource {
@@ -137,7 +143,8 @@ impl Targets {
     }
 
     /// Copies the output back to the CPU, waiting for the GPU to finish the
-    /// frames submitted before.
+    /// frames submitted before. A wait longer than [`READBACK_LIMIT`] fails
+    /// with [`GpuError::Wgpu`] instead of blocking for ever.
     pub fn read_output(&self, gpu: &Gpu) -> Result<Image, GpuError> {
         self.read(gpu, &self.output_texture)
     }
@@ -200,8 +207,16 @@ impl Targets {
             let _ = sender.send(mapped);
         });
         gpu.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|e| GpuError::Wgpu(format!("waiting for the readback: {e}")))?;
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(READBACK_LIMIT),
+            })
+            .map_err(|e| {
+                GpuError::Wgpu(format!(
+                    "waiting for the readback (at most {} s): {e}",
+                    READBACK_LIMIT.as_secs()
+                ))
+            })?;
         receiver
             .try_recv()
             .map_err(|_| GpuError::Wgpu("the readback was not mapped after the wait".into()))?

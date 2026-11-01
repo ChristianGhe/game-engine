@@ -18,7 +18,7 @@
 
 use eng_core::{PlayerCommand, Tick};
 use eng_gpu::{FrameCounters, GpuReport};
-use eng_input::{Bindings, InputScript, TickHash};
+use eng_input::{Bindings, TickHash};
 use eng_render::TopDownScene;
 use eng_sim::Sim;
 
@@ -118,10 +118,9 @@ impl<'g> PlayRun<'g> {
             tick: Tick::ZERO,
             hash: hash(sim),
         }];
-        // A process runs one command, so the script lives as long as it.
+        // The iterator keeps the script, so each run frees it.
         let script = inputs.script.map(|script| {
-            let script: &'static InputScript = Box::leak(Box::new(script));
-            Box::new(script.iter_commands()) as Box<dyn Iterator<Item = PlayerCommand>>
+            Box::new(script.into_commands()) as Box<dyn Iterator<Item = PlayerCommand>>
         });
         let done = budgets.exceeded.is_some() || a.ticks == 0;
         Ok(Self {
@@ -362,6 +361,7 @@ mod tests {
             tick_rate: 60,
             build,
             top_down: None,
+            view_yaw: 0,
         };
         let mut run = PlayRun::start(&game, &["play".to_string()]).unwrap();
         run.dropped(3);

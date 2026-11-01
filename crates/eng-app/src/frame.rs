@@ -32,8 +32,12 @@ pub(crate) struct Frames<'g> {
 
 impl<'g> Frames<'g> {
     pub(crate) fn new(run: PlayRun<'g>, platform: &'static str) -> Self {
+        // Movement goes along the view yaw: the game's says which way is
+        // forward on its screen (up the top-down view, for the testbed).
+        let mut live = LiveInput::new(run.bindings().clone());
+        live.set_view(run.game().view_yaw, 0);
         Self {
-            live: LiveInput::new(run.bindings().clone()),
+            live,
             tick_rate: run.game().tick_rate,
             run: Some(run),
             platform,

@@ -27,10 +27,9 @@ pub(crate) struct View {
     renderer: Renderer,
     targets: Targets,
     /// Kept until the surface made from it is gone; its size is checked
-    /// each frame.
+    /// each frame, and 0 x 0 means minimised.
     window: Arc<dyn Window>,
     pub(crate) occluded: bool,
-    minimised: bool,
     frames: u64,
 }
 
@@ -56,15 +55,14 @@ impl View {
             targets,
             window,
             occluded: false,
-            minimised: size.width == 0 || size.height == 0,
             frames: 0,
         })
     }
 
-    /// The window's drawable area changed; 0 x 0 while minimised.
+    /// The window's drawable area changed; 0 x 0 while minimised, when
+    /// there is nothing to set up.
     pub(crate) fn resize(&mut self, width: u32, height: u32) {
-        self.minimised = width == 0 || height == 0;
-        if self.minimised {
+        if width == 0 || height == 0 {
             return;
         }
         self.surface
@@ -82,15 +80,18 @@ impl View {
     /// Draws the run's newest states at `alpha` and presents them, unless
     /// the window cannot be seen or has no image to give now.
     pub(crate) fn draw(&mut self, run: &mut PlayRun<'_>, alpha: f64) {
-        if self.occluded || self.minimised {
+        if self.occluded {
             return;
         }
-        // A size that changed without its event, or a surface that went out
-        // of date, is caught here: both are no-ops when nothing changed.
+        // The window's own size, each frame: 0 x 0 is minimised. So a size
+        // that changed without its event, a surface that went out of date,
+        // and a window back from minimised without one are all caught here,
+        // and nothing is done when nothing changed.
         let size = self.window.size();
-        if size.width > 0 && size.height > 0 {
-            self.resize(size.width, size.height);
+        if size.width == 0 || size.height == 0 {
+            return;
         }
+        self.resize(size.width, size.height);
         let Some(top_down) = run.top_down() else {
             return;
         };

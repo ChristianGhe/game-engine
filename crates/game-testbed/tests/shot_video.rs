@@ -6,12 +6,18 @@
 //! Tests that render need an adapter. Without one they skip, unless
 //! `ENG_REQUIRE_GPU=1` (CI's native jobs) makes them fail, as eng-gpu's do.
 //! The tests that need none (no adapter, `[gpu]` in a budgets file) run in
-//! CI's test job too.
+//! CI's test job too. Every run is killed after [`LIMIT`] and its test
+//! fails, so a GPU readback that never returns cannot hang a CI job.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+
+/// How long a run may take: far longer than any here takes, and far
+/// shorter than a CI job's limit.
+const LIMIT: Duration = Duration::from_secs(120);
 
 /// Amendment 30's `[gpu]` table (rung 1b), with today's tables.
 const BUDGETS: &str = "version = 1\n[sim]\nmax_state_bytes = 4096\nmax_entities = 16\n\
@@ -44,7 +50,28 @@ fn probe_env(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
     for (key, value) in env {
         command.env(key, value);
     }
-    command.output().expect("run game-testbed")
+    // As `Command::output`, but killed after LIMIT; the probe prints a few
+    // lines, so its pipes cannot fill while it runs.
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run game-testbed");
+    let start = Instant::now();
+    let finished = loop {
+        if child.try_wait().unwrap().is_some() {
+            break true;
+        }
+        if start.elapsed() > LIMIT {
+            let _ = child.kill();
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let out = child.wait_with_output().unwrap();
+    assert!(finished, "{args:?} killed after {LIMIT:?}: {}", text(&out));
+    out
 }
 
 fn probe(dir: &Path, args: &[&str]) -> Output {

@@ -92,26 +92,52 @@ impl InputScript {
     /// Commands for ticks 1, 2, 3, ... without end: after the last segment,
     /// angles hold and everything else is idle.
     pub fn iter_commands(&self) -> impl Iterator<Item = PlayerCommand> + '_ {
-        let mut held = self
-            .segment
-            .iter()
-            .flat_map(|seg| std::iter::repeat_n(seg, seg.ticks as usize));
-        let (mut yaw, mut pitch) = (0u16, 0u16);
-        let mut tick = 0u64;
-        std::iter::from_fn(move || {
-            tick += 1;
-            let mut cmd = PlayerCommand::idle(Tick(tick));
-            if let Some(seg) = held.next() {
-                yaw = seg.yaw_deg.map_or(yaw, degrees_to_angle);
-                pitch = seg.pitch_deg.map_or(pitch, degrees_to_angle);
-                cmd.forward = seg.forward;
-                cmd.side = seg.side;
-                cmd.buttons = seg.buttons;
-                cmd.select = seg.select;
-            }
-            cmd.view_yaw = yaw;
-            cmd.view_pitch = pitch;
-            Some(cmd)
-        })
+        let mut cursor = Cursor::default();
+        std::iter::from_fn(move || Some(cursor.next(&self.segment)))
+    }
+
+    /// The same commands as [`iter_commands`](Self::iter_commands), from an
+    /// iterator that keeps the script and borrows nothing.
+    pub fn into_commands(self) -> impl Iterator<Item = PlayerCommand> {
+        let mut cursor = Cursor::default();
+        std::iter::from_fn(move || Some(cursor.next(&self.segment)))
+    }
+}
+
+/// How far a script's commands have got: the last tick given, the segment
+/// and the ticks given from it, and the angles held.
+#[derive(Default)]
+struct Cursor {
+    tick: u64,
+    segment: usize,
+    used: u32,
+    yaw: u16,
+    pitch: u16,
+}
+
+impl Cursor {
+    /// The next tick's command.
+    fn next(&mut self, segments: &[Segment]) -> PlayerCommand {
+        self.tick += 1;
+        let mut cmd = PlayerCommand::idle(Tick(self.tick));
+        while segments
+            .get(self.segment)
+            .is_some_and(|seg| self.used >= seg.ticks)
+        {
+            self.segment += 1;
+            self.used = 0;
+        }
+        if let Some(seg) = segments.get(self.segment) {
+            self.used += 1;
+            self.yaw = seg.yaw_deg.map_or(self.yaw, degrees_to_angle);
+            self.pitch = seg.pitch_deg.map_or(self.pitch, degrees_to_angle);
+            cmd.forward = seg.forward;
+            cmd.side = seg.side;
+            cmd.buttons = seg.buttons;
+            cmd.select = seg.select;
+        }
+        cmd.view_yaw = self.yaw;
+        cmd.view_pitch = self.pitch;
+        cmd
     }
 }

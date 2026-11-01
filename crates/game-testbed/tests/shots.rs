@@ -38,6 +38,9 @@
 //!   selftest of criterion 12), instead of `crates/game-testbed/golden`. It
 //!   must exist, outside `golden-candidates/` (which each run empties), and
 //!   hold a golden for every shot.
+//!
+//! Each shot is killed after [`LIMIT`] and fails, so a GPU readback that
+//! never returns cannot hang a CI job.
 
 #[path = "shots/compare.rs"]
 mod compare;
@@ -46,7 +49,8 @@ mod parts;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use compare::{Mode, Status, check};
 use serde_json::{Value, json};
@@ -194,6 +198,41 @@ fn shot_command(shot: &Shot, dir: &Path) -> Command {
     command
 }
 
+/// How long a shot may take: far longer than any takes, and far shorter
+/// than a CI job's limit.
+const LIMIT: Duration = Duration::from_secs(120);
+
+/// `command`'s output, as `Command::output` gives it, but the shot is killed
+/// after [`LIMIT`] and fails. The probe prints a few lines, so its pipes
+/// cannot fill while it runs.
+fn output_within(command: &mut Command, name: &str) -> Output {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run game-testbed");
+    let start = Instant::now();
+    let finished = loop {
+        if child.try_wait().unwrap().is_some() {
+            break true;
+        }
+        if start.elapsed() > LIMIT {
+            let _ = child.kill();
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        finished,
+        "{name}: killed after {LIMIT:?}: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+
 /// A shot's PNG file's bytes and where it was rendered; `None` when it was
 /// skipped for want of an adapter.
 type Rendered = Option<(Vec<u8>, Config)>;
@@ -209,7 +248,7 @@ fn render(
 ) -> Result<Rendered, String> {
     let mut command = shot_command(shot, dir);
     command.envs(env.iter().copied());
-    let output = command.output().expect("run game-testbed");
+    let output = output_within(&mut command, shot.name);
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),

@@ -6242,6 +6242,71 @@ decisions as proposals here, and ask no questions.
   - T15 reviewer B: 12 min, 282k tokens;
   - the docs builder for after G5: 18 min, 320k tokens (Sonnet).
 
+## 2026-11-01, session 18 (continued): agents push to agent branches, ADR-0018 (Claude Opus 5.5, with the owner)
+
+The owner asked: "we need to allow the agent to push. let's fix it", then
+"at least on a separate branch". Everything that change touches is
+protected, so it is `docs/rungs/1b/patches/agent-push.patch`, for the
+owner to apply on top of the G5 commit. Its base is main with G5
+committed; it touches 10 files.
+
+**What it does** (ADR-0018)
+- `cargo xtask push [--dry-run] <name>` sends HEAD's commit to
+  `refs/heads/agent/<name>` on GitHub. It reads GitHub's `main` with `git
+  ls-remote` outside the repository and without git's settings, and
+  refuses a commit whose protected files, or protected `Cargo.toml`
+  tables, differ from it. It pushes `<id>^0` to a URL fixed in
+  `xtask/src/push.rs`, with `--no-follow-tags` and no force, and gives
+  every git call an empty environment plus a short list.
+- `git push` stays denied to agents. `settings.json` is unchanged, and
+  the guard's message now names `cargo xtask push`.
+- CI runs on `agent/**` as on `main`; rust-cache saves only on `main`, so
+  agent branches cannot push `main`'s caches out of the 10 GB.
+- Docs: ADR-0018, ADR-0015's status line, the ADR index, AGENTS.md's
+  workflow bullets (150 lines still) and ARCHITECTURE.md "Gates".
+
+**How it got there.** A fresh `reviewer` subagent read each version.
+- The first draft let the guard allow `git push` to `agent/*` and dropped
+  the `settings.json` deny. The review found blockers:
+  - an agent could move `refs/remotes/origin/main`, the ref the check
+    compared against;
+  - git could send a different commit from the one checked: a tag, a
+    branch named like a commit id, or a race;
+  - the guard's shell parser has older gaps that hide a command
+    completely, and without the deny nothing else caught them.
+
+  That draft was dropped for the xtask command.
+- The second review found one more blocker: a branch or tag named after
+  HEAD's id made `git push` send that ref's commit. The fix is the `^0`.
+  The test for it fails without it: git sent the protected change.
+  - Its should-fix items: clear the environment for git calls, and say
+    that under the open-pulsar loop agents push nothing, since git's HEAD
+    there is jj's parent change.
+  - Its nits: a test of the fetch path, a fail-closed Cargo.toml
+    comparison, and docs that claimed more than the code does.
+
+  All of them are done.
+
+**Checked**, in a scratch clone of main with G5 applied:
+- `cargo test -p xtask`: 102 passed. That includes 8 push tests that push
+  for real to a local bare repository standing in for GitHub: a detached
+  HEAD, a stale branch, a repository config that redirects GitHub's URL,
+  tags, a non-fast-forward push, a ref named after HEAD's id, and the
+  fetch path.
+- Clippy with `-D warnings`, clean.
+- `quick` 7 of 7, `CI=1 cargo xtask ci --job lint` 7 of 7, and
+  `docs-check` (AGENTS.md 150 of 150).
+- A fresh clone of main, with G5 applied and committed and then this
+  patch, gives the same tree, object for object.
+
+**Costs**, as the harness reported them:
+- review 1: 25 min, 262k tokens, 69 tool calls;
+- review 2: 9 min, 332k tokens, 14 tool calls;
+- the orchestrator's own work, finished at 10:25 EET: not timed
+  separately.
+
+This is the owner's request, outside the rung's task list.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1
@@ -7478,3 +7543,28 @@ otherwise have to change; the owner applies it, or unlocks the path.
     bound; a renamed step elsewhere would make a feature false without
     turning any job red. Low priority: reviewer B matched all 19 features
     by hand.
+
+95. **Amendment from session 18, agent pushes** (xtask, `.github/`,
+    protected). Apply `docs/rungs/1b/patches/agent-push.patch` after the
+    G5 commit, then push `main`. `cargo xtask push` works once the commit
+    is on `main` locally; CI on `agent/**` starts once that `ci.yml` is on
+    GitHub. Before relying on it unattended, add a GitHub ruleset on
+    `main` and on tags that only repository admins may update (ADR-0018,
+    "Consequences").
+96. **Amendment from session 18, agent pushes** (xtask, protected). Close
+    the parser gaps review 1 found, as their own task. Each of them hides a
+    whole command from the guard:
+    - process substitution (`< <(...)`, `>(...)`, zsh `=(...)`);
+    - a program word that is a variable, `$'...'` or a command
+      substitution;
+    - `function f { ...; }`, `coproc` and zsh `always` blocks;
+    - `env -S`;
+    - wrappers such as `caffeinate`, `arch` and `script`;
+    - `find -exec`, `xargs` and `git subtree`;
+    - `<<` inside `$[...]` or `${...}` read as a heredoc.
+
+    The probes are in the session's scratchpad (`review/bin/`).
+97. **Amendment from session 18, agent pushes** (xtask, protected). Have
+    the guard refuse `git credential fill`, `approve` and `reject`. They
+    hand an agent the owner's GitHub token, which would bypass every rule
+    above.

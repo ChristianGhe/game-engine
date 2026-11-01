@@ -1,0 +1,763 @@
+Agents push to agent branches (ADR-0018). The owner decided on 2026-11-01:
+"we need to allow the agent to push", "at least on a separate branch".
+
+- `cargo xtask push [--dry-run] <name>` (xtask/src/push.rs, tests in
+  push_tests.rs): sends HEAD's commit, as `<id>^0`, to
+  `refs/heads/agent/<name>` on GitHub, without force or tags, and only
+  when its protected files match GitHub's main as `git ls-remote` reads
+  it, outside the repository and without git settings. Every git call
+  starts from an empty environment plus a short list.
+- `git push` stays denied to agents: settings.json is unchanged, and the
+  guard still refuses it, now naming `cargo xtask push`.
+- `.github/workflows/ci.yml` runs on `agent/**` pushes too; rust-cache
+  saves only on `main`.
+- Docs: ADR-0018, ADR-0015's status line, the ADR index, AGENTS.md's
+  workflow bullets (still 150 lines), ARCHITECTURE.md "Gates".
+
+Base: main with G5 committed (the six oracle patches, t13-x2-x6.patch and
+after-g5-docs.patch). Apply from the repo root after that commit:
+
+  git apply docs/rungs/1b/patches/agent-push.patch
+
+`cargo xtask push` runs the working tree's xtask, so it works as soon as
+this is committed. CI on agent branches starts once main with this
+ci.yml is on GitHub.
+
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index af2145a1d3aac9ba169a45bb116a9add33047505..85cc935c87476a8f3ee9f7ee9b15afa98f112e08 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -12,7 +12,10 @@ name: ci
+ on:
+   pull_request:
+   push:
+-    branches: [main]
++    # agent/*: the only branches agents push (ADR-0018). They read main's
++    # build caches and save none, so they cannot push main's out of the
++    # repository's 10 GB.
++    branches: [main, "agent/**"]
+ 
+ permissions: {}
+ 
+@@ -37,6 +40,8 @@ jobs:
+         with:
+           persist-credentials: false
+       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
++        with:
++          save-if: ${{ github.ref == 'refs/heads/main' }}
+       - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+         with:
+           tool: cargo-deny@0.20.2,typos-cli@1.51.1
+@@ -61,6 +66,8 @@ jobs:
+         with:
+           persist-credentials: false
+       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
++        with:
++          save-if: ${{ github.ref == 'refs/heads/main' }}
+       - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+         with:
+           tool: cargo-nextest@0.9.148
+@@ -95,6 +102,8 @@ jobs:
+           sudo apt-get install -y -qq gcc-riscv64-linux-gnu libc6-dev-riscv64-cross qemu-user
+           rustup target add riscv64gc-unknown-linux-gnu
+       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
++        with:
++          save-if: ${{ github.ref == 'refs/heads/main' }}
+       - run: cargo xtask ci --job riscv
+       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+         if: always()
+@@ -117,6 +126,8 @@ jobs:
+         with:
+           persist-credentials: false
+       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
++        with:
++          save-if: ${{ github.ref == 'refs/heads/main' }}
+       - run: cargo xtask ci --job wasm
+       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+         if: always()
+@@ -152,6 +163,8 @@ jobs:
+             "$mesa/lib/x86_64-linux-gnu/libvulkan_lvp.so" > "$mesa/lvp_icd.json"
+           echo "VK_DRIVER_FILES=$mesa/lvp_icd.json" >> "$GITHUB_ENV"
+       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
++        with:
++          save-if: ${{ github.ref == 'refs/heads/main' }}
+       # The rwh-outside-seam case runs `cargo deny check bans`.
+       - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+         with:
+@@ -247,6 +260,8 @@ jobs:
+         if: runner.os == 'macOS'
+         run: rustup target add x86_64-apple-darwin
+       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
++        with:
++          save-if: ${{ github.ref == 'refs/heads/main' }}
+       - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+         with:
+           tool: cargo-nextest@0.9.148
+@@ -331,6 +346,8 @@ jobs:
+       # rust-cache cleans files out of target/, which would delete artifacts
+       # already downloaded to target/ci/in.
+       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
++        with:
++          save-if: ${{ github.ref == 'refs/heads/main' }}
+       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+         with:
+           path: target/ci/in
+diff --git a/AGENTS.md b/AGENTS.md
+index 0e51c38fb92bbef96e2981ba537a84044853a787..a3fad7dea147f08b7e345062491ddcdcf06a30af 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -141,10 +141,10 @@ tooling (`xtask/`, `clippy.toml`, `architecture.toml`, `deny.toml`,
+ - Commit directly to `main`; there are no PRs (ADR-0014). Before each
+   commit run `cargo xtask quick`; for anything non-trivial, have the
+   `reviewer` subagent check the diff against the rung's acceptance list.
+-- Agents never push or change GitHub (`gh` writes); the owner pushes (ADR-0015).
++- Push with `cargo xtask push <name>`: it sends HEAD to `agent/<name>`, where
++  CI runs. `git push`, `main`, tags and `gh` writes are the owner's (ADR-0018).
+ - Under the open-pulsar loop (your instructions say the outer loop handles
+-  version control), commit nothing and only read jj: the loop records each
+-  task as a jj change. Finish each task with `cargo xtask quick` green.
+-- Keep commits small. CI runs on every push; fix a red `main` first.
+-- Write down costs and timings in the rung's `PROGRESS.md`.
++  version control), commit and push nothing and only read jj: the loop
++  records each task as a jj change. Finish each with `cargo xtask quick` green.
++- Small commits; fix a red `main` first; costs and timings go in `PROGRESS.md`.
+ - Nothing from this project is sold (ADR-0001): no stores, prices or paid builds.
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index e4c2827fa17e609525c7f88b371c0c60161afa68..97aa48b558c896f5099b0671c58719bf7d3edda5 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -634,9 +634,13 @@ client's state at alpha 1, so the pictures are exact.
+   first commit, `install-hooks` builds from the working tree instead.
+ - Gates: commits go straight to `main` (ADR-0014), so the local guard is
+   what stops an agent changing a protected path; it catches accidents and
+-  the obvious forms but runs as the agent's own OS user. CI runs every
+-  check on every push. If pull requests return, CI's `oracle` workflow
+-  (base-branch code only, owner approval or label) becomes the gate.
++  the obvious forms but runs as the agent's own OS user. Agents push with
++  `cargo xtask push`: to `agent/*` branches, and only commits whose
++  protected files match GitHub's `main`. `settings.json` and the guard
++  refuse them `git push`, and `main` stays the owner's (ADR-0018). CI runs
++  every check on every push to either. If pull requests return, CI's
++  `oracle` workflow (base-branch code only, owner approval or label)
++  becomes the gate.
+ 
+ ## The report
+ 
+diff --git a/docs/adr/0015-open-pulsar-runs.md b/docs/adr/0015-open-pulsar-runs.md
+index 150bf8b925b87c64bd8651bd2f7cc60bfd8d4a41..fa49da1802bc3795bbaad8618fda6e18110d2c5a 100644
+--- a/docs/adr/0015-open-pulsar-runs.md
++++ b/docs/adr/0015-open-pulsar-runs.md
+@@ -1,6 +1,6 @@
+ # ADR-0015: Unattended runs through open-pulsar
+ 
+-- **Status:** Accepted
++- **Status:** Accepted; its push rule is amended by ADR-0018 (2026-11-01)
+ - **Date:** 2026-10-24
+ - **Decision:** changes the Claude Code setup in spec 7.3 and 7.5 (D14)
+ - **Who:** Owner decided to run the work through open-pulsar and asked for
+diff --git a/docs/adr/0018-agent-branches.md b/docs/adr/0018-agent-branches.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..4701128c9db7d0fe1cce449cea2e1328143fa1f8
+--- /dev/null
++++ b/docs/adr/0018-agent-branches.md
+@@ -0,0 +1,82 @@
++# ADR-0018: Agents push to agent branches
++
++- **Status:** Accepted
++- **Date:** 2026-11-01
++- **Decision:** amends ADR-0015 ("Agents never push or change GitHub");
++  brings back part of spec 7.5 ("push to non-default branches")
++- **Who:** Owner decided ("we need to allow the agent to push", "at least
++  on a separate branch"); Claude wrote the rule, and a fresh reviewer
++  agent checked it twice
++
++## Context
++
++Since ADR-0015 only the owner pushes, so every CI run waits for the
++owner. Rung 1b's next steps need many CI runs: the native jobs on Windows
++and macOS have never run, and only CI has those machines. Agents working
++overnight could not see a single result until the morning.
++
++The first draft taught the guard to allow `git push` to `agent/*`
++branches. The reviewer broke it: an agent could move the ref the check
++compared against, git could send a different commit from the one checked
++(tags, branches named like commit ids, a race), and the guard's shell
++parser has known gaps that hide a command completely. The `settings.json`
++deny on `git push` still caught the forms that start with `git push`; the
++draft removed it.
++
++## Decision
++
++- Agents push with `cargo xtask push <name>`, which:
++  - reads GitHub's `main` with `git ls-remote`, outside the repository
++    and without git's settings, so no `insteadOf` can answer for it, and
++    fetches that commit if it is missing;
++  - refuses when `HEAD`'s commit differs from it in a protected path or
++    in the protected tables of the root `Cargo.toml` (one that changed
++    and cannot be read counts as different);
++  - sends the commit it checked, as `<id>^0`, which git cannot take for
++    the name of a branch or tag, to `refs/heads/agent/<name>` on
++    `https://github.com/ChristianGhe/game-engine.git` (a constant in
++    `xtask/src/push.rs`), with `--no-follow-tags` and no force. GitHub
++    refuses a commit that does not descend from the branch;
++  - runs every git call with an empty environment plus a short list
++    (`PATH`, `HOME`, the locale, `TMPDIR`, `SSH_AUTH_SOCK` and what Windows
++    needs), so a `GIT_*` variable on the cargo command never reaches git.
++  - `--dry-run` asks GitHub without changing it.
++- `git push` itself stays denied to agents: `settings.json` keeps its deny
++  and the guard keeps refusing it, now naming `cargo xtask push`. So do
++  `jj git push` and every `gh` write. `main` and tags stay the owner's.
++- Under the open-pulsar loop the loop keeps version control, and agents
++  push nothing: git's `HEAD` there is jj's parent change, not the task's
++  work.
++- CI runs on pushes to `agent/**` as on `main`. Agent branches read
++  `main`'s build caches but save none, so they cannot push `main`'s out of
++  the repository's 10 GB.
++- The owner still moves `main`: once an agent branch is green, `git push
++  origin main` sends the same commits.
++
++## Consequences
++
++- Agents see CI without the owner: `cargo xtask push <name>`, then `gh run
++  list --branch agent/<name>` and `gh run view`, which are reads.
++- Branches pile up, because agents cannot delete them. The owner deletes
++  old ones with `git push origin --delete agent/<name>`.
++- This stops accidents and the obvious forms, like the guard (ADR-0015).
++  It does not stop an agent set on pushing: agents run as the owner's OS
++  user, `PATH` and `HOME` still come from the caller, the parser's gaps
++  hide commands, and `git credential fill` hands over the owner's token.
++- A branch with a changed workflow would run that workflow on GitHub with
++  whatever token permissions it asks for, and such a token could update
++  `main`. `cargo xtask push` refuses such a branch. Against the
++  determined case the owner should add a GitHub ruleset on `main` and on
++  tags that lets only repository admins update them (a workflow's token
++  is not an admin). It does not exist yet.
++- The parser gaps the reviewer found (process substitution, a program
++  name in a variable, functions, `coproc`, `env -S`, wrappers such as
++  `caffeinate`, `find -exec`, `xargs`, `git subtree`, and `<<` read as a
++  heredoc) predate this ADR. Closing them is separate work.
++
++## Revisit when
++
++- Agents get their own GitHub identity and macOS user (ADR-0015's real
++  fixes). A token that may push `agent/*` only, without the workflow
++  permission, moves this rule to GitHub's side.
++- Pull requests return (ADR-0014).
+diff --git a/docs/adr/README.md b/docs/adr/README.md
+index 1bb9ab592823e8a08d54c90e923b5793f5406538..d53eb6312788d244e5c4ebc754352595eb61a152 100644
+--- a/docs/adr/README.md
++++ b/docs/adr/README.md
+@@ -21,3 +21,4 @@ Source: `docs/superpowers/specs/2026-10-20-ai-built-engine-design.md` (draft v3,
+ | [0015](0015-open-pulsar-runs.md) | Unattended runs through open-pulsar | Accepted | changes 7.3, 7.5 |
+ | [0016](0016-window-handle-traits.md) | Window-handle traits in public APIs | Accepted | changes 6.2 rule 4 (rung 1b gate G4) |
+ | [0017](0017-three-pass-graph.md) | Three passes, not two | Proposed | amends ADR-0003 (D7, 6.7): draw, tonemap, present |
++| [0018](0018-agent-branches.md) | Agents push to agent branches | Accepted | amends ADR-0015: agents push `agent/*` branches with `cargo xtask push` |
+diff --git a/xtask/src/guard_owner.rs b/xtask/src/guard_owner.rs
+index b478cb5cc00f6c3d76978df5a28ed9614da854a8..5385a0536c742f57cb844046cc6181c135079928 100644
+--- a/xtask/src/guard_owner.rs
++++ b/xtask/src/guard_owner.rs
+@@ -1,11 +1,12 @@
+ //! The guard's checks for what only the owner does: push, change GitHub,
+-//! and write jj history (ADR-0015). Agents may read all three.
++//! and write jj history (ADR-0015). Agents may read all three; they send
++//! commits to `agent/*` branches with `cargo xtask push` (ADR-0018).
+ 
+ use crate::guard::Decision;
+ use crate::guard_bash::Check;
+ use crate::shell::Word;
+ 
+-pub(crate) const OWNER_ONLY: &str = "agents never push or change GitHub; the owner does (ADR-0015)";
++pub(crate) const OWNER_ONLY: &str = "agents never run pushes or change GitHub; `cargo xtask push <name>` sends HEAD to agent/<name> (ADR-0015, ADR-0018)";
+ 
+ /// jj commands that only read (`jj` alone runs `jj log`).
+ const JJ_READ: [&str; 12] = [
+diff --git a/xtask/src/main.rs b/xtask/src/main.rs
+index 3fb105a083c1e54554702028967148f84c40aeff..6a9fdd401a50bcdeef0ac666490b1f2b94e58173 100644
+--- a/xtask/src/main.rs
++++ b/xtask/src/main.rs
+@@ -26,6 +26,7 @@ mod guard_vcs;
+ mod guard_words;
+ mod hooks;
+ mod oracle;
++mod push;
+ mod replay;
+ mod selftest;
+ mod selftest_golden;
+@@ -49,6 +50,7 @@ cargo xtask selftest [CASE]            deliberate violations must fail
+ cargo xtask acceptance DIR             compute acceptance `passes` from CI job reports
+ cargo xtask oracle-check --base REV --head REV
+                                        CI: protected changes need the owner
++cargo xtask push [--dry-run] <name>    agents: send HEAD to agent/<name> on GitHub
+ cargo xtask hook <guard|verify|fmt|stop|session-start>
+                                        Claude Code hooks (run the prebuilt copy)
+ cargo xtask install-hooks [--if-stale] build the hook binary from main";
+@@ -76,6 +78,7 @@ fn main() -> ExitCode {
+         ["selftest", rest @ ..] => selftest::main(rest),
+         ["acceptance", dir] => util::root().and_then(|root| acceptance::compute(&root, dir)),
+         ["oracle-check", "--base", base, "--head", head] => oracle::check(base, head),
++        ["push", rest @ ..] => push::main(rest),
+         ["hook", "fmt"] => hooks::fmt(),
+         ["hook", "stop"] => return hooks::stop(),
+         ["hook", "session-start"] => hooks::session_start(),
+diff --git a/xtask/src/push.rs b/xtask/src/push.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..dcee72dc0f26aef2997bf9d9bcf934414a04b591
+--- /dev/null
++++ b/xtask/src/push.rs
+@@ -0,0 +1,238 @@
++//! `cargo xtask push <name>`: how agents push (ADR-0018). It sends the
++//! commit at `HEAD` to `refs/heads/agent/<name>` on GitHub, without force,
++//! tags or submodules, and only when that commit's protected files are the
++//! same as on GitHub's `main`. Agents may not run `git push` itself
++//! (`settings.json` and the guard); `main` and tags stay the owner's.
++//!
++//! - GitHub's `main` is read with `git ls-remote` outside the repository and
++//!   without git's settings, so no `insteadOf` can answer for it.
++//! - Every git call starts from an empty environment plus `KEPT`, so a
++//!   `GIT_*` variable set on the cargo command never reaches git.
++//! - What is pushed is the commit that was checked: `<id>^0`, which git
++//!   cannot take for the name of a branch or tag.
++//!
++//! Like the guard, this stops accidents and the obvious forms. `PATH` and
++//! `HOME` still come from the caller, and an agent running as the owner has
++//! other ways to reach GitHub (ADR-0015).
++
++use std::path::{Path, PathBuf};
++use std::process::Command;
++
++use crate::guard::{Protected, protected, protected_tables};
++use crate::util;
++
++/// Where agents push. A fork changes this line (`xtask/` is protected).
++const REPOSITORY: &str = "https://github.com/ChristianGhe/game-engine.git";
++const USAGE: &str = "usage: cargo xtask push [--dry-run] <name>    sends HEAD to agent/<name>";
++/// The variables git calls keep: where programs are, the owner's settings
++/// and credentials (`HOME`), the locale, temporary files, an SSH agent, and
++/// what Windows needs to start a program.
++const KEPT: [&str; 18] = [
++    "PATH",
++    "HOME",
++    "USER",
++    "LOGNAME",
++    "LANG",
++    "LC_ALL",
++    "LC_CTYPE",
++    "TMPDIR",
++    "SSH_AUTH_SOCK",
++    "SYSTEMROOT",
++    "USERPROFILE",
++    "APPDATA",
++    "LOCALAPPDATA",
++    "TEMP",
++    "TMP",
++    "HOMEDRIVE",
++    "HOMEPATH",
++    "PATHEXT",
++];
++
++pub fn main(args: &[&str]) -> Result<String, String> {
++    let (name, dry_run) = match args {
++        [name] if !name.starts_with('-') => (*name, false),
++        ["--dry-run", name] => (*name, true),
++        _ => return Err(USAGE.into()),
++    };
++    push(&util::root()?, REPOSITORY, name, dry_run)
++}
++
++/// Pushes `HEAD` of the repository at `root` to `agent/<name>` at `url`.
++pub(crate) fn push(root: &Path, url: &str, name: &str, dry_run: bool) -> Result<String, String> {
++    if !branch_name(name) {
++        return Err(format!(
++            "[E-PUSH] agent/{name}: use letters, digits, '-', '_' and '.', in parts split by '/'"
++        ));
++    }
++    let rules = protected()?;
++    let commit = git(root, &["rev-parse", "--verify", "HEAD^{commit}"])?;
++    let main = github_main(root, url)?;
++    if let Some(what) = protected_change(root, &rules, &main, &commit)? {
++        return Err(format!(
++            "[E-PUSH] {} changes protected {what} compared with GitHub's main ({}); protected changes reach GitHub through the owner (ADR-0018)",
++            short(&commit),
++            short(&main)
++        ));
++    }
++    let refspec = format!("{commit}^0:refs/heads/agent/{name}");
++    let mut cmd = git_command();
++    cmd.arg("-C").arg(root);
++    cmd.args(["push", "--no-follow-tags", "--recurse-submodules=no"]);
++    if dry_run {
++        cmd.arg("--dry-run");
++    }
++    cmd.args([url, refspec.as_str()]);
++    util::run_quiet(root, "push", &mut cmd)?;
++    let dirty = git(root, &["status", "--porcelain", "--untracked-files=no"])?;
++    let note = if dirty.is_empty() {
++        ""
++    } else {
++        "\nnote: the working tree has uncommitted changes; only HEAD was sent"
++    };
++    let verb = if dry_run { "would push" } else { "pushed" };
++    Ok(format!(
++        "{verb} {} to agent/{name}; CI: gh run list --branch agent/{name}{note}",
++        short(&commit)
++    ))
++}
++
++/// GitHub's `main`, read without any git settings, and fetched into this
++/// repository if it does not have that commit yet.
++fn github_main(root: &Path, url: &str) -> Result<String, String> {
++    // Outside any repository: the file system's root has no `.git`.
++    let outside = if cfg!(windows) {
++        std::env::temp_dir()
++    } else {
++        PathBuf::from("/")
++    };
++    let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
++    let out = git_command()
++        .current_dir(&outside)
++        .env("GIT_CEILING_DIRECTORIES", &outside)
++        .env("GIT_CONFIG_NOSYSTEM", "1")
++        .env("GIT_CONFIG_GLOBAL", null)
++        .args(["ls-remote", url, "refs/heads/main"])
++        .output()
++        .map_err(|e| format!("git ls-remote: {e}"))?;
++    let text = String::from_utf8_lossy(&out.stdout);
++    let main = text
++        .lines()
++        .find_map(|line| line.strip_suffix("\trefs/heads/main"))
++        .filter(|id| id.len() >= 40 && id.bytes().all(|b| b.is_ascii_hexdigit()))
++        .ok_or_else(|| {
++            format!(
++                "[E-PUSH] cannot read main at {url}: {}",
++                String::from_utf8_lossy(&out.stderr).trim()
++            )
++        })?
++        .to_string();
++    let here = |id: &str| git(root, &["cat-file", "-e", &format!("{id}^{{commit}}")]).is_ok();
++    if !here(&main) {
++        git(
++            root,
++            &["fetch", "--quiet", "--no-tags", url, "refs/heads/main"],
++        )?;
++        if !here(&main) {
++            return Err(format!(
++                "[E-PUSH] fetching {url} did not bring its main ({})",
++                short(&main)
++            ));
++        }
++    }
++    Ok(main)
++}
++
++/// The first protected path, or protected table of the root `Cargo.toml`,
++/// that differs between the trees of `main` and `commit`. A `Cargo.toml`
++/// that changed and cannot be read counts as a change.
++fn protected_change(
++    root: &Path,
++    rules: &Protected,
++    main: &str,
++    commit: &str,
++) -> Result<Option<String>, String> {
++    let diff = [
++        "diff",
++        "--name-only",
++        "-z",
++        "--no-renames",
++        "--no-relative",
++        "--no-ext-diff",
++        main,
++        commit,
++        "--",
++    ];
++    let names = git(root, &diff)?;
++    let tables = |rev: &str| {
++        git(root, &["cat-file", "blob", &format!("{rev}:Cargo.toml")])
++            .ok()
++            .and_then(|text| protected_tables(rules, &text))
++    };
++    for name in names.split('\0').filter(|n| !n.is_empty()) {
++        if rules.matches(name) {
++            return Ok(Some(name.to_string()));
++        }
++        if name == "Cargo.toml" {
++            match (tables(main), tables(commit)) {
++                (Some(before), Some(after)) if before == after => {}
++                _ => return Ok(Some("tables of Cargo.toml".into())),
++            }
++        }
++    }
++    Ok(None)
++}
++
++/// A name git takes as a plain branch under `agent/`.
++fn branch_name(name: &str) -> bool {
++    name.len() <= 100
++        && !name.contains("..")
++        && name.split('/').all(|part| {
++            !part.is_empty()
++                && !part.starts_with(['.', '-'])
++                && !part.ends_with(".lock")
++                && part
++                    .chars()
++                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
++        })
++}
++
++/// `git` with an empty environment plus `KEPT`, and no prompts.
++fn git_command() -> Command {
++    let mut cmd = Command::new("git");
++    cmd.env_clear();
++    for (key, value) in std::env::vars_os() {
++        let upper = key.to_string_lossy().to_ascii_uppercase();
++        if KEPT.contains(&upper.as_str()) {
++            cmd.env(key, value);
++        }
++    }
++    cmd.env("GIT_TERMINAL_PROMPT", "0");
++    cmd
++}
++
++/// `git -C root` without replace refs, so a commit's id names its content.
++fn git(root: &Path, args: &[&str]) -> Result<String, String> {
++    let out = git_command()
++        .arg("-C")
++        .arg(root)
++        .args(["-c", "core.useReplaceRefs=false"])
++        .args(args)
++        .output()
++        .map_err(|e| format!("git: {e}"))?;
++    if !out.status.success() {
++        return Err(format!(
++            "[E-PUSH] git {}: {}",
++            args.join(" "),
++            String::from_utf8_lossy(&out.stderr).trim()
++        ));
++    }
++    Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
++}
++
++fn short(id: &str) -> &str {
++    &id[..id.len().min(12)]
++}
++
++#[cfg(test)]
++#[path = "push_tests.rs"]
++mod tests;
+diff --git a/xtask/src/push_tests.rs b/xtask/src/push_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..af4b10d8deb4b8df9ef27744e3168d78d72fb1de
+--- /dev/null
++++ b/xtask/src/push_tests.rs
+@@ -0,0 +1,212 @@
++//! Tests for `cargo xtask push` (ADR-0018): real pushes, to a local bare
++//! repository that stands in for GitHub.
++
++use std::fs;
++use std::path::{Path, PathBuf};
++use std::process::Command;
++use std::sync::atomic::{AtomicU32, Ordering};
++
++use super::push;
++
++const CARGO_TOML: &str = "[workspace]\nmembers = []\n[workspace.dependencies]\nx = \"1\"\n[workspace.lints.clippy]\ntodo = \"warn\"\n";
++
++fn git(dir: &Path, args: &[&str]) -> String {
++    let out = Command::new("git")
++        .arg("-C")
++        .arg(dir)
++        .args(["-c", "user.name=t", "-c", "user.email=t@t"])
++        .args(["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
++        .args(args)
++        .output()
++        .unwrap();
++    assert!(
++        out.status.success(),
++        "git {args:?}: {}",
++        String::from_utf8_lossy(&out.stderr)
++    );
++    String::from_utf8_lossy(&out.stdout).trim().to_string()
++}
++
++/// A bare repository standing in for GitHub, whose `main` is the first
++/// commit of a clone, and that clone.
++fn setup() -> (PathBuf, PathBuf) {
++    static NEXT: AtomicU32 = AtomicU32::new(0);
++    let n = NEXT.fetch_add(1, Ordering::Relaxed);
++    let dir = std::env::temp_dir().join(format!("xtask-push-{}-{n}", std::process::id()));
++    let _ = fs::remove_dir_all(&dir);
++    fs::create_dir_all(dir.join("work")).unwrap();
++    let dir = fs::canonicalize(dir).unwrap();
++    let (hub, work) = (dir.join("hub.git"), dir.join("work"));
++    git(&dir, &["init", "-q", "--bare", "hub.git"]);
++    git(&work, &["init", "-q", "-b", "main"]);
++    fs::write(work.join(".gitignore"), "target/\n").unwrap();
++    fs::write(work.join("deny.toml"), "").unwrap();
++    fs::write(work.join("Cargo.toml"), CARGO_TOML).unwrap();
++    commit(&work, "notes.md", "a\n");
++    git(&work, &["push", "-q", hub.to_str().unwrap(), "main"]);
++    (hub, work)
++}
++
++/// Commits `text` as `file` and returns the commit.
++fn commit(work: &Path, file: &str, text: &str) -> String {
++    fs::write(work.join(file), text).unwrap();
++    git(work, &["add", "-A"]);
++    git(work, &["commit", "-q", "-m", file]);
++    git(work, &["rev-parse", "HEAD"])
++}
++
++fn url(hub: &Path) -> &str {
++    hub.to_str().unwrap()
++}
++
++/// The commit `branch` names in the stand-in for GitHub, if any.
++fn at(hub: &Path, branch: &str) -> Option<String> {
++    let out = Command::new("git")
++        .arg("--git-dir")
++        .arg(hub)
++        .args(["rev-parse", "--verify", "--quiet", branch])
++        .output()
++        .unwrap();
++    out.status
++        .success()
++        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
++}
++
++#[test]
++fn sends_head_to_an_agent_branch() {
++    let (hub, work) = setup();
++    let head = commit(&work, "notes.md", "b\n");
++    let said = push(&work, url(&hub), "t16/notes", false).unwrap();
++    assert!(said.contains("agent/t16/notes"), "{said}");
++    assert_eq!(at(&hub, "refs/heads/agent/t16/notes"), Some(head));
++    // A detached HEAD, as jj leaves it, and a new branch.
++    git(&work, &["checkout", "-q", "--detach"]);
++    let head = commit(&work, "notes.md", "c\n");
++    push(&work, url(&hub), "detached", false).unwrap();
++    assert_eq!(at(&hub, "refs/heads/agent/detached"), Some(head));
++    // A dry run sends nothing; main never moves.
++    push(&work, url(&hub), "dry", true).unwrap();
++    assert_eq!(at(&hub, "refs/heads/agent/dry"), None);
++    assert_ne!(
++        at(&hub, "refs/heads/main"),
++        at(&hub, "refs/heads/agent/detached")
++    );
++}
++
++#[test]
++fn refuses_protected_changes() {
++    let (hub, work) = setup();
++    commit(&work, "deny.toml", "[bans]\n");
++    let why = push(&work, url(&hub), "deny", false).unwrap_err();
++    assert!(why.contains("deny.toml"), "{why}");
++    assert_eq!(at(&hub, "refs/heads/agent/deny"), None);
++    // Other tables of the root Cargo.toml are not protected; its lints are.
++    commit(&work, "deny.toml", "");
++    commit(&work, "Cargo.toml", &CARGO_TOML.replace("\"1\"", "\"2\""));
++    push(&work, url(&hub), "deps", false).unwrap();
++    commit(
++        &work,
++        "Cargo.toml",
++        &CARGO_TOML.replace("\"warn\"", "\"allow\""),
++    );
++    let why = push(&work, url(&hub), "lints", false).unwrap_err();
++    assert!(why.contains("Cargo.toml"), "{why}");
++}
++
++#[test]
++fn compares_with_githubs_main_as_it_is_now() {
++    let (hub, work) = setup();
++    let old = git(&work, &["rev-parse", "HEAD"]);
++    // The owner pushes a protected change to main.
++    commit(&work, "deny.toml", "[bans]\n");
++    git(&work, &["push", "-q", url(&hub), "main"]);
++    // A commit from before it would take it back out.
++    git(&work, &["checkout", "-q", &old]);
++    let why = push(&work, url(&hub), "stale", false).unwrap_err();
++    assert!(why.contains("deny.toml"), "{why}");
++    git(&work, &["checkout", "-q", "main"]);
++    push(&work, url(&hub), "fresh", false).unwrap();
++}
++
++#[test]
++fn reads_main_past_git_settings_in_the_repository() {
++    let (hub, work) = setup();
++    // Another repository whose main already has the protected change.
++    let evil = hub.with_file_name("evil.git");
++    git(hub.parent().unwrap(), &["init", "-q", "--bare", "evil.git"]);
++    commit(&work, "deny.toml", "[bans]\n");
++    git(&work, &["push", "-q", url(&evil), "HEAD:refs/heads/main"]);
++    // This repository's settings send the stand-in's URL there.
++    let key = format!("url.{}.insteadOf", url(&evil));
++    git(&work, &["config", &key, url(&hub)]);
++    let why = push(&work, url(&hub), "evil", false).unwrap_err();
++    assert!(why.contains("deny.toml"), "{why}");
++}
++
++#[test]
++fn sends_the_checked_commit_not_a_ref_named_like_it() {
++    let (hub, work) = setup();
++    let head = commit(&work, "notes.md", "b\n");
++    // A protected change, behind a branch, then a tag, named after HEAD's
++    // id: git would send it in place of HEAD's commit without `^0`.
++    git(&work, &["checkout", "-q", "-b", "side"]);
++    let side = commit(&work, "deny.toml", "[bans]\n");
++    git(&work, &["checkout", "-q", "main"]);
++    git(&work, &["branch", &head, &side]);
++    push(&work, url(&hub), "branch", false).unwrap();
++    assert_eq!(at(&hub, "refs/heads/agent/branch"), Some(head.clone()));
++    git(&work, &["branch", "-D", &head]);
++    git(&work, &["tag", &head, &side]);
++    push(&work, url(&hub), "tag", false).unwrap();
++    assert_eq!(at(&hub, "refs/heads/agent/tag"), Some(head));
++}
++
++#[test]
++fn fetches_githubs_main_when_it_is_missing() {
++    let (hub, work) = setup();
++    // The owner moves main from another clone, which this one has not seen.
++    git(hub.parent().unwrap(), &["clone", "-q", url(&hub), "other"]);
++    let other = hub.with_file_name("other");
++    let moved = commit(&other, "notes.md", "from elsewhere\n");
++    git(&other, &["push", "-q", "origin", "main"]);
++    let has = |id: &str| {
++        Command::new("git")
++            .arg("-C")
++            .arg(&work)
++            .args(["cat-file", "-e", &format!("{id}^{{commit}}")])
++            .status()
++            .unwrap()
++            .success()
++    };
++    assert!(!has(&moved));
++    push(&work, url(&hub), "behind", false).unwrap();
++    assert!(has(&moved));
++}
++
++#[test]
++fn sends_no_tags_and_never_forces() {
++    let (hub, work) = setup();
++    commit(&work, "notes.md", "b\n");
++    git(&work, &["tag", "-a", "-m", "t", "v1"]);
++    git(&work, &["config", "push.followTags", "true"]);
++    push(&work, url(&hub), "tags", false).unwrap();
++    assert_eq!(at(&hub, "refs/tags/v1"), None);
++    // A commit that does not descend from the branch is refused.
++    git(&work, &["checkout", "-q", "--detach", "HEAD~1"]);
++    commit(&work, "notes.md", "c\n");
++    let why = push(&work, url(&hub), "tags", false).unwrap_err();
++    assert!(why.contains("push"), "{why}");
++}
++
++#[test]
++fn refuses_names_that_are_not_plain_branches() {
++    let (hub, work) = setup();
++    for name in [
++        "", "/x", "x/", "a//b", "../main", "a/../b", ".x", "a/.x", "x.lock", "a b", "x:y", "x~1",
++        "x^", "@{1}", "x*", "-x", "x\\y", "é",
++    ] {
++        let why = push(&work, url(&hub), name, false).unwrap_err();
++        assert!(why.contains("[E-PUSH]"), "{name:?}: {why}");
++    }
++    assert_eq!(git(&hub, &["for-each-ref"]).lines().count(), 1, "only main");
++}

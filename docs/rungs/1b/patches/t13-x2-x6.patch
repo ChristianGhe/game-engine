@@ -1,0 +1,4133 @@
+T13 for gate G5: patches X2 to X6 of rung 1b (PROGRESS.md, proposal 7),
+with the `.claude/` golden-update skill and visual-qa agent (amendments
+61 and 82). Every file here is protected: the owner applies this patch,
+agents never do.
+
+Base: main at 783d0d7 or later, plus the six oracle patches. One command
+from the repo root applies all seven:
+
+  git apply docs/rungs/1b/patches/t10-oracles.patch \
+    docs/rungs/1b/patches/t3-oracles.patch \
+    docs/rungs/1b/patches/t9-oracles.patch \
+    docs/rungs/1b/patches/t11-oracles.patch \
+    docs/rungs/1b/patches/t12-oracles.patch \
+    docs/rungs/1b/patches/t8-oracles.patch \
+    docs/rungs/1b/patches/t13-x2-x6.patch
+  cargo xtask quick
+
+What it adds:
+- X2: `cargo xtask ci --job native`, the steps acceptance.json's native
+  checks name; a shot without a golden is pending, never a pass.
+- X3: the summary compares all eight hash-stream artifacts and reports
+  `native-duration` against budgets.toml `[ci] native_job_minutes = 25`.
+- X4: owner-checked features (`"owner": true`) are listed, never computed.
+- X5: the five 1b selftest cases; `golden-edit` runs on CI's pinned
+  lavapipe, and elsewhere is "not run" (a failure only under CI or
+  ENG_REQUIRE_GPU=1).
+- X6: `.github/workflows/ci.yml`: the five native jobs, pinned Mesa and
+  WARP, xvfb and xdotool, artifacts, timeouts on every job.
+- xtask uses png =0.18.1 (already in the lock and in crate batch 2).
+
+Made in session 18 by builders t13a and t13b and integrated by the
+orchestrator; reviewed by three fresh reviewers. The entries are in
+PROGRESS.md, session 18. Checked: one `git apply` of all seven on a fresh
+clone of 783d0d7 gives exactly the reviewed tree.
+
+diff --git a/.claude/agents/visual-qa.md b/.claude/agents/visual-qa.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..a1e9677ad1a093ca29668fa178a0cae6b81c0ed5
+--- /dev/null
++++ b/.claude/agents/visual-qa.md
+@@ -0,0 +1,41 @@
++---
++name: visual-qa
++description: Advisory, read-only look at golden-shot candidates and FLIP error maps. Describes what differs between a candidate and its reference and suggests a likely cause. Never decides pass or fail and never blesses anything.
++tools: Read, Grep, Glob
++---
++
++You help sort golden-image failures for an AI-built Rust game engine. You
++are advisory. Vision models may sort failures but never decide pass or
++fail (AGENTS.md, "Tests and oracles"). The verdict is the shots harness's:
++`shots.json`, its `[E-GOLDEN]` lines and the exit code. Never say a shot
++passes, fails or may be accepted.
++
++You never edit, write, copy or delete files, and never suggest committing a
++golden or changing `thresholds.toml`. Goldens are the owner's
++(`golden-update` skill).
++
++Your caller gives you paths to a candidate (`<shot>.png`), its reference
++(the golden, or another runner's candidate), the FLIP error map
++(`flip/<shot>.png`) and `shots.json`. Read the images and the JSON.
++Shots are 320x240, opaque, top-down: dots on a fixed clear colour
++(`crates/game-testbed/tests/shots.rs` lists them).
++
++For each shot, report:
++
++1. **The numbers** from `shots.json`, as they are: status, differing
++   pixels, FLIP mean, p99, p999, and the configuration (adapter, backend,
++   driver).
++2. **What differs, and where:** scattered single pixels along dot edges, a
++   dot missing, moved or resized, a colour shift across the image, the
++   clear colour, size or alpha. Say where it is in pixels.
++3. **A likely cause, with your confidence:**
++   - edge pixels: the rasterizer's coverage rule or sub-pixel precision
++     (another adapter);
++   - a moved dot: the simulation or the tick (compare `dump-world --at-tick N`
++     on both sides);
++   - a uniform shift: sRGB encoding or the tone map;
++   - anything else: say so plainly.
++4. **What to check next:** one command or file.
++
++Keep it short. If the images look the same to you while the numbers differ,
++say that; the numbers win.
+diff --git a/.claude/skills/golden-update/SKILL.md b/.claude/skills/golden-update/SKILL.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..e0efcebb79eedae93a23468725bac6691439714e
+--- /dev/null
++++ b/.claude/skills/golden-update/SKILL.md
+@@ -0,0 +1,84 @@
++---
++name: golden-update
++description: Bring golden-image candidates from CI to the owner, who alone commits goldens. Use for gate G6 (the first goldens), when shot-exact or shot-flip fails with [E-GOLDEN] after an intended rendering change, or when a shot is added, renamed or dropped.
++---
++
++# Golden images: from CI's candidates to the owner
++
++The goldens in `crates/game-testbed/golden/` and `thresholds.toml` are
++protected (`**/golden/**`). Agents never write there; the guard puts a
++changed file back. The owner copies the chosen candidates in and commits
++them. Your job is to hand the owner everything needed to decide.
++
++## Fetch
++
++Agents change nothing on GitHub, and the guard blocks `gh run download`.
++Read the artifacts through the API instead, into a scratch directory
++outside the repo. The guard refuses to unzip inside the repo.
++
++```sh
++gh run list --branch main --limit 3
++gh api repos/{owner}/{repo}/actions/runs/<run>/artifacts --jq '.artifacts[] | [.id, .name] | @tsv'
++gh api repos/{owner}/{repo}/actions/artifacts/<id>/zip > <scratch>/<name>.zip
++unzip -q -d <scratch>/<name> <scratch>/<name>.zip
++```
++
++`<runner>` is one of ubuntu-24.04, ubuntu-24.04-arm, windows-2025,
++windows-11-arm, macos-26.
++
++- `golden-candidates-<runner>`: `target/golden-candidates/`. It holds the
++  candidates (`<shot>.png`, the probe's own files, byte for byte), the
++  FLIP error maps (`flip/<shot>.png`) and `shots.json`.
++- `report-native-<runner>`: the job's report and step outputs. The
++  `shot-exact` or `shot-flip` step says pass, fail or pending ("no golden
++  yet").
++- `crash-native-<runner>`: the job's `crash-*.json`. A crash inside the
++  shots harness is not among them: the harness logs to
++  `target/tmp/shots/render/logs/`.
++
++## Compare
++
++1. **The reference is ubuntu-24.04.** Its `shots.json` must say
++   `"mode": "exact"`, `configuration.pinned: true`, adapter
++   `llvmpipe (LLVM 18.1.3, 256 bits)` and driver info
++   `Mesa 25.2.7 (LLVM 18.1.3)`. If any differs, stop: candidates from
++   another configuration cannot become goldens.
++2. **The other runners, before G6.** With no golden, their shot steps
++   compare nothing, so each runner gives only its candidates. `cmp` each
++   against the reference. Every runner uses the same PNG encoder, so
++   different bytes mean different pixels. A pair that differs has no FLIP
++   number yet: look at both images, and ask the `visual-qa` subagent to
++   describe them. It is advisory; it never decides.
++3. **After G6, or for a later change,** each runner's `shot-flip` step
++   compares against the goldens. Its `shots.json` has FLIP `mean`, `p99`
++   and `p999` for each shot, and `flip/` has the error maps. A local run,
++   `ENG_REQUIRE_GPU=1 ENG_GOLDEN_DIR=<a copy outside target/golden-candidates/> cargo test -p game-testbed --test shots`,
++   measures only the local adapter. Without `ENG_REQUIRE_GPU=1`, a
++   machine with no adapter skips the shots and passes.
++
++## Hand to the owner
++
++A short table: shot, reference file, and for each runner either "same
++bytes" or "differs" (before G6), or its FLIP numbers against
++`thresholds.toml` (after G6). Add the candidates and maps themselves as
++local files. The owner checks:
++
++- each image shows what its shot names: 320x240, opaque, the dot or dots
++  where the scenario puts them at that tick;
++- every difference between runners is scattered edge pixels, never a
++  shape such as a missing or moved dot; after G6, every runner is within
++  the limits;
++- the set is complete: one golden per shot in `SHOTS` (`tests/shots.rs`)
++  and nothing else. The set is all or nothing, and a golden that no shot
++  names fails.
++
++## A shot that changes on purpose
++
++A rendering change can move a shot. `shot-exact` then fails with
++`[E-GOLDEN] N of 76800 pixels differ`. Treat it like a regenerated hash
++stream: say which change moved which shots and why, in the commit and
++`PROGRESS.md`. The failing run already saved each failing shot as a
++candidate, so fetch that run's artifacts and hand them over as above.
++Never widen `thresholds.toml` and never drop a shot to make a run pass.
++Adding, renaming or dropping a shot is the owner's commit, with its
++goldens.
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 2cf1fa000bf327d6d35ee510b38947b76f4933d6..af2145a1d3aac9ba169a45bb116a9add33047505 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -1,5 +1,12 @@
+-# The PR tier (spec 8.2). All logic lives in `cargo xtask`; jobs only check
+-# out, restore the cache and call it. PROTECTED: changes need the owner.
++# The PR tier and the native jobs (spec 8.2). All logic lives in `cargo
++# xtask`; jobs only set up the runner (drivers, display, targets), check out,
++# restore the cache and call it. PROTECTED: changes need the owner.
++#
++# Pins (rung 1b, T13; PROGRESS.md, session 18):
++# - Mesa 25.2.7 lavapipe, gfx-rs/ci-build build26: the build wgpu 30's CI
++#   used (spec 8.3), SHA-256 as T7 checked it.
++# - WARP 1.0.20, NuGet Microsoft.Direct3D.WARP: the version wgpu's CI
++#   installs; SHA-256 of the .nupkg, whose SHA-512 matches NuGet's catalog.
+ name: ci
+ 
+ on:
+@@ -22,6 +29,7 @@ env:
+ jobs:
+   lint:
+     runs-on: ubuntu-24.04
++    timeout-minutes: 30
+     permissions:
+       contents: read
+     steps:
+@@ -45,6 +53,7 @@ jobs:
+       matrix:
+         runner: [ubuntu-24.04, ubuntu-24.04-arm]
+     runs-on: ${{ matrix.runner }}
++    timeout-minutes: 30
+     permissions:
+       contents: read
+     steps:
+@@ -71,6 +80,7 @@ jobs:
+ 
+   riscv:
+     runs-on: ubuntu-24.04
++    timeout-minutes: 30
+     permissions:
+       contents: read
+     env:
+@@ -99,6 +109,7 @@ jobs:
+ 
+   wasm:
+     runs-on: ubuntu-24.04
++    timeout-minutes: 30
+     permissions:
+       contents: read
+     steps:
+@@ -115,26 +126,200 @@ jobs:
+ 
+   selftest:
+     runs-on: ubuntu-24.04
++    timeout-minutes: 30
+     permissions:
+       contents: read
+     steps:
+       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+         with:
+           persist-credentials: false
++      # The golden-edit case renders shots exactly, so it needs the pinned
++      # lavapipe of the native ubuntu-24.04 job (amendment 58), here alone:
++      # nothing opens a window. The case sets ENG_REQUIRE_GPU, ENG_SHOT_MODE
++      # and ENG_GOLDEN_DIR itself, and the harness the llvmpipe variables.
++      - name: pinned Mesa 25.2.7 lavapipe (gfx-rs/ci-build build26)
++        run: |
++          sudo apt-get update -qq
++          sudo apt-get install -y -qq libvulkan1 libllvm18 libdrm2 libexpat1 libzstd1 zlib1g
++          mesa="$RUNNER_TEMP/mesa"
++          curl -fsSL --retry 5 -o "$RUNNER_TEMP/mesa.tar.xz" \
++            https://github.com/gfx-rs/ci-build/releases/download/build26/mesa-25.2.7-linux-x86_64.tar.xz
++          echo "629bb3cebcd8845e496106e83bfafbee4521f8b7087e9767d083cf5a73285809  $RUNNER_TEMP/mesa.tar.xz" | sha256sum -c -
++          mkdir -p "$mesa"
++          tar -xf "$RUNNER_TEMP/mesa.tar.xz" -C "$mesa"
++          # The tarball's own ICD file points into its build machine.
++          printf '{"file_format_version": "1.0.0", "ICD": {"library_path": "%s", "api_version": "1.4.0"}}\n' \
++            "$mesa/lib/x86_64-linux-gnu/libvulkan_lvp.so" > "$mesa/lvp_icd.json"
++          echo "VK_DRIVER_FILES=$mesa/lvp_icd.json" >> "$GITHUB_ENV"
+       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
++      # The rwh-outside-seam case runs `cargo deny check bans`.
++      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
++        with:
++          tool: cargo-deny@0.20.2
+       - run: cargo xtask ci --job selftest
+       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+         if: always()
+         with:
+           name: report-selftest
+           path: target/ci/reports/
++      # Keep rust-cache's post step out of selftest's scratch copies
++      # (amendment 23).
++      - if: always()
++        run: rm -rf target/selftest
++
++  # The five native runners (spec 8.2): build, test with a GPU and a display,
++  # replay, render, open a window. Each runner's adapter is spec 8.3's:
++  # lavapipe on Linux (the pinned build on x64), WARP on Windows, the
++  # runner's Metal device on macOS.
++  native:
++    strategy:
++      fail-fast: false
++      matrix:
++        runner: [ubuntu-24.04, ubuntu-24.04-arm, windows-2025, windows-11-arm, macos-26]
++    runs-on: ${{ matrix.runner }}
++    timeout-minutes: 45
++    permissions:
++      contents: read
++    defaults:
++      run:
++        shell: bash
++    steps:
++      # Windows images check text out with CRLF; the committed hash streams
++      # must stay byte for byte.
++      - name: no line-end conversion
++        run: |
++          git config --global core.autocrlf false
++          git config --global core.eol lf
++      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
++        with:
++          persist-credentials: false
++      # A report's target is rustc's host, so this runner needs the native
++      # aarch64 toolchain, not an emulated x64 one (T5, open question 4).
++      - name: native aarch64 toolchain (windows-11-arm)
++        if: matrix.runner == 'windows-11-arm'
++        run: |
++          rustup set default-host aarch64-pc-windows-msvc
++          host=$(rustc -vV | sed -n 's/^host: //p' | tr -d '\r')
++          echo "rustc host: $host"
++          if [ "$host" != aarch64-pc-windows-msvc ]; then
++            echo "::error::rustc's host is $host, not aarch64-pc-windows-msvc"
++            exit 1
++          fi
++      # Ubuntu's lavapipe presents to X11 windows (Linux arm64 renders on it
++      # alone); the pinned build below offers no window surface.
++      - name: xvfb, xdotool, winit's X11 libraries and lavapipe (Linux)
++        if: runner.os == 'Linux'
++        run: |
++          sudo apt-get update -qq
++          sudo apt-get install -y -qq xvfb xauth xdotool libx11-6 libx11-xcb1 libxcursor1 \
++            libxi6 libxrandr2 libxkbcommon-x11-0 libvulkan1 mesa-vulkan-drivers
++      - name: pinned Mesa 25.2.7 lavapipe (gfx-rs/ci-build build26, ubuntu-24.04)
++        if: matrix.runner == 'ubuntu-24.04'
++        run: |
++          sudo apt-get install -y -qq libllvm18 libdrm2 libexpat1 libzstd1 zlib1g
++          mesa="$RUNNER_TEMP/mesa"
++          curl -fsSL --retry 5 -o "$RUNNER_TEMP/mesa.tar.xz" \
++            https://github.com/gfx-rs/ci-build/releases/download/build26/mesa-25.2.7-linux-x86_64.tar.xz
++          echo "629bb3cebcd8845e496106e83bfafbee4521f8b7087e9767d083cf5a73285809  $RUNNER_TEMP/mesa.tar.xz" | sha256sum -c -
++          mkdir -p "$mesa"
++          tar -xf "$RUNNER_TEMP/mesa.tar.xz" -C "$mesa"
++          # The tarball's own ICD file points into its build machine.
++          printf '{"file_format_version": "1.0.0", "ICD": {"library_path": "%s", "api_version": "1.4.0"}}\n' \
++            "$mesa/lib/x86_64-linux-gnu/libvulkan_lvp.so" > "$mesa/lvp_icd.json"
++          # Ubuntu's ICD first: it names its library `libvulkan_lvp.so`, which
++          # would resolve to the pinned library if that one loaded first. The
++          # shots, the budget shot and the proof video name the pinned
++          # adapter; windows can only open on Ubuntu's (xtask, ci_native.rs).
++          # Named, not globbed: an i686 ICD would sort first and the 64-bit
++          # loader would skip it.
++          distro=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
++          if [ ! -f "$distro" ]; then
++            echo "::error::mesa-vulkan-drivers installed no x86_64 lavapipe ICD ($distro)"
++            exit 1
++          fi
++          echo "VK_DRIVER_FILES=$distro:$mesa/lvp_icd.json" >> "$GITHUB_ENV"
++          # The fixed llvmpipe environment (plan decision 3); the shot
++          # harness sets it again for its own shots.
++          echo "LP_NATIVE_VECTOR_WIDTH=256" >> "$GITHUB_ENV"
++      # The Intel Mac is compile-checked only, so only this job downloads
++      # its standard library (amendment 11).
++      - name: the Intel Mac target (macos-26)
++        if: runner.os == 'macOS'
++        run: rustup target add x86_64-apple-darwin
++      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
++      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
++        with:
++          tool: cargo-nextest@0.9.148
++      # D3D12 loads d3d10warp.dll from the executable's directory first: the
++      # binaries in target/debug and the test binaries in target/debug/deps.
++      - name: WARP 1.0.20 from its pinned NuGet package (Windows)
++        if: runner.os == 'Windows'
++        shell: pwsh
++        run: |
++          $package = "$env:RUNNER_TEMP\warp.zip"
++          $url = 'https://www.nuget.org/api/v2/package/Microsoft.Direct3D.WARP/1.0.20'
++          Invoke-WebRequest -Uri $url -OutFile $package -MaximumRetryCount 5 -RetryIntervalSec 5
++          $hash = (Get-FileHash -Algorithm SHA256 $package).Hash
++          if ($hash -ne 'e5fe5de661ce98b58ef9cfb736e73c0a7a2623d3bbf5f14839b2d55566d87e40') {
++            throw "WARP package SHA-256 $hash"
++          }
++          Expand-Archive -Path $package -DestinationPath "$env:RUNNER_TEMP\warp"
++          $arch = if ($env:RUNNER_ARCH -eq 'ARM64') { 'arm64' } else { 'x64' }
++          New-Item -ItemType Directory -Force -Path target\debug\deps | Out-Null
++          $dll = "$env:RUNNER_TEMP\warp\build\native\bin\$arch\d3d10warp.dll"
++          Copy-Item $dll target\debug\
++          Copy-Item $dll target\debug\deps\
++      - name: cargo xtask ci --job native
++        run: |
++          if [ "$RUNNER_OS" = Linux ]; then
++            xvfb-run -a -s "-screen 0 1280x1024x24" cargo xtask ci --job native
++          else
++            cargo xtask ci --job native
++          fi
++      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
++        if: always()
++        with:
++          name: report-native-${{ matrix.runner }}
++          # report.json is the copy of reports/native-<host>.json.
++          path: |
++            target/ci/
++            !target/ci/report.json
++            target/nextest/ci/junit.xml
++      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
++        if: always()
++        with:
++          name: hashes-native-${{ matrix.runner }}
++          path: target/ci/hashes/
++      # Candidates, FLIP maps and shots.json, for the goldens (G6, T16).
++      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
++        if: always()
++        with:
++          name: golden-candidates-${{ matrix.runner }}
++          path: target/golden-candidates/
++      # A shot that panics inside the shot harness writes its crash.json
++      # under the harness's ENG_AGENT_LOG_DIR.
++      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
++        if: always()
++        with:
++          name: crash-native-${{ matrix.runner }}
++          path: |
++            target/agent-logs/crash-*.json
++            target/tmp/shots/render/logs/
++          if-no-files-found: ignore
++      # Each step's full log (a report keeps the last lines only).
++      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
++        if: always()
++        with:
++          name: logs-native-${{ matrix.runner }}
++          path: target/agent-logs/
+ 
+-  # Cross-architecture equality, the measured PR-tier duration, and the
+-  # CI-computed acceptance status.
++  # Cross-architecture equality across the PR tier and the native jobs, the
++  # measured durations, and the CI-computed acceptance status.
+   summary:
+-    needs: [lint, test, riscv, wasm, selftest]
++    needs: [lint, test, riscv, wasm, selftest, native]
+     if: always()
+     runs-on: ubuntu-24.04
++    timeout-minutes: 30
+     permissions:
+       contents: read
+       actions: read
+@@ -149,7 +334,7 @@ jobs:
+       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+         with:
+           path: target/ci/in
+-      - name: compare hashes and measure the PR tier
++      - name: compare hashes and measure the PR tier and the native jobs
+         env:
+           GH_TOKEN: ${{ github.token }}
+         run: cargo xtask ci --job summary
+@@ -168,9 +353,10 @@ jobs:
+ 
+   # The one check to require on main: green only if every job above is.
+   ci:
+-    needs: [lint, test, riscv, wasm, selftest, summary]
++    needs: [lint, test, riscv, wasm, selftest, native, summary]
+     if: always()
+     runs-on: ubuntu-24.04
++    timeout-minutes: 5
+     permissions: {}
+     steps:
+       - name: every job passed
+diff --git a/Cargo.lock b/Cargo.lock
+index 711c45e577939a9268fd46e0ae91c9bf296396f4..2bf0bad53f7462c4fe86e2fe0705c14bd159c153 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2775,6 +2775,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
+ name = "xtask"
+ version = "0.1.0"
+ dependencies = [
++ "png",
+  "serde",
+  "serde_json",
+  "toml",
+diff --git a/budgets.toml b/budgets.toml
+index 9f6acab8ddd38c5a4a62b1e6b339917b5a941d82..892b23e7666a2de20b72ff4c7632d6d564f57aab 100644
+--- a/budgets.toml
++++ b/budgets.toml
+@@ -19,6 +19,8 @@ max_pipeline_switches_per_frame = 12
+ max_bind_group_switches_per_frame = 8
+ max_upload_bytes_per_frame = 2048
+ 
+-# Read by cargo xtask.
++# Read by cargo xtask. `native_job_minutes` is measured against the slowest
++# native job (rung 1b criterion 13); going over is reported, not failed.
+ [ci]
+ pr_tier_minutes = 15
++native_job_minutes = 25
+diff --git a/xtask/Cargo.toml b/xtask/Cargo.toml
+index 3c4caeca1e2400399d9713d1cf8ab4622ab9bb32..516d763f63833df374512640ebcc9291ca993bd6 100644
+--- a/xtask/Cargo.toml
++++ b/xtask/Cargo.toml
+@@ -14,6 +14,9 @@ publish.workspace = true
+ serde = { version = "1.0.229", features = ["derive"] }
+ serde_json = "1.0.154"
+ toml = "1.1.8"
++# `selftest golden-edit` reads a golden and writes it back with one pixel
++# changed (rung 1b, criterion 12). The workspace's own version (crate batch 2).
++png = "=0.18.1"
+ 
+ [lints]
+ workspace = true
+diff --git a/xtask/src/acceptance.rs b/xtask/src/acceptance.rs
+index 0b2e9e51fac4f3459c748752621069cefb94c8bb..d4e61725fb7acf5c940b3ca0b211509f712bae13 100644
+--- a/xtask/src/acceptance.rs
++++ b/xtask/src/acceptance.rs
+@@ -25,21 +25,34 @@ fn reports(dir: &Path) -> Vec<Value> {
+         .collect()
+ }
+ 
+-/// Whether a check passed, or why not.
+-fn check(reports: &[Value], check: &Value) -> Result<(), String> {
+-    let job = check["job"].as_str().ok_or("check without job")?;
+-    let step = check["step"].as_str().ok_or("check without step")?;
++/// Why a check did not pass.
++enum Miss {
++    Failed(String),
++    /// A step that cannot be judged yet (`"pending": true` in its report,
++    /// patch X2), such as a shot without its golden: not a pass, and not a
++    /// failure either.
++    Pending(String),
++}
++
++/// Whether a check passed, or why not. A failure in any matching report
++/// outranks a pending step in another.
++fn check(reports: &[Value], check: &Value) -> Result<(), Miss> {
++    let failed = |why: String| Err(Miss::Failed(why));
++    let (Some(job), Some(step)) = (check["job"].as_str(), check["step"].as_str()) else {
++        return failed("check without job or step".into());
++    };
+     let target = check["target"].as_str();
+     let matching: Vec<&Value> = reports
+         .iter()
+         .filter(|r| r["job"] == job && target.is_none_or(|t| r["target"] == t))
+         .collect();
+     if matching.is_empty() {
+-        return Err(format!(
++        return failed(format!(
+             "no report from job {job}{}",
+             target.map(|t| format!(" on {t}")).unwrap_or_default()
+         ));
+     }
++    let mut pending = None;
+     for report in matching {
+         let steps = report["steps"]
+             .as_array()
+@@ -47,54 +60,157 @@ fn check(reports: &[Value], check: &Value) -> Result<(), String> {
+             .unwrap_or_default();
+         match steps.iter().find(|s| s["name"] == step) {
+             Some(s) if s["ok"] == true => {}
+-            Some(_) => return Err(format!("{job}/{step} failed on {}", report["target"])),
+-            None => return Err(format!("{job} on {} has no step {step}", report["target"])),
++            Some(s) if s["pending"] == true => {
++                let why = s["detail"].as_str().and_then(|d| d.lines().next());
++                let why = why.map(|line| format!(": {line}")).unwrap_or_default();
++                let on = &report["target"];
++                pending.get_or_insert(format!("{job}/{step} is pending on {on}{why}"));
++            }
++            Some(_) => return failed(format!("{job}/{step} failed on {}", report["target"])),
++            None => return failed(format!("{job} on {} has no step {step}", report["target"])),
+         }
+     }
+-    Ok(())
++    pending.map_or(Ok(()), |why| Err(Miss::Pending(why)))
+ }
+ 
+-pub fn compute(root: &Path, dir: &str) -> Result<String, String> {
+-    let rung = current_rung(root)?;
+-    let path = root.join("docs/rungs").join(&rung).join("acceptance.json");
+-    let mut doc: Value = serde_json::from_str(
+-        &fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?,
+-    )
+-    .map_err(|e| format!("{}: {e}", path.display()))?;
+-    let found = reports(&root.join(dir));
++/// Whether the owner checks `feature` (`"owner": true`, rung 1b's patch X4):
++/// the owner plays the rung and accepts it (spec 2.2, touchpoint 1), so CI
++/// lists the feature and never computes it. Its `checks` must be `[]` or
++/// absent.
++fn owner_checked(feature: &Value) -> Result<bool, String> {
++    let id = &feature["id"];
++    let no_checks = match feature.get("checks") {
++        None => true,
++        Some(Value::Array(list)) => list.is_empty(),
++        Some(_) => false,
++    };
++    match feature.get("owner") {
++        None | Some(Value::Bool(false)) => Ok(false),
++        Some(Value::Bool(true)) if no_checks => Ok(true),
++        Some(Value::Bool(true)) => Err(format!(
++            "acceptance.json: {id} is checked by the owner (`owner: true`) but lists checks \
++             ({}); CI computes none for it, so `checks` must be `[]` or absent",
++            feature["checks"]
++        )),
++        Some(other) => Err(format!(
++            "acceptance.json: {id} has `owner: {other}`; it is true or false"
++        )),
++    }
++}
++
++/// Sets `passes` on every feature of `doc` from `reports`. Returns one line
++/// per feature, then the totals. An owner-checked feature gets `passes:
++/// null`: CI never decides it, and it counts neither way.
++fn evaluate(doc: &mut Value, reports: &[Value]) -> Result<(Vec<String>, String), String> {
+     let mut lines = Vec::new();
+-    let (mut passing, mut total) = (0, 0);
++    let (mut passing, mut waiting, mut total) = (0, 0, 0);
++    let mut owners = Vec::new();
+     let features = doc["features"]
+         .as_array_mut()
+         .ok_or("acceptance.json has no features")?;
+     for feature in features.iter_mut() {
+-        if feature.get("passes").is_some() {
+-            return Err(format!(
+-                "acceptance.json sets `passes` for {} by hand; CI computes it",
+-                feature["id"]
++        for computed in ["passes", "pending"] {
++            if feature.get(computed).is_some() {
++                return Err(format!(
++                    "acceptance.json sets `{computed}` for {} by hand; CI computes it",
++                    feature["id"]
++                ));
++            }
++        }
++        let id = feature["id"].as_str().unwrap_or("?").to_string();
++        if owner_checked(feature)? {
++            feature["passes"] = Value::Null;
++            lines.push(format!(
++                "OWNER {id}: the owner checks this feature; CI does not compute it"
+             ));
++            owners.push(id);
++            continue;
+         }
+         total += 1;
+         let checks = feature["checks"].as_array().cloned().unwrap_or_default();
+-        let result = if checks.is_empty() {
+-            Err("no checks listed".to_string())
+-        } else {
+-            checks.iter().try_for_each(|c| check(&found, c))
+-        };
+-        let id = feature["id"].as_str().unwrap_or("?").to_string();
+-        match result {
+-            Ok(()) => {
++        // Every check is looked at: a failure outranks a pending check.
++        let (mut failed, mut pending) = (None, None);
++        if checks.is_empty() {
++            failed = Some("no checks listed".to_string());
++        }
++        for result in checks.iter().map(|c| check(reports, c)) {
++            match result {
++                Ok(()) => {}
++                Err(Miss::Failed(why)) => _ = failed.get_or_insert(why),
++                Err(Miss::Pending(why)) => _ = pending.get_or_insert(why),
++            }
++        }
++        match (failed, pending) {
++            (None, None) => {
+                 passing += 1;
+                 feature["passes"] = json!(true);
+                 lines.push(format!("PASS {id}"));
+             }
+-            Err(reason) => {
++            (Some(reason), _) => {
+                 feature["passes"] = json!(false);
+                 feature["why_not"] = json!(reason);
+                 lines.push(format!("FAIL {id}: {reason}"));
+             }
++            (None, Some(reason)) => {
++                waiting += 1;
++                feature["passes"] = json!(false);
++                feature["pending"] = json!(true);
++                feature["why_not"] = json!(reason);
++                lines.push(format!("PENDING {id}: {reason}"));
++            }
+         }
+     }
++    let computed = if owners.is_empty() { "" } else { "computed " };
++    let mut totals = format!("{passing}/{total} {computed}features pass");
++    if waiting > 0 {
++        totals.push_str(&format!(", {waiting} pending"));
++    }
++    if !owners.is_empty() {
++        let (n, ids) = (owners.len(), owners.join(", "));
++        totals.push_str(&format!("; {n} for the owner: {ids}"));
++    }
++    Ok((lines, totals))
++}
++
++/// A computed `acceptance.json` in one line, for the session-start hook:
++/// owner-checked features are listed apart, neither passing nor failing.
++pub fn status(doc: &Value) -> String {
++    let features = doc["features"].as_array().cloned().unwrap_or_default();
++    let (owners, computed): (Vec<&Value>, Vec<&Value>) =
++        features.iter().partition(|f| f["owner"] == true);
++    let ids = |list: Vec<&Value>| -> Vec<String> {
++        list.iter()
++            .map(|f| f["id"].as_str().unwrap_or("?").to_string())
++            .collect()
++    };
++    let not_passing = |pending: bool| -> Vec<String> {
++        let pick = |f: &&Value| f["passes"] != true && (f["pending"] == true) == pending;
++        ids(computed.iter().copied().filter(pick).collect())
++    };
++    let (failing, pending) = (not_passing(false), not_passing(true));
++    let passing = computed.len() - failing.len() - pending.len();
++    let mut line = format!("{passing}/{} pass", computed.len());
++    if !failing.is_empty() {
++        line.push_str(&format!("; failing: {}", failing.join(", ")));
++    }
++    if !pending.is_empty() {
++        line.push_str(&format!("; pending: {}", pending.join(", ")));
++    }
++    if !owners.is_empty() {
++        line.push_str(&format!("; for the owner: {}", ids(owners).join(", ")));
++    }
++    line
++}
++
++pub fn compute(root: &Path, dir: &str) -> Result<String, String> {
++    let rung = current_rung(root)?;
++    let path = root.join("docs/rungs").join(&rung).join("acceptance.json");
++    let mut doc: Value = serde_json::from_str(
++        &fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?,
++    )
++    .map_err(|e| format!("{}: {e}", path.display()))?;
++    let found = reports(&root.join(dir));
++    let (mut lines, totals) = evaluate(&mut doc, &found)?;
+     doc["computed"] = json!({
+         "from_reports": found.len(),
+         "git_sha": std::env::var("GITHUB_SHA").unwrap_or_default(),
+@@ -110,8 +226,12 @@ pub fn compute(root: &Path, dir: &str) -> Result<String, String> {
+     )
+     .map_err(|e| e.to_string())?;
+     lines.push(format!(
+-        "rung {rung}: {passing}/{total} features pass; wrote {}",
++        "rung {rung}: {totals}; wrote {}",
+         util::rel(root, &out)
+     ));
+     Ok(lines.join("\n"))
+ }
++
++#[cfg(test)]
++#[path = "acceptance_tests.rs"]
++mod tests;
+diff --git a/xtask/src/acceptance_tests.rs b/xtask/src/acceptance_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..68a40a7f8ca353ac125326a9cef0df2d902fde98
+--- /dev/null
++++ b/xtask/src/acceptance_tests.rs
+@@ -0,0 +1,202 @@
++use serde_json::{Value, json};
++
++use super::{evaluate, status};
++
++/// A report from `job` on `target` whose steps are `(name, ok)`.
++fn report(job: &str, target: &str, steps: &[(&str, bool)]) -> Value {
++    let steps: Vec<Value> = steps
++        .iter()
++        .map(|(name, ok)| json!({ "name": name, "ok": ok }))
++        .collect();
++    json!({ "report_version": 1, "job": job, "target": target, "steps": steps })
++}
++
++fn ci_feature(id: &str, step: &str) -> Value {
++    json!({ "id": id, "checks": [{ "job": "lint", "step": step }] })
++}
++
++/// Criterion 16 as the owner wrote it in rung 1b's acceptance.json.
++fn owner_feature(id: &str) -> Value {
++    json!({ "id": id, "owner": true, "command": "cargo run -p game-testbed -- play", "checks": [] })
++}
++
++fn feature<'a>(doc: &'a Value, id: &str) -> &'a Value {
++    doc["features"]
++        .as_array()
++        .unwrap()
++        .iter()
++        .find(|f| f["id"] == id)
++        .unwrap()
++}
++
++#[test]
++fn a_ci_feature_passes_only_when_every_report_has_its_step_ok() {
++    let mut doc =
++        json!({ "features": [ci_feature("lint-tier", "fmt"), ci_feature("docs", "docs-check")] });
++    let reports = [report("lint", "x", &[("fmt", true), ("docs-check", false)])];
++    let (lines, totals) = evaluate(&mut doc, &reports).unwrap();
++    assert_eq!(feature(&doc, "lint-tier")["passes"], true);
++    assert_eq!(feature(&doc, "docs")["passes"], false);
++    assert_eq!(
++        lines,
++        [
++            "PASS lint-tier",
++            "FAIL docs: lint/docs-check failed on \"x\""
++        ]
++    );
++    assert_eq!(totals, "1/2 features pass");
++}
++
++#[test]
++fn an_owner_feature_is_listed_and_never_computed() {
++    let mut doc =
++        json!({ "features": [ci_feature("lint-tier", "fmt"), owner_feature("owner-play")] });
++    let reports = [report("lint", "x", &[("fmt", true)])];
++    let (lines, totals) = evaluate(&mut doc, &reports).unwrap();
++    let owner = feature(&doc, "owner-play");
++    // CI writes no verdict: `passes` is null, never true or false.
++    assert!(owner.get("passes").is_some_and(Value::is_null), "{owner}");
++    assert!(owner.get("why_not").is_none(), "{owner}");
++    assert_eq!(
++        lines,
++        [
++            "PASS lint-tier",
++            "OWNER owner-play: the owner checks this feature; CI does not compute it"
++        ]
++    );
++    // The owner's feature is not among the computed ones, passing or failing.
++    assert_eq!(
++        totals,
++        "1/1 computed features pass; 1 for the owner: owner-play"
++    );
++}
++
++#[test]
++fn an_owner_feature_that_lists_checks_is_refused() {
++    let mut owner = owner_feature("owner-play");
++    owner["checks"] = json!([{ "job": "lint", "step": "fmt" }]);
++    let mut doc = json!({ "features": [owner] });
++    let err = evaluate(&mut doc, &[report("lint", "x", &[("fmt", true)])]).unwrap_err();
++    assert!(
++        err.contains("owner-play") && err.contains("lists checks"),
++        "{err}"
++    );
++}
++
++#[test]
++fn an_owner_feature_whose_checks_are_not_a_list_is_refused() {
++    for checks in [json!({ "job": "lint", "step": "fmt" }), json!("fmt")] {
++        let mut owner = owner_feature("owner-play");
++        owner["checks"] = checks;
++        let mut doc = json!({ "features": [owner] });
++        let err = evaluate(&mut doc, &[]).unwrap_err();
++        assert!(
++            err.contains("owner-play") && err.contains("checks"),
++            "{err}"
++        );
++    }
++    // Leaving `checks` out is as good as an empty list.
++    let mut owner = owner_feature("owner-play");
++    owner.as_object_mut().unwrap().remove("checks");
++    let mut doc = json!({ "features": [owner] });
++    assert!(evaluate(&mut doc, &[]).is_ok());
++}
++
++#[test]
++fn owner_must_be_true_or_false() {
++    let mut owner = owner_feature("owner-play");
++    owner["owner"] = json!("yes");
++    let mut doc = json!({ "features": [owner] });
++    let err = evaluate(&mut doc, &[]).unwrap_err();
++    assert!(
++        err.contains("owner-play") && err.contains("true or false"),
++        "{err}"
++    );
++    // `false` is an ordinary feature: with no checks it fails.
++    let mut doc = json!({ "features": [{ "id": "f", "owner": false, "checks": [] }] });
++    let (lines, totals) = evaluate(&mut doc, &[]).unwrap();
++    assert_eq!(lines, ["FAIL f: no checks listed"]);
++    assert_eq!(totals, "0/1 features pass");
++}
++
++#[test]
++fn passes_written_by_hand_is_refused_on_owner_features_too() {
++    let mut owner = owner_feature("owner-play");
++    owner["passes"] = json!(true);
++    let mut doc = json!({ "features": [owner] });
++    let err = evaluate(&mut doc, &[]).unwrap_err();
++    assert!(err.contains("by hand"), "{err}");
++}
++
++/// `pending` is CI's too: written by hand, a failing feature would show as
++/// pending (review of the integration round).
++#[test]
++fn pending_written_by_hand_is_refused() {
++    let mut feature = ci_feature("lint-tier", "fmt");
++    feature["pending"] = json!(true);
++    let mut doc = json!({ "features": [feature] });
++    let err = evaluate(&mut doc, &[]).unwrap_err();
++    assert!(
++        err.contains("`pending`") && err.contains("by hand"),
++        "{err}"
++    );
++}
++
++#[test]
++fn the_session_status_counts_owner_features_apart() {
++    let computed = json!({ "features": [
++        { "id": "a", "passes": true },
++        { "id": "b", "passes": false },
++        { "id": "c", "passes": false, "pending": true },
++        { "id": "owner-play", "owner": true, "passes": null },
++    ] });
++    assert_eq!(
++        status(&computed),
++        "1/3 pass; failing: b; pending: c; for the owner: owner-play"
++    );
++    let done = json!({ "features": [{ "id": "a", "passes": true }] });
++    assert_eq!(status(&done), "1/1 pass");
++}
++
++/// A report whose one step is pending (patch X2's `util::Done::Pending`):
++/// not ok, and failing no job.
++fn pending_report(job: &str, target: &str, step: &str, detail: &str) -> Value {
++    let step = json!({ "name": step, "ok": false, "pending": true, "detail": detail });
++    json!({ "report_version": 1, "job": job, "target": target, "steps": [step] })
++}
++
++#[test]
++fn a_pending_step_shows_as_pending_and_never_passes() {
++    let check = json!({ "job": "native", "target": "x", "step": "shot-exact" });
++    let mut doc = json!({ "features": [{ "id": "shot-exact", "checks": [check] }] });
++    let detail = "pending, not a pass, until the goldens are committed (G6)\nmore";
++    let reports = [pending_report("native", "x", "shot-exact", detail)];
++    let (lines, totals) = evaluate(&mut doc, &reports).unwrap();
++    let feature = feature(&doc, "shot-exact");
++    assert_eq!(feature["passes"], false);
++    assert_eq!(feature["pending"], true);
++    assert_eq!(
++        lines,
++        [
++            "PENDING shot-exact: native/shot-exact is pending on \"x\": \
++          pending, not a pass, until the goldens are committed (G6)"
++        ]
++    );
++    assert!(!lines[0].to_lowercase().contains("fail"), "{}", lines[0]);
++    assert_eq!(totals, "0/1 features pass, 1 pending");
++}
++
++#[test]
++fn a_failed_check_outranks_a_pending_one() {
++    let pending = json!({ "job": "native", "target": "x", "step": "shot-exact" });
++    let failed = json!({ "job": "lint", "step": "fmt" });
++    let mut doc = json!({ "features": [{ "id": "f", "checks": [pending, failed] }] });
++    let reports = [
++        pending_report("native", "x", "shot-exact", "no golden yet"),
++        report("lint", "x", &[("fmt", false)]),
++    ];
++    let (lines, totals) = evaluate(&mut doc, &reports).unwrap();
++    assert_eq!(lines, ["FAIL f: lint/fmt failed on \"x\""]);
++    assert!(feature(&doc, "f").get("pending").is_none());
++    assert_eq!(totals, "0/1 features pass");
++}
+diff --git a/xtask/src/ci.rs b/xtask/src/ci.rs
+index e5432b070e11d45bf792fa326ec345262335e64f..08c8065b1f3d3aa91443f29e11ab59b65acede21 100644
+--- a/xtask/src/ci.rs
++++ b/xtask/src/ci.rs
+@@ -8,15 +8,20 @@ use std::path::Path;
+ use std::process::Command;
+ use std::time::Instant;
+ 
+-use serde_json::json;
+-
+ use crate::util::{self, Steps};
+-use crate::{arch, docs, replay, selftest, size};
++use crate::{arch, ci_durations, ci_native, ci_report, ci_verdicts, docs, replay, selftest, size};
++
++/// The jobs `cargo xtask ci --job` runs, as its error and the usage text
++/// (`main.rs`) list them.
++pub const JOBS: [&str; 8] = [
++    "lint", "test", "riscv", "wasm", "selftest", "native", "summary", "all",
++];
+ 
+ pub const RISCV: &str = "riscv64gc-unknown-linux-gnu";
+ pub const WASM: &str = "wasm32-unknown-unknown";
+ 
+-fn cargo_step(root: &Path, name: &str, args: &[&str]) -> Result<String, String> {
++/// `cargo <args>` in `root`, with `--locked` on CI.
++pub(crate) fn cargo_command(root: &Path, args: &[&str]) -> Command {
+     let mut args = args.to_vec();
+     if util::on_ci() && !matches!(args.first(), Some(&("fmt" | "deny"))) {
+         // After the subcommand, never after a `--`.
+@@ -29,6 +34,22 @@ fn cargo_step(root: &Path, name: &str, args: &[&str]) -> Result<String, String>
+     }
+     let mut cmd = util::cargo(root);
+     cmd.args(&args);
++    cmd
++}
++
++pub(crate) fn cargo_step(root: &Path, name: &str, args: &[&str]) -> Result<String, String> {
++    cargo_step_env(root, name, args, &[])
++}
++
++/// [`cargo_step`] with `env` added to cargo's environment.
++pub(crate) fn cargo_step_env(
++    root: &Path,
++    name: &str,
++    args: &[&str],
++    env: &[(&str, &str)],
++) -> Result<String, String> {
++    let mut cmd = cargo_command(root, args);
++    cmd.envs(env.iter().copied());
+     util::run_quiet(root, name, &mut cmd).map(|_| String::new())
+ }
+ 
+@@ -47,6 +68,13 @@ fn has_tool(root: &Path, args: &[&str]) -> bool {
+ }
+ 
+ fn tests(root: &Path) -> Result<String, String> {
++    tests_env(root, &[])
++}
++
++/// Every test and doctest, with `env` added (the native job requires a GPU
++/// and a display).
++pub(crate) fn tests_env(root: &Path, env: &[(&str, &str)]) -> Result<String, String> {
++    let cargo_step = |root: &Path, name: &str, args: &[&str]| cargo_step_env(root, name, args, env);
+     let nextest = has_tool(root, &["cargo", "nextest", "--version"]);
+     let mut args = if nextest {
+         vec!["nextest", "run", "--workspace", "--no-fail-fast"]
+@@ -158,7 +186,7 @@ pub fn quick() -> Result<String, String> {
+     steps.run("docs-check", || docs::check(&root));
+     steps.run("tests", || tests(&root));
+     steps.run("replay", || replay::run(&root, &replay::Options::default()));
+-    finish(&root, "quick", steps, started)
++    ci_report::finish(&root, "quick", steps, started, serde_json::Map::new())
+ }
+ 
+ pub fn job(name: &str) -> Result<String, String> {
+@@ -176,6 +204,10 @@ pub fn job(name: &str) -> Result<String, String> {
+             steps.run("wasm-check", || cargo_step(&root, "wasm-check", &args));
+         }
+         "selftest" => selftest::steps(&root, &mut steps),
++        "native" => {
++            ci_native::steps(&root, &mut steps);
++            return ci_report::finish(&root, name, steps, started, ci_native::extra(&root));
++        }
+         "summary" => summary(&root, &mut steps),
+         "all" => {
+             lint(&root, &mut steps);
+@@ -189,12 +221,10 @@ pub fn job(name: &str) -> Result<String, String> {
+             selftest::steps(&root, &mut steps);
+         }
+         other => {
+-            return Err(format!(
+-                "unknown job {other:?}: lint test riscv wasm selftest summary all"
+-            ));
++            return Err(format!("unknown job {other:?}: {}", JOBS.join(" ")));
+         }
+     }
+-    finish(&root, name, steps, started)
++    ci_report::finish(&root, name, steps, started, serde_json::Map::new())
+ }
+ 
+ fn lint(root: &Path, steps: &mut Steps) {
+@@ -276,27 +306,37 @@ fn riscv(root: &Path, steps: &mut Steps) -> Result<(), String> {
+     Ok(())
+ }
+ 
+-/// The last PR-tier job: cross-architecture equality of the downloaded hash
+-/// streams, and the measured duration of the whole run.
++/// The last job: cross-architecture equality of the downloaded hash streams,
++/// the PR tier's and the native jobs', each against the committed streams
++/// (criterion 7), and the measured durations of the PR tier and of the
++/// native jobs (criterion 13).
+ fn summary(root: &Path, steps: &mut Steps) {
+     let incoming = root.join("target/ci/in");
+     steps.run("compare-hashes", || {
+-        let mut dirs: Vec<String> = fs::read_dir(&incoming)
++        let mut found: Vec<(String, String)> = fs::read_dir(&incoming)
+             .map_err(|e| format!("{}: {e}", incoming.display()))?
+             .flatten()
+-            .filter(|e| e.file_name().to_string_lossy().starts_with("hashes-"))
+-            .map(|e| stream_dir(&e.path()).to_string_lossy().into_owned())
++            .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
++            .filter(|(name, _)| name.starts_with("hashes-"))
++            .map(|(name, path)| (name, stream_dir(&path).to_string_lossy().into_owned()))
+             .collect();
+-        dirs.sort();
+-        if dirs.len() < 3 {
++        found.sort();
++        let names: Vec<String> = found.iter().map(|(name, _)| name.clone()).collect();
++        let missing = ci_verdicts::missing_streams(&names);
++        if !missing.is_empty() {
+             return Err(format!(
+-                "[E-CROSS-ARCH] expected x64, arm64 and riscv hash streams, found {dirs:?}"
++                "[E-CROSS-ARCH] no hash streams from {}; found {names:?}",
++                missing.join(", ")
+             ));
+         }
++        // The committed streams first, so every runner is held to them.
++        let mut dirs = vec![replay::COMMITTED.to_string()];
++        dirs.extend(found.into_iter().map(|(_, dir)| dir));
+         let refs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+         replay::compare_dirs(root, &refs)
+     });
+-    steps.run("pr-duration", || pr_duration(root));
++    steps.run("pr-duration", || ci_durations::pr_tier(root));
++    steps.run("native-duration", || ci_durations::native_tier(root));
+ }
+ 
+ /// An artifact holds `<triple>/*.txt`; use the directory with the streams.
+@@ -308,88 +348,6 @@ fn stream_dir(artifact: &Path) -> std::path::PathBuf {
+         .unwrap_or_else(|| artifact.to_path_buf())
+ }
+ 
+-fn pr_duration(root: &Path) -> Result<String, String> {
+-    let (Ok(repo), Ok(run)) = (
+-        std::env::var("GITHUB_REPOSITORY"),
+-        std::env::var("GITHUB_RUN_ID"),
+-    ) else {
+-        return Err("not on GitHub Actions; the PR-tier duration is measured there".into());
+-    };
+-    let mut cmd = Command::new("gh");
+-    cmd.args([
+-        "api",
+-        &format!("repos/{repo}/actions/runs/{run}"),
+-        "--jq",
+-        ".run_started_at",
+-    ]);
+-    let started = util::run_quiet(root, "gh-run", &mut cmd)?;
+-    let mut date = Command::new("date");
+-    date.args(["-u", "-d", started.trim(), "+%s"]);
+-    let started_s: u64 = util::run_quiet(root, "date", &mut date)?
+-        .trim()
+-        .parse()
+-        .map_err(|e| format!("{e}"))?;
+-    let now = std::time::SystemTime::now()
+-        .duration_since(std::time::UNIX_EPOCH)
+-        .map_err(|e| e.to_string())?
+-        .as_secs();
+-    let minutes = now.saturating_sub(started_s) as f64 / 60.0;
+-    let budget = fs::read_to_string(root.join("budgets.toml"))
+-        .ok()
+-        .and_then(|t| t.parse::<toml::Table>().ok())
+-        .and_then(|t| t.get("ci")?.get("pr_tier_minutes")?.as_integer())
+-        .unwrap_or(15);
+-    let verdict = if minutes <= budget as f64 {
+-        "within"
+-    } else {
+-        "OVER"
+-    };
+-    Ok(format!(
+-        "PR tier took {minutes:.1} min ({verdict} the {budget} min budget)"
+-    ))
+-}
+-
+-fn finish(root: &Path, job: &str, steps: Steps, started: Instant) -> Result<String, String> {
+-    let target = replay::host_triple(root).unwrap_or_else(|_| "unknown".into());
+-    let report = json!({
+-        "report_version": 1,
+-        "job": job,
+-        "target": target,
+-        "runner": std::env::var("RUNNER_NAME").unwrap_or_else(|_| "local".into()),
+-        "os": std::env::var("ImageOS").unwrap_or_else(|_| std::env::consts::OS.into()),
+-        "git_sha": std::env::var("GITHUB_SHA").unwrap_or_default(),
+-        "ok": steps.ok(),
+-        "seconds": started.elapsed().as_secs_f64(),
+-        "steps": steps.results.iter().map(|r| json!({
+-            "name": r.name, "ok": r.ok, "seconds": r.seconds,
+-            "detail": util::tail(&r.detail, 5),
+-        })).collect::<Vec<_>>(),
+-    });
+-    let dir = root.join("target/ci");
+-    let text = serde_json::to_string_pretty(&report).expect("report serializes");
+-    let _ = fs::create_dir_all(dir.join("reports"));
+-    let _ = fs::write(dir.join("report.json"), &text);
+-    let _ = fs::write(
+-        dir.join("reports").join(format!("{job}-{target}.json")),
+-        &text,
+-    );
+-    let failed: Vec<&str> = steps
+-        .results
+-        .iter()
+-        .filter(|r| !r.ok)
+-        .map(|r| r.name.as_str())
+-        .collect();
+-    if failed.is_empty() {
+-        Ok(format!(
+-            "{job}: all {} steps ok in {:.0}s",
+-            steps.results.len(),
+-            started.elapsed().as_secs_f64()
+-        ))
+-    } else {
+-        Err(format!("{job}: failed steps: {}", failed.join(", ")))
+-    }
+-}
+-
+ #[cfg(test)]
+ mod tests {
+     use std::path::Path;
+diff --git a/xtask/src/ci_durations.rs b/xtask/src/ci_durations.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..334e6c5aecd059ac701e783b4e92ce3cc8e615d0
+--- /dev/null
++++ b/xtask/src/ci_durations.rs
+@@ -0,0 +1,221 @@
++//! How long the PR tier and the native jobs took on GitHub Actions: the
++//! summary's `pr-duration` and `native-duration` steps (rung 1b, patch X3).
++//! The steps ask `gh` for this run's jobs; the verdicts are pure functions
++//! of that list (`ci_durations_tests.rs`).
++
++use std::fs;
++use std::path::Path;
++use std::process::Command;
++
++use crate::{ci_native, util};
++
++/// The PR tier's jobs in the workflow (a matrix job is `<name> (<value>)`).
++pub(crate) const PR_JOBS: [&str; 5] = ["lint", "test", "riscv", "wasm", "selftest"];
++
++/// This run on GitHub Actions: its repository and id.
++fn github_run(measured: &str) -> Result<(String, String), String> {
++    match (
++        std::env::var("GITHUB_REPOSITORY"),
++        std::env::var("GITHUB_RUN_ID"),
++    ) {
++        (Ok(repo), Ok(run)) => Ok((repo, run)),
++        _ => Err(format!(
++            "not on GitHub Actions; {measured} is measured there"
++        )),
++    }
++}
++
++/// This run's jobs, a line each: name, start and end (`null` until set).
++fn run_jobs(root: &Path, repo: &str, run: &str) -> Result<String, String> {
++    let mut cmd = Command::new("gh");
++    cmd.args([
++        "api",
++        "--paginate",
++        &format!("repos/{repo}/actions/runs/{run}/jobs?per_page=100"),
++        "--jq",
++        r#".jobs[] | [.name, (.started_at // "null"), (.completed_at // "null")] | @tsv"#,
++    ]);
++    util::run_quiet(root, "gh-jobs", &mut cmd)
++}
++
++/// `budgets.toml [ci] <key>`.
++fn ci_budget(root: &Path, key: &str) -> Option<i64> {
++    let text = fs::read_to_string(root.join("budgets.toml")).ok()?;
++    text.parse::<toml::Table>()
++        .ok()?
++        .get("ci")?
++        .get(key)?
++        .as_integer()
++}
++
++/// The PR tier's duration (spec 8.2): from the run's start to the end of its
++/// last PR job, since the summary now also waits for the native jobs.
++pub fn pr_tier(root: &Path) -> Result<String, String> {
++    let (repo, run) = github_run("the PR-tier duration")?;
++    let mut cmd = Command::new("gh");
++    cmd.args([
++        "api",
++        &format!("repos/{repo}/actions/runs/{run}"),
++        "--jq",
++        ".run_started_at",
++    ]);
++    let started = util::run_quiet(root, "gh-run", &mut cmd)?;
++    let budget = ci_budget(root, "pr_tier_minutes").unwrap_or(15);
++    let jobs = run_jobs(root, &repo, &run)?;
++    pr_duration(&jobs, &started, &PR_JOBS, budget)
++}
++
++/// The `native-duration` step (criterion 13): each native job's time on
++/// GitHub, the slowest held to `budgets.toml [ci] native_job_minutes`.
++pub fn native_tier(root: &Path) -> Result<String, String> {
++    let (repo, run) = github_run("the native jobs' duration")?;
++    let budget = ci_budget(root, "native_job_minutes")
++        .ok_or("[E-BUDGET] budgets.toml has no [ci] native_job_minutes")?;
++    let jobs = run_jobs(root, &repo, &run)?;
++    let runners: Vec<&str> = ci_native::RUNNERS.iter().map(|r| r.0).collect();
++    native_duration(&jobs, &runners, budget)
++}
++
++/// Seconds since 1970 for a UTC time as GitHub's API writes it,
++/// `2026-11-01T00:12:34Z`; `None` for anything else.
++pub fn unix_seconds(iso: &str) -> Option<u64> {
++    let bytes = iso.as_bytes();
++    let shape = [
++        (4, b'-'),
++        (7, b'-'),
++        (10, b'T'),
++        (13, b':'),
++        (16, b':'),
++        (19, b'Z'),
++    ];
++    if bytes.len() != 20 || shape.iter().any(|&(at, c)| bytes[at] != c) {
++        return None;
++    }
++    let number = |from: usize, to: usize| -> Option<u64> {
++        let digits = iso.get(from..to)?;
++        digits.bytes().all(|b| b.is_ascii_digit()).then_some(())?;
++        digits.parse().ok()
++    };
++    let (year, month, day) = (number(0, 4)?, number(5, 7)?, number(8, 10)?);
++    let (hour, minute, second) = (number(11, 13)?, number(14, 16)?, number(17, 19)?);
++    let leap = |y: u64| y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400));
++    let february = if leap(year) { 29 } else { 28 };
++    let months = [31, february, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
++    let days_in_month = *months.get(usize::try_from(month).ok()?.checked_sub(1)?)?;
++    if year < 1970 || day == 0 || day > days_in_month || hour > 23 || minute > 59 || second > 59 {
++        return None;
++    }
++    let years: u64 = (1970..year).map(|y| if leap(y) { 366 } else { 365 }).sum();
++    let before: u64 = months[..usize::try_from(month - 1).ok()?].iter().sum();
++    let days = years + before + day - 1;
++    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
++}
++
++/// The `native-duration` step's verdict (criterion 13): how long each
++/// runner's native job took, from `jobs`, this run's jobs as lines of name,
++/// start and end (tab-separated, as [`run_jobs`] asks `gh` for them),
++/// with the slowest held to `budget_minutes`. Going over is reported,
++/// never failed; a runner's job missing or unfinished fails, since then the
++/// tier was not measured.
++pub fn native_duration(
++    jobs: &str,
++    runners: &[&str],
++    budget_minutes: i64,
++) -> Result<String, String> {
++    let (mut took, mut missing) = (Vec::new(), Vec::new());
++    for &runner in runners {
++        let name = format!("native ({runner})");
++        let times = jobs.lines().find_map(|line| {
++            let mut fields = line.split('\t');
++            (fields.next()? == name).then(|| {
++                let start = unix_seconds(fields.next()?)?;
++                let end = unix_seconds(fields.next()?)?;
++                end.checked_sub(start)
++            })?
++        });
++        match times {
++            Some(seconds) => took.push((runner, seconds)),
++            None => missing.push(runner),
++        }
++    }
++    if !missing.is_empty() || took.is_empty() {
++        return Err(format!(
++            "[E-DURATION] no finished native job for {}",
++            missing.join(", ")
++        ));
++    }
++    let minutes = |seconds: u64| format!("{:.1} min", seconds as f64 / 60.0);
++    let list: Vec<String> = took
++        .iter()
++        .map(|&(runner, seconds)| format!("{runner} {}", minutes(seconds)))
++        .collect();
++    let &(slowest, seconds) = took
++        .iter()
++        .max_by_key(|&&(_, seconds)| seconds)
++        .expect("took is not empty");
++    let within = i64::try_from(seconds).is_ok_and(|s| s <= budget_minutes.saturating_mul(60));
++    let verdict = if within { "within" } else { "OVER" };
++    Ok(format!(
++        "native jobs: {}; the slowest, {slowest}, took {} ({verdict} the {budget_minutes} min \
++         budget, budgets.toml [ci] native_job_minutes)",
++        list.join(", "),
++        minutes(seconds)
++    ))
++}
++
++/// The `pr-duration` step's verdict (spec 8.2, measured since rung 1a): from
++/// the run's start (`run_started`) to the end of the PR tier's last job.
++/// The summary now waits for the native jobs too, so its own clock would
++/// count them. `jobs` is as for [`native_duration`]; a PR job is named as in
++/// `pr_jobs`, or with a matrix value, as `test (ubuntu-24.04)`. Going over
++/// is reported, never failed.
++pub fn pr_duration(
++    jobs: &str,
++    run_started: &str,
++    pr_jobs: &[&str],
++    budget_minutes: i64,
++) -> Result<String, String> {
++    let start = unix_seconds(run_started.trim())
++        .ok_or_else(|| format!("[E-DURATION] the run's start is not a time: {run_started:?}"))?;
++    let (mut last, mut missing): (Option<(&str, u64)>, Vec<String>) = (None, Vec::new());
++    for &job in pr_jobs {
++        let matrix = format!("{job} (");
++        let mut seen = false;
++        for line in jobs.lines() {
++            let mut fields = line.split('\t');
++            let name = fields.next().unwrap_or_default();
++            if name != job && !name.starts_with(&matrix) {
++                continue;
++            }
++            seen = true;
++            match fields.nth(1).and_then(unix_seconds) {
++                Some(end) if last.is_none_or(|(_, latest)| end > latest) => {
++                    last = Some((name, end))
++                }
++                Some(_) => {}
++                None => missing.push(format!("{name} (unfinished)")),
++            }
++        }
++        if !seen {
++            missing.push(job.to_string());
++        }
++    }
++    if !missing.is_empty() {
++        return Err(format!(
++            "[E-DURATION] the PR tier has no finished {}",
++            missing.join(", ")
++        ));
++    }
++    let (name, end) = last.ok_or("[E-DURATION] the PR tier has no job")?;
++    let seconds = end.saturating_sub(start);
++    let within = i64::try_from(seconds).is_ok_and(|s| s <= budget_minutes.saturating_mul(60));
++    let verdict = if within { "within" } else { "OVER" };
++    Ok(format!(
++        "PR tier took {:.1} min, to the end of {name} ({verdict} the {budget_minutes} min budget)",
++        seconds as f64 / 60.0
++    ))
++}
++
++#[cfg(test)]
++#[path = "ci_durations_tests.rs"]
++mod tests;
+diff --git a/xtask/src/ci_durations_tests.rs b/xtask/src/ci_durations_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..6561fd0ff13a7dc06c31ba637fb0ba7f45cf06f7
+--- /dev/null
++++ b/xtask/src/ci_durations_tests.rs
+@@ -0,0 +1,133 @@
++//! The duration verdicts of `ci_durations.rs`, from made-up job lists in
++//! the shape `run_jobs` gets from GitHub.
++
++use super::*;
++
++#[test]
++fn unix_seconds_reads_github_times() {
++    assert_eq!(unix_seconds("1970-01-01T00:00:00Z"), Some(0));
++    assert_eq!(unix_seconds("2000-03-01T00:00:00Z"), Some(951_868_800));
++    assert_eq!(unix_seconds("2024-02-29T12:00:00Z"), Some(1_709_208_000));
++    assert_eq!(unix_seconds("2026-11-01T00:12:34Z"), Some(1_793_491_954));
++    assert_eq!(unix_seconds("2100-03-01T00:00:00Z"), Some(4_107_542_400));
++    for bad in [
++        "",
++        "null",
++        "2026-13-01T00:00:00Z",
++        "2026-11-31T00:00:00Z",
++        "2026-11-01 00:00:00",
++        "2026-11-01T24:00:00Z",
++        "2026-11-01T00:00:00",
++        "1969-12-31T23:59:59Z",
++        "2026-11-01T00:00:0xZ",
++    ] {
++        assert_eq!(unix_seconds(bad), None, "{bad}");
++    }
++}
++
++const RUNNERS: [&str; 2] = ["ubuntu-24.04", "macos-26"];
++
++#[test]
++fn native_duration_reports_the_slowest_job_against_the_budget() {
++    let jobs = "native (ubuntu-24.04)\t2026-11-01T10:00:00Z\t2026-11-01T10:12:00Z\n\
++                native (macos-26)\t2026-11-01T10:00:30Z\t2026-11-01T10:18:30Z\n\
++                lint\t2026-11-01T10:00:00Z\t2026-11-01T10:40:00Z\n";
++    let detail = native_duration(jobs, &RUNNERS, 25).unwrap();
++    for wanted in [
++        "macos-26",
++        "18.0 min",
++        "ubuntu-24.04",
++        "12.0 min",
++        "within the 25 min",
++    ] {
++        assert!(detail.contains(wanted), "{wanted}: {detail}");
++    }
++    assert!(
++        !detail.contains("lint") && !detail.contains("40.0"),
++        "{detail}"
++    );
++}
++
++#[test]
++fn going_over_the_budget_is_reported_never_failed() {
++    let jobs = "native (ubuntu-24.04)\t2026-11-01T10:00:00Z\t2026-11-01T10:31:00Z\n\
++                native (macos-26)\t2026-11-01T10:00:00Z\t2026-11-01T10:10:00Z\n";
++    let detail = native_duration(jobs, &RUNNERS, 25).unwrap();
++    assert!(
++        detail.contains("OVER") && detail.contains("31.0 min"),
++        "{detail}"
++    );
++}
++
++#[test]
++fn native_duration_needs_every_native_job_finished() {
++    let ubuntu = "native (ubuntu-24.04)\t2026-11-01T10:00:00Z\t2026-11-01T10:12:00Z\n";
++    assert!(native_duration("", &RUNNERS, 25).is_err());
++    let error = native_duration(ubuntu, &RUNNERS, 25).unwrap_err();
++    assert!(error.contains("macos-26"), "{error}");
++    let unfinished = format!("{ubuntu}native (macos-26)\t2026-11-01T10:00:00Z\tnull\n");
++    let error = native_duration(&unfinished, &RUNNERS, 25).unwrap_err();
++    assert!(error.contains("macos-26"), "{error}");
++    let arm = "native (ubuntu-24.04-arm)\t2026-11-01T10:00:00Z\t2026-11-01T10:12:00Z\n";
++    assert!(
++        native_duration(arm, &["ubuntu-24.04"], 25).is_err(),
++        "names match exactly"
++    );
++}
++
++/// The jobs of a run whose PR tier ends at `last` (the slowest test job).
++fn jobs_ending(last: &str) -> String {
++    let test = format!("test (ubuntu-24.04)\t2026-11-01T10:00:00Z\t{last}");
++    [
++        "lint\t2026-11-01T10:00:00Z\t2026-11-01T10:05:00Z",
++        &test,
++        "test (ubuntu-24.04-arm)\t2026-11-01T10:00:00Z\t2026-11-01T10:11:00Z",
++        "riscv\t2026-11-01T10:00:00Z\t2026-11-01T10:08:00Z",
++        "wasm\t2026-11-01T10:00:00Z\t2026-11-01T10:03:00Z",
++        "selftest\t2026-11-01T10:00:00Z\t2026-11-01T10:06:00Z",
++        "native (macos-26)\t2026-11-01T10:00:00Z\t2026-11-01T10:40:00Z",
++        "summary\t2026-11-01T10:40:00Z\tnull",
++    ]
++    .join("\n")
++}
++
++/// The summary now waits for the native jobs too, so the PR tier ends with
++/// its own slowest job, not when the summary runs.
++#[test]
++fn pr_duration_ends_with_the_pr_tiers_last_job() {
++    let jobs = jobs_ending("2026-11-01T10:12:00Z");
++    let detail = pr_duration(&jobs, "2026-11-01T09:59:30Z", &PR_JOBS, 15).unwrap();
++    for wanted in ["12.5 min", "within the 15 min", "test (ubuntu-24.04)"] {
++        assert!(detail.contains(wanted), "{wanted}: {detail}");
++    }
++    assert!(
++        !detail.contains("40.") && !detail.contains("native"),
++        "{detail}"
++    );
++    let over = jobs_ending("2026-11-01T10:20:00Z");
++    let detail = pr_duration(&over, "2026-11-01T09:59:30Z", &PR_JOBS, 15).unwrap();
++    assert!(
++        detail.contains("OVER") && detail.contains("20.5 min"),
++        "{detail}"
++    );
++}
++
++#[test]
++fn pr_duration_needs_every_pr_job_finished_and_the_run_start() {
++    let jobs = jobs_ending("2026-11-01T10:12:00Z");
++    let without: String = jobs
++        .lines()
++        .filter(|line| !line.starts_with("riscv"))
++        .collect::<Vec<_>>()
++        .join("\n");
++    let error = pr_duration(&without, "2026-11-01T09:59:30Z", &PR_JOBS, 15).unwrap_err();
++    assert!(error.contains("riscv"), "{error}");
++    let unfinished = jobs_ending("null");
++    let error = pr_duration(&unfinished, "2026-11-01T09:59:30Z", &PR_JOBS, 15).unwrap_err();
++    assert!(error.contains("test"), "{error}");
++    assert!(pr_duration(&jobs, "null", &PR_JOBS, 15).is_err());
++    // A job named like a PR job's prefix is not one.
++    let testing = jobs.replace("test (ubuntu-24.04)\t", "testing\t");
++    let testing = testing.replace("test (ubuntu-24.04-arm)\t", "tests\t");
++    assert!(pr_duration(&testing, "2026-11-01T09:59:30Z", &PR_JOBS, 15).is_err());
++}
+diff --git a/xtask/src/ci_native.rs b/xtask/src/ci_native.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..93091a986a009ada1cdd0602359e3835f8377621
+--- /dev/null
++++ b/xtask/src/ci_native.rs
+@@ -0,0 +1,484 @@
++//! `cargo xtask ci --job native` (rung 1b, patch X2; spec 8.2): on each of
++//! the five native runners, build and test the workspace with a GPU and a
++//! display required, run the replays, and check the probe's window, shots,
++//! crash files, version stamp, GPU counters and proof video on the runner's
++//! own adapter.
++//!
++//! [`STEPS`] is the job. Its names are the steps that the acceptance list's
++//! native checks name (`docs/rungs/1b/acceptance.json`), on the hosts it
++//! names, and `ci_native_tests.rs` holds the two together. The report
++//! (`target/ci/reports/native-<host>.json`) adds the adapter and driver
++//! (`gpu`, from the `gpu-budgets` shot) and the OS version. The steps write
++//! their files to `target/ci/` (`version.*`, `window.*`, `shot.*`,
++//! `proof.*`), the hash streams to `target/ci/hashes/<host>/`, and the shot
++//! harness its candidates to `target/golden-candidates/`.
++//!
++//! The job sets `ENG_REQUIRE_GPU=1` and `ENG_REQUIRE_DISPLAY=1` for every
++//! step that renders or opens a window, so none of those tests can skip. On
++//! Linux the workflow runs the job under `xvfb-run`. `ENG_CI_STEPS`, a
++//! comma-separated list of step names, runs only those, for local
++//! debugging; the report then lists them under `only_steps`.
++
++use std::fs;
++use std::path::{Path, PathBuf};
++use std::process::Command;
++
++use serde_json::{Map, Value, json};
++
++use crate::util::{self, Done, Steps};
++use crate::{ci, ci_verdicts as verdicts, replay};
++
++/// The five native runners (spec 8.2) and the host each reports, as the
++/// acceptance checks' targets name them. `windows-11-arm` needs a native
++/// aarch64 toolchain to report its own (rung 1b, T5 open question 4).
++pub const RUNNERS: [(&str, &str); 5] = [
++    ("ubuntu-24.04", "x86_64-unknown-linux-gnu"),
++    ("ubuntu-24.04-arm", "aarch64-unknown-linux-gnu"),
++    ("windows-2025", "x86_64-pc-windows-msvc"),
++    ("windows-11-arm", "aarch64-pc-windows-msvc"),
++    ("macos-26", "aarch64-apple-darwin"),
++];
++
++/// The pinned configuration's host (plan decision 3): exact shots, and the
++/// steps that run only there.
++const LINUX_X64: &str = "x86_64-unknown-linux-gnu";
++const INTEL_MAC: &str = "x86_64-apple-darwin";
++
++/// Which hosts a step runs on.
++#[derive(Clone, Copy)]
++enum Hosts {
++    All,
++    LinuxX64,
++    NotLinuxX64,
++    MacOs,
++}
++
++impl Hosts {
++    fn have(self, host: &str) -> bool {
++        match self {
++            Hosts::All => true,
++            Hosts::LinuxX64 => host == LINUX_X64,
++            Hosts::NotLinuxX64 => host != LINUX_X64,
++            Hosts::MacOs => host.ends_with("-apple-darwin"),
++        }
++    }
++}
++
++type Step = fn(&Path) -> Result<Done, String>;
++
++/// The native job: each step's name, where it runs, and what it does.
++const STEPS: [(&str, Hosts, Step); 12] = [
++    ("build", Hosts::All, build),
++    ("tests", Hosts::All, tests),
++    ("replay", Hosts::All, replay),
++    ("crash-json", Hosts::All, crash_json),
++    ("version", Hosts::All, version),
++    ("shot-exact", Hosts::LinuxX64, shot_exact),
++    ("shot-flip", Hosts::NotLinuxX64, shot_flip),
++    ("window", Hosts::All, window),
++    ("gpu-budgets", Hosts::All, gpu_budgets),
++    ("esc", Hosts::LinuxX64, esc),
++    ("proof-video", Hosts::LinuxX64, proof_video),
++    ("check-intel-mac", Hosts::MacOs, check_intel_mac),
++];
++
++/// What a step that renders or opens a window must have (amendments 36, 46).
++const REQUIRE: [(&str, &str); 2] = [("ENG_REQUIRE_GPU", "1"), ("ENG_REQUIRE_DISPLAY", "1")];
++
++/// The scripted session every windowed and rendered step plays.
++const SCRIPT: &str = "crates/game-testbed/scenarios/dot-square.input.toml";
++const STREAM: &str = "crates/game-testbed/hashes/dot-square.seed1.txt";
++
++/// The files the steps leave in `target/ci/` (`<stem>.<extension>`),
++/// removed when the job starts so a step never reads an earlier run's.
++const OUTPUTS: [&str; 4] = ["version", "window", "shot", "proof"];
++const EXTENSIONS: [&str; 4] = ["txt", "json", "png", "apng"];
++
++/// The `gpu` keys the report copies from a render's report: the adapter and
++/// driver, and the frame's counters (spec 8.2).
++const GPU_KEYS: [&str; 8] = [
++    "adapter",
++    "backend",
++    "device_type",
++    "driver",
++    "driver_info",
++    "tier",
++    "capabilities",
++    "per_frame",
++];
++
++/// The adapter the offscreen renders on `host` ask for (`ENG_GPU_ADAPTER`):
++/// on Linux x64, the pinned lavapipe that `tests/shots.rs` pins. Ubuntu's
++/// own lavapipe is installed beside it there, because the pinned build
++/// offers no window surface (only `VK_EXT_headless_surface`), and a window
++/// can only open on an adapter that presents to it, so `play` takes
++/// Ubuntu's. The shot harness's exact mode still checks the whole
++/// configuration.
++pub fn offscreen_adapter(host: &str) -> Option<&'static str> {
++    (host == LINUX_X64).then_some("llvmpipe (LLVM 18.1.3, 256 bits)")
++}
++
++/// The native job's steps on `host`, in order.
++pub fn steps_for(host: &str) -> Vec<&'static str> {
++    STEPS
++        .iter()
++        .filter(|(_, hosts, _)| hosts.have(host))
++        .map(|(name, _, _)| *name)
++        .collect()
++}
++
++/// `ENG_CI_STEPS`, if set and not empty.
++fn only_steps() -> Option<Vec<String>> {
++    let list = std::env::var("ENG_CI_STEPS").ok()?;
++    let names: Vec<String> = list
++        .split(',')
++        .map(|name| name.trim().to_string())
++        .filter(|name| !name.is_empty())
++        .collect();
++    (!names.is_empty()).then_some(names)
++}
++
++/// Runs the native job's steps for this host.
++pub fn steps(root: &Path, steps: &mut Steps) {
++    let host = match replay::host_triple(root) {
++        Ok(host) => host,
++        Err(e) => {
++            steps.run("build", || Err(e));
++            return;
++        }
++    };
++    let out = root.join("target/ci");
++    for (stem, extension) in OUTPUTS.iter().flat_map(|s| EXTENSIONS.map(|e| (s, e))) {
++        let _ = fs::remove_file(out.join(format!("{stem}.{extension}")));
++    }
++    let _ = fs::create_dir_all(&out);
++    let only = only_steps();
++    for name in steps_for(&host) {
++        if only.as_ref().is_some_and(|o| !o.iter().any(|n| n == name)) {
++            continue;
++        }
++        let step = STEPS
++            .iter()
++            .find(|(step, _, _)| *step == name)
++            .map(|(_, _, run)| *run)
++            .expect("steps_for names steps of STEPS");
++        steps.run_judged(name, || step(root));
++    }
++}
++
++/// The report's additions: the adapter and driver the steps rendered on
++/// (spec 8.2), the OS version and the runner image.
++pub fn extra(root: &Path) -> Map<String, Value> {
++    let gpu = ["shot.json", "window.json", "proof.json"]
++        .iter()
++        .find_map(|file| {
++            let report = read_json(&root.join("target/ci").join(file)).ok()?;
++            let gpu = report.get("gpu").filter(|gpu| gpu.is_object())?;
++            let copy = GPU_KEYS
++                .iter()
++                .map(|key| ((*key).to_string(), gpu[*key].clone()));
++            Some(Value::Object(copy.collect()))
++        })
++        .unwrap_or(Value::Null);
++    let mut extra = Map::new();
++    extra.insert("gpu".into(), gpu);
++    extra.insert("os_version".into(), json!(os_version()));
++    let image = std::env::var("ImageVersion").ok();
++    extra.insert("image_version".into(), json!(image));
++    if let Some(only) = only_steps() {
++        extra.insert("only_steps".into(), json!(only));
++    }
++    extra
++}
++
++fn os_version() -> Option<String> {
++    let run = |program: &str, args: &[&str]| {
++        let out = Command::new(program).args(args).output().ok()?;
++        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
++        (out.status.success() && !text.is_empty()).then_some(text)
++    };
++    match std::env::consts::OS {
++        "macos" => run("sw_vers", &["-productVersion"]).map(|v| format!("macOS {v}")),
++        "windows" => run("cmd", &["/c", "ver"]),
++        _ => {
++            let release = fs::read_to_string("/etc/os-release").ok()?;
++            let line = release.lines().find(|l| l.starts_with("PRETTY_NAME="))?;
++            Some(line["PRETTY_NAME=".len()..].trim_matches('"').to_string())
++        }
++    }
++}
++
++fn read_json(path: &Path) -> Result<Value, String> {
++    let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
++    serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
++}
++
++fn read_text(path: &Path) -> Result<String, String> {
++    fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
++}
++
++fn pass(result: Result<String, String>) -> Result<Done, String> {
++    result.map(Done::Pass)
++}
++
++/// Builds the testbed and returns its binary.
++fn testbed(root: &Path) -> Result<PathBuf, String> {
++    ci::cargo_step(root, "native-testbed", &["build", "-p", "game-testbed"])?;
++    let exe = format!("game-testbed{}", std::env::consts::EXE_SUFFIX);
++    Ok(root.join("target/debug").join(exe))
++}
++
++/// [`probe`] for an offscreen render, on [`offscreen_adapter`] if this host
++/// names one.
++fn offscreen(root: &Path, binary: &Path, args: &[&str]) -> Result<Command, String> {
++    let mut cmd = probe(root, binary, args);
++    if let Some(adapter) = offscreen_adapter(&replay::host_triple(root)?) {
++        cmd.env("ENG_GPU_ADAPTER", adapter);
++    }
++    Ok(cmd)
++}
++
++/// The testbed's binary run from the repo root, its logs (and any
++/// `crash.json`) in `target/agent-logs/`, with a GPU and a display required.
++fn probe(root: &Path, binary: &Path, args: &[&str]) -> Command {
++    let mut cmd = Command::new(binary);
++    cmd.current_dir(root)
++        .args(args)
++        .envs(REQUIRE)
++        .env("ENG_AGENT_LOG_DIR", root.join("target/agent-logs"))
++        // winit takes Wayland when it can; xvfb and xdotool are X11.
++        .env_remove("WAYLAND_DISPLAY")
++        .env_remove("WAYLAND_SOCKET");
++    cmd
++}
++
++/// A path under the repo root as an argument.
++fn arg(root: &Path, path: &str) -> String {
++    root.join(path).display().to_string()
++}
++
++/// The workspace and every test target build (criterion 1).
++fn build(root: &Path) -> Result<Done, String> {
++    pass(ci::cargo_step(
++        root,
++        "native-build",
++        &["build", "--workspace", "--all-targets"],
++    ))
++}
++
++/// Every test, with a GPU and a display required (criteria 1, 3 and 18).
++fn tests(root: &Path) -> Result<Done, String> {
++    pass(ci::tests_env(root, &REQUIRE))
++}
++
++/// The testbed's scenarios against the committed hash streams, which the
++/// workflow uploads for `compare-hashes` (criterion 7).
++fn replay(root: &Path) -> Result<Done, String> {
++    pass(replay::run(root, &replay::Options::default()))
++}
++
++/// A panic in `run` and in `play` writes `crash.json` (criterion 6,
++/// amendment 46); `play`'s half cannot skip here.
++fn crash_json(root: &Path) -> Result<Done, String> {
++    let args = ["test", "-p", "game-testbed", "--test", "crash_json"];
++    pass(ci::cargo_step_env(
++        root,
++        "native-crash-json",
++        &args,
++        &REQUIRE,
++    ))
++}
++
++/// Both forms of the version stamp, every value set (criterion 8).
++fn version(root: &Path) -> Result<Done, String> {
++    let binary = testbed(root)?;
++    let plain = util::run_quiet(
++        root,
++        "native-version",
++        &mut probe(root, &binary, &["--version"]),
++    )?;
++    let mut json = probe(root, &binary, &["--version", "--json"]);
++    let json = util::run_quiet(root, "native-version-json", &mut json)?;
++    let out = root.join("target/ci");
++    let _ = fs::write(out.join("version.txt"), &plain);
++    let _ = fs::write(out.join("version.json"), &json);
++    let github =
++        ["GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"].map(|v| std::env::var(v).ok());
++    let expect = match github {
++        [Some(sha), Some(id), Some(attempt)] => Some((sha, format!("github-{id}/{attempt}"))),
++        _ => None,
++    };
++    let expect = expect
++        .as_ref()
++        .map(|(sha, run)| (sha.as_str(), run.as_str()));
++    pass(verdicts::version(&plain, &json, expect))
++}
++
++/// The shot harness against the committed goldens (criteria 4 and 5,
++/// amendment 57): exactly on the pinned configuration, or with FLIP. Its
++/// `shots.json` decides: a pass only if every shot passed, pending while a
++/// golden is missing (plan decision 3).
++fn shots(root: &Path, exact: bool) -> Result<Done, String> {
++    let summary = root.join("target/golden-candidates/shots.json");
++    let _ = fs::remove_file(&summary);
++    let mut cmd = ci::cargo_command(root, &["test", "-p", "game-testbed", "--test", "shots"]);
++    cmd.env("ENG_REQUIRE_GPU", "1").env_remove("ENG_GOLDEN_DIR");
++    if let Some(adapter) = offscreen_adapter(&replay::host_triple(root)?) {
++        cmd.env("ENG_GPU_ADAPTER", adapter);
++    }
++    if exact {
++        cmd.env("ENG_SHOT_MODE", "exact");
++    } else {
++        cmd.env_remove("ENG_SHOT_MODE");
++    }
++    let name = if exact {
++        "native-shot-exact"
++    } else {
++        "native-shot-flip"
++    };
++    util::run_quiet(root, name, &mut cmd)?;
++    let text = read_text(&summary)
++        .map_err(|e| format!("[E-GOLDEN] the shot harness wrote no shots.json: {e}"))?;
++    verdicts::shots(&text, exact)
++}
++
++fn shot_exact(root: &Path) -> Result<Done, String> {
++    shots(root, true)
++}
++
++fn shot_flip(root: &Path) -> Result<Done, String> {
++    shots(root, false)
++}
++
++/// `play` in a real window gives the committed hash stream and presents
++/// frames (criterion 2, amendment 46).
++fn window(root: &Path) -> Result<Done, String> {
++    let binary = testbed(root)?;
++    let (hashes, report) = (
++        arg(root, "target/ci/window.txt"),
++        arg(root, "target/ci/window.json"),
++    );
++    let script = arg(root, SCRIPT);
++    let args = [
++        "play", "--ticks", "240", "--seed", "1", "--input", &script, "--hashes", &hashes,
++        "--report", &report,
++    ];
++    util::run_quiet(root, "native-window", &mut probe(root, &binary, &args))?;
++    let stream = read_text(&root.join("target/ci/window.txt"))?;
++    let committed = read_text(&root.join(STREAM))?;
++    let report = read_json(&root.join("target/ci/window.json"))?;
++    pass(verdicts::window(&stream, &committed, &report))
++}
++
++/// A shot held to `budgets.toml [gpu]` by the probe (exit 13 over), whose
++/// report records the adapter; the window's frames are held too (criterion
++/// 9, amendment 42).
++fn gpu_budgets(root: &Path) -> Result<Done, String> {
++    let binary = testbed(root)?;
++    let (png, report) = (
++        arg(root, "target/ci/shot.png"),
++        arg(root, "target/ci/shot.json"),
++    );
++    let (script, budgets) = (arg(root, SCRIPT), arg(root, "budgets.toml"));
++    let args = [
++        "shot",
++        "--at-tick",
++        "240",
++        "--seed",
++        "1",
++        "--input",
++        &script,
++        "--budgets",
++        &budgets,
++        "--report",
++        &report,
++        "--out",
++        &png,
++    ];
++    util::run_quiet(
++        root,
++        "native-gpu-budgets",
++        &mut offscreen(root, &binary, &args)?,
++    )?;
++    let shot = read_json(&root.join("target/ci/shot.json"))?;
++    let window = read_json(&root.join("target/ci/window.json")).ok();
++    let budgets = read_text(&root.join("budgets.toml"))?;
++    pass(verdicts::gpu_budgets(&shot, &budgets, window.as_ref()))
++}
++
++/// Escape from the keyboard through XTEST quits `play` within 5 s
++/// (criterion 3): `play.rs`'s test, which finds the window by the child's
++/// PID (`xdotool search --pid`), then runs `windowfocus --sync` and `key
++/// Escape` (amendments 37 and 46).
++fn esc(root: &Path) -> Result<Done, String> {
++    const TEST: &str = "escape_from_the_keyboard_quits_within_5_seconds";
++    let args = [
++        "test",
++        "-p",
++        "game-testbed",
++        "--test",
++        "play",
++        "--",
++        "--exact",
++        TEST,
++    ];
++    let mut cmd = ci::cargo_command(root, &args);
++    cmd.envs(REQUIRE);
++    let output = util::run_quiet(root, "native-esc", &mut cmd)?;
++    verdicts::ran_test(&output, TEST)?;
++    Ok(Done::Pass(format!(
++        "{TEST}: Escape through XTEST (xdotool windowfocus --sync, key Escape) quit play \
++         within 5 s"
++    )))
++}
++
++/// The proof video of the scripted session (criterion 15, amendment 42):
++/// 241 frames, uploaded with the job's files.
++fn proof_video(root: &Path) -> Result<Done, String> {
++    let binary = testbed(root)?;
++    let (apng, report) = (
++        arg(root, "target/ci/proof.apng"),
++        arg(root, "target/ci/proof.json"),
++    );
++    let script = arg(root, SCRIPT);
++    let args = [
++        "video", "--ticks", "240", "--seed", "1", "--input", &script, "--out", &apng, "--report",
++        &report,
++    ];
++    util::run_quiet(
++        root,
++        "native-proof-video",
++        &mut offscreen(root, &binary, &args)?,
++    )?;
++    let bytes = fs::read(root.join("target/ci/proof.apng")).map_err(|e| format!("{apng}: {e}"))?;
++    let report = read_json(&root.join("target/ci/proof.json"))?;
++    pass(verdicts::video(&bytes, &report, 241))
++}
++
++/// The Intel Mac is compile-checked only (spec 8.2, criterion 1). The
++/// workflow adds the target in the macOS job only.
++fn check_intel_mac(root: &Path) -> Result<Done, String> {
++    let mut libdir = Command::new("rustc");
++    libdir
++        .current_dir(root)
++        .args(["--print", "target-libdir", "--target", INTEL_MAC]);
++    let libdir = util::run_quiet(root, "native-intel-libdir", &mut libdir)?;
++    if !Path::new(libdir.trim()).is_dir() {
++        return Err(format!(
++            "[E-NO-TARGET] {INTEL_MAC}'s standard library is not installed: `rustup target add \
++             {INTEL_MAC}` (the macos-26 job does)"
++        ));
++    }
++    let args = [
++        "check",
++        "--workspace",
++        "--all-targets",
++        "--target",
++        INTEL_MAC,
++    ];
++    pass(ci::cargo_step(root, "native-check-intel-mac", &args))
++}
++
++#[cfg(test)]
++#[path = "ci_native_tests.rs"]
++mod tests;
+diff --git a/xtask/src/ci_native_tests.rs b/xtask/src/ci_native_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..dd0cd0eaca152beada4f5460c1991b8223467369
+--- /dev/null
++++ b/xtask/src/ci_native_tests.rs
+@@ -0,0 +1,219 @@
++//! The native job's contract with the acceptance list and the workflow, and
++//! how a pending step reaches the job's report.
++
++use std::path::Path;
++use std::time::Instant;
++
++use serde_json::{Map, Value, json};
++
++use super::{RUNNERS, steps_for};
++use crate::util::{Done, Steps};
++
++fn root() -> &'static Path {
++    Path::new(env!("CARGO_MANIFEST_DIR"))
++        .parent()
++        .expect("xtask sits in the repo root")
++}
++
++#[test]
++fn each_runner_runs_its_steps_in_order() {
++    let common = ["build", "tests", "replay", "crash-json", "version"];
++    let linux_x64 = steps_for("x86_64-unknown-linux-gnu");
++    let mut expected: Vec<&str> = common.to_vec();
++    expected.extend(["shot-exact", "window", "gpu-budgets", "esc", "proof-video"]);
++    assert_eq!(linux_x64, expected);
++    for host in [
++        "aarch64-unknown-linux-gnu",
++        "x86_64-pc-windows-msvc",
++        "aarch64-pc-windows-msvc",
++    ] {
++        let mut expected: Vec<&str> = common.to_vec();
++        expected.extend(["shot-flip", "window", "gpu-budgets"]);
++        assert_eq!(steps_for(host), expected, "{host}");
++    }
++    let mut expected: Vec<&str> = common.to_vec();
++    expected.extend(["shot-flip", "window", "gpu-budgets", "check-intel-mac"]);
++    assert_eq!(steps_for("aarch64-apple-darwin"), expected);
++}
++
++/// Every native check in the current rung's acceptance list names a runner's
++/// host and a step that the native job runs there, so each can pass.
++#[test]
++fn every_native_check_in_acceptance_finds_its_step() {
++    let rung = std::fs::read_to_string(root().join("docs/rungs/current.txt")).unwrap();
++    let path = root()
++        .join("docs/rungs")
++        .join(rung.trim())
++        .join("acceptance.json");
++    let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
++    let hosts: Vec<&str> = RUNNERS.iter().map(|r| r.1).collect();
++    let mut checked = 0;
++    for feature in doc["features"].as_array().unwrap() {
++        // An owner feature may leave `checks` out (X4).
++        for check in feature["checks"].as_array().into_iter().flatten() {
++            if check["job"] != "native" {
++                continue;
++            }
++            let target = check["target"].as_str().unwrap_or_default();
++            let step = check["step"].as_str().unwrap();
++            assert!(
++                hosts.contains(&target),
++                "{}: no runner reports {target:?}",
++                feature["id"]
++            );
++            assert!(
++                steps_for(target).contains(&step),
++                "{}: the native job on {target} has no step {step}",
++                feature["id"]
++            );
++            checked += 1;
++        }
++    }
++    if rung.trim() == "1b" {
++        assert_eq!(checked, 53, "rung 1b's native checks");
++    }
++}
++
++/// The workflow's matrix is these runners, and it uploads each one's hash
++/// streams under the name `compare-hashes` looks for.
++#[test]
++fn the_workflow_runs_the_native_job_on_every_runner() {
++    let workflow = std::fs::read_to_string(root().join(".github/workflows/ci.yml"))
++        .unwrap()
++        .replace("\r\n", "\n");
++    let names: Vec<&str> = RUNNERS.iter().map(|r| r.0).collect();
++    let matrix = format!("runner: [{}]", names.join(", "));
++    assert!(workflow.contains(&matrix), "ci.yml has no `{matrix}`");
++    for artifact in [
++        "hashes-native-${{ matrix.runner }}",
++        "report-native-${{ matrix.runner }}",
++        "golden-candidates-${{ matrix.runner }}",
++        "crash-native-${{ matrix.runner }}",
++    ] {
++        assert!(workflow.contains(artifact), "ci.yml uploads no {artifact}");
++    }
++    assert!(workflow.contains("cargo xtask ci --job native"));
++    // `pr-duration` finds the PR tier's jobs by their ids.
++    for job in crate::ci_durations::PR_JOBS {
++        assert!(
++            workflow.contains(&format!("\n  {job}:\n")),
++            "ci.yml has no job {job}"
++        );
++    }
++}
++
++/// On Linux x64 the offscreen renders name the pinned lavapipe: Ubuntu's own
++/// lavapipe is there too, for the windows, which the pinned build cannot
++/// present to. The name is the one `tests/shots.rs` pins.
++#[test]
++fn offscreen_renders_on_linux_x64_name_the_pinned_adapter() {
++    let harness = std::fs::read_to_string(root().join("crates/game-testbed/tests/shots.rs"))
++        .expect("the shot harness");
++    let pinned = super::offscreen_adapter("x86_64-unknown-linux-gnu").expect("named");
++    assert!(
++        harness.contains(&format!("const PINNED_ADAPTER: &str = \"{pinned}\";")),
++        "shots.rs pins another adapter than {pinned:?}"
++    );
++    for (_, host) in RUNNERS
++        .iter()
++        .filter(|(_, host)| *host != "x86_64-unknown-linux-gnu")
++    {
++        assert_eq!(super::offscreen_adapter(host), None, "{host}");
++    }
++}
++
++#[test]
++fn a_pending_step_fails_no_job_and_passes_no_check() {
++    let mut steps = Steps::default();
++    steps.run("build", || Ok(String::new()));
++    let passed = steps.run_judged("shot-flip", || Ok(Done::Pending("no golden yet".into())));
++    assert!(!passed, "pending is not a pass");
++    assert!(steps.ok(), "a pending step fails no job");
++    let report =
++        crate::ci_report::report("native", "aarch64-apple-darwin", &steps, 1.0, Map::new());
++    let step = &report["steps"][1];
++    assert_eq!(step["name"], "shot-flip");
++    assert_eq!(step["ok"], false, "acceptance counts only ok steps");
++    assert_eq!(step["pending"], true);
++    assert_eq!(report["steps"][0]["pending"], false);
++    assert_eq!(report["ok"], true);
++    steps.run("window", || Err("no frame presented".into()));
++    assert!(!steps.ok(), "a failed step still fails the job");
++}
++
++/// The job's exit, as CI sees it: a pending step leaves it green and is
++/// written as pending; a failed step turns it red.
++#[test]
++fn a_pending_step_leaves_the_job_green_and_a_failed_one_red() {
++    let root = std::env::temp_dir().join(format!("xtask-native-finish-{}", std::process::id()));
++    std::fs::create_dir_all(&root).unwrap();
++    let finish =
++        |steps| crate::ci_report::finish(&root, "native", steps, Instant::now(), Map::new());
++    let mut steps = Steps::default();
++    steps.run("build", || Ok(String::new()));
++    steps.run_judged("shot-flip", || Ok(Done::Pending("no golden yet".into())));
++    let green = finish(steps);
++    let written = std::fs::read_to_string(root.join("target/ci/report.json")).unwrap();
++    let mut steps = Steps::default();
++    steps.run_judged("shot-flip", || Ok(Done::Pending(String::new())));
++    steps.run("window", || Err("no frame presented".into()));
++    let red = finish(steps);
++    std::fs::remove_dir_all(&root).unwrap();
++    let green = green.unwrap();
++    assert!(
++        green.contains("pending") && green.contains("shot-flip"),
++        "{green}"
++    );
++    let report: Value = serde_json::from_str(&written).unwrap();
++    assert_eq!(report["steps"][1]["pending"], true);
++    assert_eq!(report["steps"][1]["ok"], false);
++    let red = red.unwrap_err();
++    assert!(
++        red.contains("window") && !red.contains("shot-flip"),
++        "{red}"
++    );
++}
++
++/// The report names the adapter, driver and per-frame counters of the
++/// budget shot (spec 8.2), else of the window.
++#[test]
++fn the_report_names_the_adapter_driver_and_counters() {
++    let root = std::env::temp_dir().join(format!("xtask-native-extra-{}", std::process::id()));
++    let ci = root.join("target/ci");
++    std::fs::create_dir_all(&ci).unwrap();
++    assert_eq!(
++        super::extra(&root)["gpu"],
++        Value::Null,
++        "no render, no adapter"
++    );
++    let gpu = json!({
++        "adapter": "Microsoft Basic Render Driver", "backend": "dx12", "device_type": "cpu",
++        "driver": "", "driver_info": "", "tier": 0, "capabilities": {},
++        "per_frame": {"draws": 3},
++    });
++    std::fs::write(ci.join("window.json"), json!({ "gpu": gpu }).to_string()).unwrap();
++    let extra = super::extra(&root);
++    std::fs::remove_dir_all(&root).unwrap();
++    assert_eq!(extra["gpu"]["adapter"], "Microsoft Basic Render Driver");
++    assert_eq!(extra["gpu"]["driver_info"], "");
++    assert_eq!(extra["gpu"]["per_frame"]["draws"], 3);
++    assert!(extra["os_version"].is_string() || extra["os_version"].is_null());
++}
++
++#[test]
++fn the_report_carries_the_extra_keys() {
++    let mut extra = Map::new();
++    extra.insert(
++        "gpu".into(),
++        json!({"adapter": "Microsoft Basic Render Driver"}),
++    );
++    let report = crate::ci_report::report(
++        "native",
++        "x86_64-pc-windows-msvc",
++        &Steps::default(),
++        0.0,
++        extra,
++    );
++    assert_eq!(report["gpu"]["adapter"], "Microsoft Basic Render Driver");
++    assert_eq!(report["job"], "native");
++}
+diff --git a/xtask/src/ci_report.rs b/xtask/src/ci_report.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..545a35702853f78a38e73a3d70250ff9e0734d5d
+--- /dev/null
++++ b/xtask/src/ci_report.rs
+@@ -0,0 +1,87 @@
++//! A CI job's report, `target/ci/report.json` and its copy in
++//! `target/ci/reports/<job>-<target>.json`, which `acceptance` reads. A step
++//! is ok, failed, or pending (`util::Done`): pending fails no job, and its
++//! `ok` stays false, so no acceptance check counts it as a pass.
++
++use std::fs;
++use std::path::Path;
++use std::time::Instant;
++
++use serde_json::{Map, Value, json};
++
++use crate::replay;
++use crate::util::{self, StepResult, Steps};
++
++/// The job's report (`report_version` 1), with `extra` keys added at the
++/// top level.
++pub(crate) fn report(
++    job: &str,
++    target: &str,
++    steps: &Steps,
++    seconds: f64,
++    extra: Map<String, Value>,
++) -> Value {
++    let mut report = json!({
++        "report_version": 1,
++        "job": job,
++        "target": target,
++        "runner": std::env::var("RUNNER_NAME").unwrap_or_else(|_| "local".into()),
++        "os": std::env::var("ImageOS").unwrap_or_else(|_| std::env::consts::OS.into()),
++        "git_sha": std::env::var("GITHUB_SHA").unwrap_or_default(),
++        "ok": steps.ok(),
++        "seconds": seconds,
++        "steps": steps.results.iter().map(|r| json!({
++            "name": r.name, "ok": r.ok, "pending": r.pending, "seconds": r.seconds,
++            "detail": util::tail(&r.detail, 5),
++        })).collect::<Vec<_>>(),
++    });
++    if let Some(map) = report.as_object_mut() {
++        map.extend(extra);
++    }
++    report
++}
++
++/// Writes the job's report and says whether every step passed; a pending
++/// step fails no job.
++pub(crate) fn finish(
++    root: &Path,
++    job: &str,
++    steps: Steps,
++    started: Instant,
++    extra: Map<String, Value>,
++) -> Result<String, String> {
++    let target = replay::host_triple(root).unwrap_or_else(|_| "unknown".into());
++    let seconds = started.elapsed().as_secs_f64();
++    let report = report(job, &target, &steps, seconds, extra);
++    let dir = root.join("target/ci");
++    let text = serde_json::to_string_pretty(&report).expect("report serializes");
++    let _ = fs::create_dir_all(dir.join("reports"));
++    let _ = fs::write(dir.join("report.json"), &text);
++    let _ = fs::write(
++        dir.join("reports").join(format!("{job}-{target}.json")),
++        &text,
++    );
++    let named = |pick: fn(&StepResult) -> bool| -> Vec<&str> {
++        steps
++            .results
++            .iter()
++            .filter(|r| pick(r))
++            .map(|r| r.name.as_str())
++            .collect()
++    };
++    if !steps.ok() {
++        let failed = named(|r| !r.ok && !r.pending);
++        return Err(format!("{job}: failed steps: {}", failed.join(", ")));
++    }
++    let pending = named(|r| r.pending);
++    let pending = if pending.is_empty() {
++        String::new()
++    } else {
++        format!("; pending, not passes: {}", pending.join(", "))
++    };
++    Ok(format!(
++        "{job}: no step failed, {} of {} ok{pending} in {seconds:.0}s",
++        steps.results.iter().filter(|r| r.ok).count(),
++        steps.results.len()
++    ))
++}
+diff --git a/xtask/src/ci_verdicts.rs b/xtask/src/ci_verdicts.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..d7cd61611129388eca6911b3fe4035b3439026e6
+--- /dev/null
++++ b/xtask/src/ci_verdicts.rs
+@@ -0,0 +1,365 @@
++//! What the native job's steps and the summary conclude from the files they
++//! read (rung 1b, patches X2 and X3). Pure functions, so each verdict is
++//! tested without a GPU, a window or GitHub (`ci_verdicts_tests.rs`).
++
++use serde_json::Value;
++
++use crate::ci_native::RUNNERS;
++use crate::util::{self, Done};
++
++/// A JSON value as text: a string as it is, anything else as JSON.
++fn text(value: &Value) -> String {
++    value
++        .as_str()
++        .map_or_else(|| value.to_string(), String::from)
++}
++
++/// A shot step's verdict from `target/golden-candidates/shots.json`, which
++/// `crates/game-testbed/tests/shots.rs` writes (amendment 57):
++/// - a pass only if every shot's status is `pass` against the committed
++///   goldens: exactly on the pinned configuration for `shot-exact`
++///   (`exact`), with FLIP for `shot-flip`;
++/// - pending while any shot has no golden or no thresholds, so acceptance
++///   stays false until the owner commits the goldens (plan decision 3);
++/// - otherwise a failure naming each shot that failed.
++pub fn shots(summary: &str, exact: bool) -> Result<Done, String> {
++    let summary: Value =
++        serde_json::from_str(summary).map_err(|e| format!("[E-GOLDEN] shots.json: {e}"))?;
++    let config = &summary["configuration"];
++    let adapter = format!(
++        "`{}` `{}`",
++        text(&config["adapter"]),
++        text(&config["driver_info"])
++    );
++    let mode = summary["mode"].as_str().unwrap_or_default();
++    let wanted = if exact { "exact" } else { "flip" };
++    if mode != wanted {
++        return Err(format!(
++            "[E-GOLDEN] the shots were compared by {mode:?}, not {wanted}, on {adapter}"
++        ));
++    }
++    if exact && config["pinned"] != true {
++        return Err(format!(
++            "[E-GOLDEN] shot-exact needs the pinned configuration, not {adapter}"
++        ));
++    }
++    let golden = text(&summary["golden_dir"]).replace('\\', "/");
++    if !golden.ends_with("crates/game-testbed/golden") {
++        return Err(format!(
++            "[E-GOLDEN] the shots were compared with {golden:?}, not the committed goldens"
++        ));
++    }
++    let shots = summary["shots"]
++        .as_array()
++        .filter(|shots| !shots.is_empty())
++        .ok_or("[E-GOLDEN] shots.json names no shot")?;
++    let (mut failed, mut pending) = (Vec::new(), Vec::new());
++    for shot in shots {
++        let name = text(&shot["name"]);
++        match shot["status"].as_str() {
++            Some("pass") => {}
++            Some(status @ ("no-golden" | "no-thresholds")) => {
++                pending.push(format!("{name} {status}"));
++            }
++            Some("fail") => failed.push(text(&shot["message"])),
++            other => failed.push(format!("{name}: [E-GOLDEN] unknown status {other:?}")),
++        }
++    }
++    if !failed.is_empty() {
++        return Err(failed.join("\n"));
++    }
++    let count = shots.len();
++    Ok(if pending.is_empty() {
++        Done::Pass(format!("{count} shots pass ({mode}) on {adapter}"))
++    } else {
++        Done::Pending(format!(
++            "pending, not a pass, until the goldens are committed (G6): {}; {count} shots \
++             ({mode}) on {adapter}; candidates in target/golden-candidates/",
++            pending.join(", ")
++        ))
++    })
++}
++
++/// The `version` step's verdict (criterion 8, amendment 15): `--version
++/// --json` (`json`) has every `build` value, none of them `unknown` or null,
++/// and `--version` (`plain`) prints the same stamp on one line: the game and
++/// its version, the engine commit, the target and the profile. On GitHub,
++/// `expect` is the commit and `ci_run` the stamp must name.
++pub fn version(plain: &str, json: &str, expect: Option<(&str, &str)>) -> Result<String, String> {
++    let stamp: Value =
++        serde_json::from_str(json).map_err(|e| format!("[E-VERSION] --version --json: {e}"))?;
++    let build = stamp["build"]
++        .as_object()
++        .filter(|build| !build.is_empty())
++        .ok_or("[E-VERSION] --version --json has no build values")?;
++    let unknown: Vec<&str> = build
++        .iter()
++        .filter(|(_, value)| value.is_null() || value.as_str() == Some("unknown"))
++        .map(|(key, _)| key.as_str())
++        .collect();
++    if !unknown.is_empty() {
++        return Err(format!(
++            "[E-VERSION] build values unknown or null: {}",
++            unknown.join(", ")
++        ));
++    }
++    let field = |key: &str| build.get(key).map(text).unwrap_or_default();
++    let line = plain.strip_suffix('\n').unwrap_or(plain);
++    let line = line.strip_suffix('\r').unwrap_or(line);
++    let sha = field("engine_sha");
++    let short = sha.get(..12).unwrap_or(&sha);
++    let head = format!("{} {} ", text(&stamp["game"]), field("game_version"));
++    let tail = format!("{} {},", field("target"), field("profile"));
++    let same = line.starts_with(&head) && line.contains(short) && line.contains(&tail);
++    if line.is_empty() || line.contains('\n') || !same {
++        return Err(format!(
++            "[E-VERSION] --version is not the stamp on one line (`{head}`, `{short}`, \
++             `{tail}`): {plain:?}"
++        ));
++    }
++    if let Some((commit, run)) = expect
++        && (sha != commit || field("ci_run") != run)
++    {
++        return Err(format!(
++            "[E-VERSION] the stamp names {sha} and {}, not this run's {commit} and {run}",
++            field("ci_run")
++        ));
++    }
++    Ok(format!("{line}; every build value set"))
++}
++
++/// The `window` step's verdict (criterion 2, amendment 46): `play` exited ok
++/// in a real window (`winit`), its hash stream (`stream`) is the committed
++/// one byte for byte, and it presented frames. A window that is never
++/// visible, as on a Mac with the screen locked, presents nothing and fails.
++pub fn window(stream: &str, committed: &str, report: &Value) -> Result<String, String> {
++    if stream != committed {
++        let line = stream
++            .split_inclusive('\n')
++            .zip(committed.split_inclusive('\n'))
++            .take_while(|(ours, theirs)| ours == theirs)
++            .count()
++            + 1;
++        return Err(format!(
++            "[E-HASH] the window's hash stream differs from the committed one at line {line}"
++        ));
++    }
++    if report["exit"] != "ok" {
++        return Err(format!("play exited {}", report["exit"]));
++    }
++    if report["platform"] != "winit" {
++        return Err(format!(
++            "play ran on {}, not in a window (winit)",
++            report["platform"]
++        ));
++    }
++    let gpu = &report["gpu"];
++    let frames = gpu["frames"].as_u64().unwrap_or(0);
++    if frames == 0 {
++        return Err(
++            "no frame presented: the window was never visible (on macOS, a locked or sleeping \
++             screen hides every window)"
++                .into(),
++        );
++    }
++    Ok(format!(
++        "{} ticks, the committed hash stream; {frames} frames of {}x{} presented on {} \
++         (surface {}), {} dropped ticks",
++        report["ticks_run"],
++        gpu["width"],
++        gpu["height"],
++        text(&gpu["adapter"]),
++        text(&gpu["surface_format"]),
++        report["dropped_ticks"]
++    ))
++}
++
++/// The four per-frame counters and their `budgets.toml [gpu]` limits.
++const COUNTERS: [(&str, &str); 4] = [
++    ("draws", "max_draws_per_frame"),
++    ("pipeline_switches", "max_pipeline_switches_per_frame"),
++    ("bind_group_switches", "max_bind_group_switches_per_frame"),
++    ("upload_bytes", "max_upload_bytes_per_frame"),
++];
++
++fn gpu_limits(budgets: &str) -> Result<Vec<(&'static str, u64)>, String> {
++    let table: toml::Table = budgets
++        .parse()
++        .map_err(|e: toml::de::Error| format!("budgets.toml: {e}"))?;
++    let gpu = table
++        .get("gpu")
++        .and_then(toml::Value::as_table)
++        .ok_or("[E-BUDGET] budgets.toml has no [gpu]")?;
++    COUNTERS
++        .iter()
++        .map(|&(counter, key)| {
++            let limit = gpu
++                .get(key)
++                .and_then(toml::Value::as_integer)
++                .and_then(|limit| u64::try_from(limit).ok())
++                .ok_or_else(|| format!("[E-BUDGET] budgets.toml [gpu] has no {key}"))?;
++            Ok((counter, limit))
++        })
++        .collect()
++}
++
++/// Holds a report's `per_frame` peaks to `limits`.
++fn hold(per_frame: &Value, limits: &[(&str, u64)], what: &str) -> Result<(), String> {
++    if !per_frame.is_object() {
++        return Err(format!(
++            "[E-BUDGET] the {what}'s report has no per-frame counters"
++        ));
++    }
++    let over: Vec<String> = limits
++        .iter()
++        .filter_map(|&(counter, limit)| match per_frame[counter].as_u64() {
++            Some(used) if used <= limit => None,
++            Some(used) => Some(format!("{counter} {used} > {limit}")),
++            None => Some(format!("{counter} missing")),
++        })
++        .collect();
++    if over.is_empty() {
++        Ok(())
++    } else {
++        Err(format!(
++            "[E-BUDGET] the {what}'s frame exceeds budgets.toml [gpu]: {}",
++            over.join(", ")
++        ))
++    }
++}
++
++/// The `gpu-budgets` step's verdict (criterion 9, amendment 42): the shot's
++/// report records the adapter, its driver and capabilities, and the frame's
++/// counters are within `budgets.toml [gpu]`; so are the window's peaks when
++/// the `window` step presented frames (a window frame adds the present
++/// pass).
++pub fn gpu_budgets(shot: &Value, budgets: &str, window: Option<&Value>) -> Result<String, String> {
++    if shot["exit"] != "ok" {
++        return Err(format!("the shot exited {}", shot["exit"]));
++    }
++    let gpu = &shot["gpu"];
++    let adapter = gpu["adapter"]
++        .as_str()
++        .filter(|adapter| !adapter.is_empty())
++        .ok_or("[E-GPU-REPORT] the shot's report names no adapter")?;
++    for key in ["backend", "device_type", "driver", "driver_info"] {
++        if !gpu[key].is_string() {
++            return Err(format!("[E-GPU-REPORT] the shot's report has no gpu.{key}"));
++        }
++    }
++    if !gpu["capabilities"].is_object() {
++        return Err("[E-GPU-REPORT] the shot's report has no gpu.capabilities".into());
++    }
++    let limits = gpu_limits(budgets)?;
++    hold(&gpu["per_frame"], &limits, "shot")?;
++    let windowed = match window {
++        Some(report) if report["gpu"]["frames"].as_u64().unwrap_or(0) > 0 => {
++            hold(&report["gpu"]["per_frame"], &limits, "window")?;
++            format!("the window's frames too ({})", report["gpu"]["per_frame"])
++        }
++        Some(_) => "the window presented no frame, so only the shot is held".into(),
++        None => "no window report, so only the shot is held".into(),
++    };
++    Ok(format!(
++        "{adapter} ({}, {}), driver `{}` `{}`; the shot's frame {} within budgets.toml [gpu]; \
++         {windowed}",
++        text(&gpu["backend"]),
++        text(&gpu["device_type"]),
++        text(&gpu["driver"]),
++        text(&gpu["driver_info"]),
++        gpu["per_frame"]
++    ))
++}
++
++/// The `proof-video` step's verdict (criterion 15, amendment 42): an
++/// animated PNG whose `acTL` chunk says `frames` frames, whole up to its
++/// `IEND`, and a report that rendered as many.
++pub fn video(apng: &[u8], report: &Value, frames: u64) -> Result<String, String> {
++    if report["exit"] != "ok" {
++        return Err(format!("video exited {}", report["exit"]));
++    }
++    let mut rest = apng
++        .strip_prefix(b"\x89PNG\r\n\x1a\n".as_slice())
++        .ok_or("[E-VIDEO] proof.apng is not a PNG file")?;
++    let (mut animation, mut ended) = (None, false);
++    while let (Some(head), false) = (rest.get(..8), ended) {
++        let length = u32::from_be_bytes([head[0], head[1], head[2], head[3]]);
++        let length = usize::try_from(length).map_err(|e| e.to_string())?;
++        let data = rest
++            .get(8..8 + length)
++            .filter(|_| rest.len() >= 12 + length)
++            .ok_or("[E-VIDEO] proof.apng is cut short")?;
++        match &head[4..8] {
++            b"acTL" if length >= 8 => {
++                animation = Some(u32::from_be_bytes([data[0], data[1], data[2], data[3]]));
++            }
++            b"IEND" => ended = true,
++            _ => {}
++        }
++        rest = &rest[12 + length..];
++    }
++    if !ended {
++        return Err("[E-VIDEO] proof.apng is cut short: no IEND chunk".into());
++    }
++    let count = animation.ok_or("[E-VIDEO] proof.apng is a still PNG: no acTL chunk")?;
++    if u64::from(count) != frames {
++        return Err(format!(
++            "[E-VIDEO] proof.apng has {count} frames, not {frames}"
++        ));
++    }
++    if report["gpu"]["frames"].as_u64() != Some(frames) {
++        return Err(format!(
++            "[E-VIDEO] the report rendered {} frames, not {frames}",
++            report["gpu"]["frames"]
++        ));
++    }
++    Ok(format!(
++        "proof.apng: {frames} frames, {} bytes, on {}",
++        apng.len(),
++        text(&report["gpu"]["adapter"])
++    ))
++}
++
++/// Whether libtest's output shows the test named `test` run and passed: a
++/// filter that matches nothing runs no test and still exits 0.
++pub fn ran_test(output: &str, test: &str) -> Result<(), String> {
++    let line = format!("test {test} ... ok");
++    if output.lines().any(|l| l.trim_end() == line) {
++        Ok(())
++    } else {
++        Err(format!(
++            "[E-TEST] the test {test} did not run and pass:\n{}",
++            util::tail(output, 5)
++        ))
++    }
++}
++
++/// The hash-stream artifacts `compare-hashes` needs (criterion 7): the test
++/// job's two Linux runners, RISC-V, and each native runner.
++pub fn expected_streams() -> Vec<String> {
++    let mut names: Vec<String> = [
++        "hashes-ubuntu-24.04",
++        "hashes-ubuntu-24.04-arm",
++        "hashes-riscv",
++    ]
++    .map(String::from)
++    .to_vec();
++    names.extend(
++        RUNNERS
++            .iter()
++            .map(|(runner, _)| format!("hashes-native-{runner}")),
++    );
++    names
++}
++
++/// The hash-stream artifacts that `compare-hashes` needs but did not get.
++pub fn missing_streams(found: &[String]) -> Vec<String> {
++    expected_streams()
++        .into_iter()
++        .filter(|name| !found.contains(name))
++        .collect()
++}
++
++#[cfg(test)]
++#[path = "ci_verdicts_tests.rs"]
++mod tests;
+diff --git a/xtask/src/ci_verdicts_tests.rs b/xtask/src/ci_verdicts_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..1d57ee0e97fdb7b76df26b9fc37e82c5673d5d74
+--- /dev/null
++++ b/xtask/src/ci_verdicts_tests.rs
+@@ -0,0 +1,418 @@
++//! The verdicts of `ci_verdicts.rs`, from made-up files shaped like the real
++//! ones (shots.json from `tests/shots.rs`, the probe's reports and stamp).
++
++use serde_json::{Value, json};
++
++use super::*;
++use crate::util::Done;
++
++/// A `shots.json` with one shot per status.
++fn shots_json(pinned: bool, mode: &str, statuses: &[&str]) -> String {
++    let shots: Vec<Value> = statuses
++        .iter()
++        .enumerate()
++        .map(|(i, status)| {
++            json!({
++                "name": format!("shot-{i}"), "status": status,
++                "message": format!("shot-{i}: {status}"),
++                "differing_pixels": null, "flip": null,
++            })
++        })
++        .collect();
++    json!({
++        "configuration": {
++            "os": "linux", "arch": "x86_64", "adapter": "llvmpipe (LLVM 18.1.3, 256 bits)",
++            "backend": "vulkan", "device_type": "cpu", "driver": "llvmpipe",
++            "driver_info": "Mesa 25.2.7 (LLVM 18.1.3)", "pinned": pinned,
++        },
++        "machine": {"os_version": "Ubuntu 24.04.3 LTS", "cpu": "AMD EPYC 7763"},
++        "mode": mode,
++        "golden_dir": "/home/runner/work/game-engine/crates/game-testbed/golden",
++        "shots": shots,
++    })
++    .to_string()
++}
++
++#[test]
++fn shots_pass_only_when_every_shot_passes() {
++    let exact = shots(&shots_json(true, "exact", &["pass"; 4]), true);
++    assert!(matches!(exact, Ok(Done::Pass(_))), "{exact:?}");
++    let flip = shots(&shots_json(false, "flip", &["pass"; 4]), false);
++    assert!(matches!(flip, Ok(Done::Pass(_))), "{flip:?}");
++}
++
++#[test]
++fn a_shot_without_its_golden_is_pending_never_a_pass() {
++    for status in ["no-golden", "no-thresholds"] {
++        let every = shots_json(false, "flip", &[status; 4]);
++        let one = shots_json(false, "flip", &["pass", "pass", status, "pass"]);
++        for text in [every, one] {
++            match shots(&text, false) {
++                Ok(Done::Pending(detail)) => assert!(detail.contains(status), "{detail}"),
++                other => panic!("{status}: {other:?}"),
++            }
++        }
++    }
++    let exact = shots(&shots_json(true, "exact", &["no-golden"; 4]), true);
++    assert!(matches!(exact, Ok(Done::Pending(_))), "{exact:?}");
++}
++
++#[test]
++fn a_failed_shot_fails_the_step() {
++    let text = shots_json(false, "flip", &["pass", "fail", "no-golden", "pass"]);
++    let error = shots(&text, false).unwrap_err();
++    assert!(error.contains("shot-1"), "{error}");
++}
++
++#[test]
++fn shot_exact_needs_the_pinned_configuration_and_shot_flip_needs_flip() {
++    for (pinned, mode, exact) in [
++        (false, "flip", true),
++        (false, "exact", true),
++        (true, "flip", true),
++        (true, "exact", false),
++    ] {
++        let text = shots_json(pinned, mode, &["pass"; 4]);
++        let verdict = shots(&text, exact);
++        assert!(
++            verdict.is_err(),
++            "pinned {pinned}, {mode}, exact {exact}: {verdict:?}"
++        );
++    }
++    let error = shots(&shots_json(false, "flip", &["pass"; 4]), true).unwrap_err();
++    assert!(
++        error.contains("llvmpipe (LLVM 18.1.3, 256 bits)"),
++        "names the adapter: {error}"
++    );
++}
++
++#[test]
++fn shots_json_must_parse_name_shots_and_use_the_committed_goldens() {
++    assert!(shots("", false).is_err());
++    assert!(shots("{}", false).is_err());
++    assert!(shots(&shots_json(false, "flip", &[]), false).is_err());
++    assert!(shots(&shots_json(false, "flip", &["skipped"]), false).is_err());
++    let mut summary: Value =
++        serde_json::from_str(&shots_json(false, "flip", &["pass"; 4])).unwrap();
++    summary["golden_dir"] = json!("/tmp/copy-of-golden");
++    let error = shots(&summary.to_string(), false).unwrap_err();
++    assert!(error.contains("/tmp/copy-of-golden"), "{error}");
++    summary["golden_dir"] = json!(r"D:\a\game-engine\game-engine\crates\game-testbed\golden");
++    let windows = shots(&summary.to_string(), false);
++    assert!(matches!(windows, Ok(Done::Pass(_))), "{windows:?}");
++}
++
++const SHA: &str = "a6c1550fb90be0ba656428b616bfa97627138979";
++const PLAIN: &str = "game-testbed 0.1.0 (engine 0.1.0 a6c1550fb90b) x86_64-unknown-linux-gnu \
++                     debug, rustc 1.99.1, sim protocol 0x69fd4996880a6508\n";
++
++fn stamp() -> Value {
++    json!({
++        "stamp_version": 1,
++        "game": "game-testbed",
++        "build": {
++            "game_version": "0.1.0", "engine_version": "0.1.0",
++            "engine_sha": SHA, "game_sha": SHA, "dirty": false,
++            "source_date_epoch": 1_793_471_790_u64, "ci_run": "github-42/1",
++            "target": "x86_64-unknown-linux-gnu",
++            "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)", "profile": "debug",
++            "debug_assertions": true,
++        },
++    })
++}
++
++#[test]
++fn version_passes_a_full_stamp_printed_both_ways() {
++    let detail = version(PLAIN, &stamp().to_string(), None).unwrap();
++    assert!(detail.contains("a6c1550fb90b"), "{detail}");
++}
++
++#[test]
++fn version_fails_on_an_unknown_or_missing_build_value() {
++    for key in [
++        "engine_sha",
++        "game_sha",
++        "source_date_epoch",
++        "ci_run",
++        "rustc",
++        "dirty",
++    ] {
++        for bad in [json!("unknown"), Value::Null] {
++            let mut stamp = stamp();
++            stamp["build"][key] = bad.clone();
++            let error = version(PLAIN, &stamp.to_string(), None).unwrap_err();
++            assert!(error.contains(key), "{key} = {bad}: {error}");
++        }
++    }
++    assert!(version(PLAIN, "{}", None).is_err());
++    assert!(version(PLAIN, "not json", None).is_err());
++}
++
++#[test]
++fn version_plain_is_the_same_stamp_on_one_line() {
++    let json = stamp().to_string();
++    for plain in [
++        format!("{PLAIN}and a second line\n"),
++        PLAIN.replace("a6c1550fb90b", "000000000000"),
++        PLAIN.replace("x86_64-unknown-linux-gnu", "aarch64-apple-darwin"),
++        PLAIN.replace("game-testbed 0.1.0", "other-game 0.1.0"),
++        PLAIN.replace(" debug,", " release,"),
++        String::new(),
++    ] {
++        assert!(version(&plain, &json, None).is_err(), "{plain:?}");
++    }
++}
++
++#[test]
++fn on_github_the_stamp_names_this_commit_and_this_run() {
++    let json = stamp().to_string();
++    assert!(version(PLAIN, &json, Some((SHA, "github-42/1"))).is_ok());
++    let other = "b".repeat(40);
++    assert!(version(PLAIN, &json, Some((&other, "github-42/1"))).is_err());
++    assert!(version(PLAIN, &json, Some((SHA, "github-43/1"))).is_err());
++}
++
++const STREAM: &str = "# eng hash stream v1\n# game=game-testbed seed=1\n0 0x1\n1 0x2\n";
++
++fn window_report(frames: u64) -> Value {
++    json!({
++        "command": "play", "platform": "winit", "exit": "ok", "ticks_run": 240,
++        "dropped_ticks": 0,
++        "gpu": {
++            "adapter": "llvmpipe (LLVM 19.1.7, 128 bits)", "width": 800, "height": 600,
++            "frames": frames, "surface_format": "Bgra8UnormSrgb",
++            "per_frame": {
++                "draws": 3, "pipeline_switches": 3, "bind_group_switches": 2,
++                "upload_bytes": 96,
++            },
++        },
++    })
++}
++
++#[test]
++fn window_passes_with_the_committed_stream_and_frames_presented() {
++    let detail = window(STREAM, STREAM, &window_report(233)).unwrap();
++    assert!(
++        detail.contains("233") && detail.contains("Bgra8UnormSrgb"),
++        "{detail}"
++    );
++}
++
++#[test]
++fn window_fails_when_its_stream_is_not_the_committed_one() {
++    let other = STREAM.replace("1 0x2", "1 0x3");
++    let error = window(&other, STREAM, &window_report(233)).unwrap_err();
++    assert!(
++        error.contains("[E-HASH]") && error.contains("line 4"),
++        "{error}"
++    );
++    let short = window("# eng hash stream v1\n", STREAM, &window_report(233)).unwrap_err();
++    assert!(short.contains("[E-HASH]"), "{short}");
++    // A checkout that turned the committed file's line ends into CRLF.
++    let crlf = STREAM.replace('\n', "\r\n");
++    assert!(window(STREAM, &crlf, &window_report(233)).is_err());
++}
++
++#[test]
++fn window_fails_without_a_presented_frame_or_a_real_window() {
++    let error = window(STREAM, STREAM, &window_report(0)).unwrap_err();
++    assert!(error.contains("no frame"), "{error}");
++    let mut headless = window_report(233);
++    headless["platform"] = json!("headless");
++    assert!(window(STREAM, STREAM, &headless).is_err());
++    let mut failed = window_report(233);
++    failed["exit"] = json!("budget-exceeded");
++    assert!(window(STREAM, STREAM, &failed).is_err());
++    assert!(window(STREAM, STREAM, &Value::Null).is_err());
++}
++
++const BUDGETS: &str = "version = 1\n[sim]\nmax_state_bytes = 4096\n[gpu]\n\
++    max_draws_per_frame = 12\nmax_pipeline_switches_per_frame = 12\n\
++    max_bind_group_switches_per_frame = 8\nmax_upload_bytes_per_frame = 2048\n";
++
++fn shot_report() -> Value {
++    json!({
++        "command": "shot", "exit": "ok",
++        "gpu": {
++            "adapter": "llvmpipe (LLVM 18.1.3, 256 bits)", "backend": "vulkan",
++            "device_type": "cpu", "vendor": 65541, "device": 0, "driver": "llvmpipe",
++            "driver_info": "Mesa 25.2.7 (LLVM 18.1.3)", "tier": 0,
++            "capabilities": {"timestamp_queries": true, "binding_arrays": false},
++            "width": 320, "height": 240, "frames": 1,
++            "per_frame": {
++                "draws": 2, "pipeline_switches": 2, "bind_group_switches": 1,
++                "upload_bytes": 96,
++            },
++        },
++    })
++}
++
++const COUNTERS: [(&str, u64); 4] = [
++    ("draws", 12),
++    ("pipeline_switches", 12),
++    ("bind_group_switches", 8),
++    ("upload_bytes", 2048),
++];
++
++#[test]
++fn gpu_budgets_records_the_adapter_and_driver() {
++    let detail = gpu_budgets(&shot_report(), BUDGETS, Some(&window_report(233))).unwrap();
++    for wanted in [
++        "llvmpipe (LLVM 18.1.3, 256 bits)",
++        "Mesa 25.2.7 (LLVM 18.1.3)",
++        "vulkan",
++    ] {
++        assert!(detail.contains(wanted), "{wanted}: {detail}");
++    }
++}
++
++#[test]
++fn gpu_budgets_holds_each_counter_of_the_shot_and_the_window_to_its_limit() {
++    for (counter, limit) in COUNTERS {
++        let mut at = shot_report();
++        at["gpu"]["per_frame"][counter] = json!(limit);
++        assert!(
++            gpu_budgets(&at, BUDGETS, None).is_ok(),
++            "{counter} at its limit"
++        );
++        let mut over = shot_report();
++        over["gpu"]["per_frame"][counter] = json!(limit + 1);
++        let error = gpu_budgets(&over, BUDGETS, None).unwrap_err();
++        assert!(error.contains(counter), "{counter}: {error}");
++        let mut window = window_report(233);
++        window["gpu"]["per_frame"][counter] = json!(limit + 1);
++        let error = gpu_budgets(&shot_report(), BUDGETS, Some(&window)).unwrap_err();
++        assert!(
++            error.contains(counter) && error.contains("window"),
++            "{error}"
++        );
++    }
++}
++
++#[test]
++fn gpu_budgets_needs_the_adapter_capabilities_counters_and_limits() {
++    let mut broken = Vec::new();
++    for (key, value) in [
++        ("adapter", json!("")),
++        ("adapter", Value::Null),
++        ("driver_info", Value::Null),
++        ("capabilities", Value::Null),
++        ("per_frame", Value::Null),
++    ] {
++        let mut report = shot_report();
++        report["gpu"][key] = value;
++        broken.push(report);
++    }
++    let mut no_gpu = shot_report();
++    no_gpu["gpu"] = Value::Null;
++    broken.push(no_gpu);
++    let mut failed = shot_report();
++    failed["exit"] = json!("budget-exceeded");
++    broken.push(failed);
++    for report in &broken {
++        assert!(gpu_budgets(report, BUDGETS, None).is_err(), "{report}");
++    }
++    assert!(gpu_budgets(&shot_report(), "version = 1\n", None).is_err());
++    let partial = BUDGETS.replace("max_upload_bytes_per_frame = 2048\n", "");
++    let error = gpu_budgets(&shot_report(), &partial, None).unwrap_err();
++    assert!(error.contains("max_upload_bytes_per_frame"), "{error}");
++}
++
++#[test]
++fn a_window_that_presented_nothing_is_noted_not_held() {
++    let detail = gpu_budgets(&shot_report(), BUDGETS, Some(&window_report(0))).unwrap();
++    assert!(detail.contains("window"), "{detail}");
++    let detail = gpu_budgets(&shot_report(), BUDGETS, None).unwrap();
++    assert!(detail.contains("window"), "{detail}");
++}
++
++/// A PNG file's chunks, with the `acTL` chunk of an animation of `frames`
++/// frames unless `None`. CRCs are zero: the verdict does not check them.
++fn apng(frames: Option<u32>) -> Vec<u8> {
++    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
++    let mut chunk = |kind: &[u8; 4], data: &[u8]| {
++        let length = u32::try_from(data.len()).unwrap();
++        bytes.extend(length.to_be_bytes());
++        bytes.extend(kind);
++        bytes.extend(data);
++        bytes.extend([0; 4]);
++    };
++    chunk(b"IHDR", &[0; 13]);
++    chunk(b"sRGB", &[0]);
++    if let Some(frames) = frames {
++        let mut actl = frames.to_be_bytes().to_vec();
++        actl.extend(0_u32.to_be_bytes());
++        chunk(b"acTL", &actl);
++    }
++    chunk(b"IEND", &[]);
++    bytes
++}
++
++fn video_report(frames: u64) -> Value {
++    json!({"command": "video", "exit": "ok", "gpu": {"adapter": "llvmpipe", "frames": frames}})
++}
++
++#[test]
++fn video_passes_an_animation_with_every_frame() {
++    let detail = video(&apng(Some(241)), &video_report(241), 241).unwrap();
++    assert!(detail.contains("241"), "{detail}");
++}
++
++#[test]
++fn video_fails_without_an_animation_or_with_frames_missing() {
++    let report = video_report(241);
++    assert!(video(b"", &report, 241).is_err());
++    assert!(video(b"GIF89a", &report, 241).is_err());
++    assert!(video(&apng(None), &report, 241).is_err(), "a still PNG");
++    assert!(video(&apng(Some(240)), &report, 241).is_err());
++    assert!(video(&apng(Some(241)), &video_report(240), 241).is_err());
++    let mut failed = video_report(241);
++    failed["exit"] = json!("budget-exceeded");
++    assert!(video(&apng(Some(241)), &failed, 241).is_err());
++    let whole = apng(Some(241));
++    for cut in 0..whole.len() {
++        let verdict = video(&whole[..cut], &report, 241);
++        assert!(verdict.is_err(), "cut at {cut}");
++    }
++}
++
++const ESC: &str = "escape_from_the_keyboard_quits_within_5_seconds";
++
++#[test]
++fn ran_test_needs_the_named_test_to_run_and_pass() {
++    let ok = format!(
++        "\nrunning 1 test\ntest {ESC} ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; \
++         0 measured; 3 filtered out; finished in 1.20s\n\n"
++    );
++    assert!(ran_test(&ok, ESC).is_ok());
++    let none = "\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; \
++                4 filtered out; finished in 0.00s\n";
++    assert!(ran_test(none, ESC).is_err());
++    assert!(ran_test(&ok, "another_test").is_err());
++    assert!(ran_test(&ok.replace("... ok", "... ignored"), ESC).is_err());
++    assert!(ran_test(&format!("{ok}test {ESC}_too ... ok\n"), ESC).is_ok());
++}
++
++#[test]
++fn compare_hashes_needs_every_pr_tier_and_native_stream() {
++    let all: Vec<String> = [
++        "hashes-ubuntu-24.04",
++        "hashes-ubuntu-24.04-arm",
++        "hashes-riscv",
++        "hashes-native-ubuntu-24.04",
++        "hashes-native-ubuntu-24.04-arm",
++        "hashes-native-windows-2025",
++        "hashes-native-windows-11-arm",
++        "hashes-native-macos-26",
++    ]
++    .map(String::from)
++    .to_vec();
++    assert!(missing_streams(&all).is_empty());
++    let without: Vec<String> = all
++        .iter()
++        .filter(|name| *name != "hashes-native-windows-11-arm")
++        .cloned()
++        .collect();
++    assert_eq!(missing_streams(&without), ["hashes-native-windows-11-arm"]);
++    assert_eq!(missing_streams(&[]).len(), all.len());
++}
+diff --git a/xtask/src/hooks.rs b/xtask/src/hooks.rs
+index 2167ff9dc92c57583448b72b9cf231d6fe536738..49bbd3156d7a45a6ec333ce457e0aca095a99ba1 100644
+--- a/xtask/src/hooks.rs
++++ b/xtask/src/hooks.rs
+@@ -119,24 +119,10 @@ pub fn session_start() -> Result<String, String> {
+         .ok()
+         .and_then(|t| serde_json::from_str::<Value>(&t).ok());
+     match computed {
+-        Some(doc) => {
+-            let features = doc["features"].as_array().cloned().unwrap_or_default();
+-            let failing: Vec<String> = features
+-                .iter()
+-                .filter(|f| f["passes"] != true)
+-                .map(|f| f["id"].as_str().unwrap_or("?").to_string())
+-                .collect();
+-            lines.push(format!(
+-                "Acceptance (last computed locally): {}/{} pass{}",
+-                features.len() - failing.len(),
+-                features.len(),
+-                if failing.is_empty() {
+-                    String::new()
+-                } else {
+-                    format!("; failing: {}", failing.join(", "))
+-                }
+-            ));
+-        }
++        Some(doc) => lines.push(format!(
++            "Acceptance (last computed locally): {}",
++            acceptance::status(&doc)
++        )),
+         None => {
+             lines.push("Acceptance: not computed locally; CI's summary job computes it.".into())
+         }
+diff --git a/xtask/src/main.rs b/xtask/src/main.rs
+index 85b093d727a71ad0dd0a73118e6cdd50eb1dbf99..3fb105a083c1e54554702028967148f84c40aeff 100644
+--- a/xtask/src/main.rs
++++ b/xtask/src/main.rs
+@@ -9,6 +9,10 @@ mod acceptance;
+ mod arch;
+ mod arch_scan;
+ mod ci;
++mod ci_durations;
++mod ci_native;
++mod ci_report;
++mod ci_verdicts;
+ mod docs;
+ mod glob;
+ mod guard;
+@@ -24,6 +28,7 @@ mod hooks;
+ mod oracle;
+ mod replay;
+ mod selftest;
++mod selftest_golden;
+ mod shell;
+ mod size;
+ mod stamp;
+@@ -33,7 +38,7 @@ use std::process::ExitCode;
+ 
+ const USAGE: &str = "\
+ cargo xtask quick                      fmt, clippy, arch, size, docs, tests, replays
+-cargo xtask ci --job <job>             a CI job: lint test riscv wasm selftest all
++cargo xtask ci --job <job>             a CI job: lint test riscv wasm selftest native summary all
+ cargo xtask arch-check                 layering, core-set purity, crate-root attributes
+ cargo xtask size-check                 warn over 500 lines, fail over 1000
+ cargo xtask docs-check                 AGENTS.md at most 150 lines, no CLAUDE.md
+@@ -95,3 +100,19 @@ fn main() -> ExitCode {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    /// The usage text names every job `ci --job` runs (amendment 71).
++    #[test]
++    fn the_usage_names_every_ci_job() {
++        let line = super::USAGE
++            .lines()
++            .find(|line| line.starts_with("cargo xtask ci --job"))
++            .expect("a usage line for ci --job");
++        for job in crate::ci::JOBS {
++            let named = line.split_whitespace().any(|word| word == job);
++            assert!(named, "{job} is missing from: {line}");
++        }
++    }
++}
+diff --git a/xtask/src/replay.rs b/xtask/src/replay.rs
+index b404ac5cbbca5b61d84af644e903e30ebab0a826..e6548fdc161c6ef0b6019f3d8b377c2871ed7077 100644
+--- a/xtask/src/replay.rs
++++ b/xtask/src/replay.rs
+@@ -17,7 +17,7 @@ use serde::Deserialize;
+ use crate::util;
+ 
+ const SCENARIOS: &str = "crates/game-testbed/scenarios";
+-const COMMITTED: &str = "crates/game-testbed/hashes";
++pub(crate) const COMMITTED: &str = "crates/game-testbed/hashes";
+ 
+ #[derive(Deserialize)]
+ #[serde(deny_unknown_fields)]
+diff --git a/xtask/src/selftest.rs b/xtask/src/selftest.rs
+index 2dd833bbfbb4a19c61284396ed7146b7b5035b7c..06c9d779ff94ec635321d231a4ef5e2f43c040f0 100644
+--- a/xtask/src/selftest.rs
++++ b/xtask/src/selftest.rs
+@@ -1,16 +1,28 @@
+-//! `cargo xtask selftest` (rung 1a, done-when 3): each deliberate violation
+-//! must fail. Cases run against a fresh copy of the workspace under
+-//! `target/selftest/`, or against the real guard binary, never the tree itself.
++//! `cargo xtask selftest` (rung 1a, done-when 3; rung 1b, criterion 12): each
++//! deliberate violation must fail. Cases run against a fresh copy of the
++//! workspace under `target/selftest/`, or against the real guard binary, and
++//! never change the tree itself. `golden-edit` runs the real shots harness
++//! against goldens copied there; like every run of that harness (`quick`'s
++//! too), it empties and rewrites `target/golden-candidates/`. A case that
++//! needs what this machine lacks (cargo-deny, the pinned lavapipe) says it
++//! could not run: a failure only on CI or with `ENG_REQUIRE_GPU=1`, as for
++//! GPU tests, and never a pass (`selftest_verdict.rs`).
+ 
+ use std::fs;
+ use std::io::Write;
+ use std::path::{Path, PathBuf};
+ use std::process::{Command, Stdio};
++use std::time::Instant;
+ 
+ use crate::arch;
+ use crate::util::{self, Steps};
+ 
+-pub const CASES: [&str; 17] = [
++#[path = "selftest_verdict.rs"]
++mod verdict;
++pub use verdict::NOT_RUN;
++use verdict::{judged, last_line, outcome, status, strict};
++
++pub const CASES: [&str; 22] = [
+     "float-sin",
+     "float-min",
+     "allow-escape",
+@@ -28,32 +40,47 @@ pub const CASES: [&str; 17] = [
+     "guard-jj",
+     "bless",
+     "guard-allows-ordinary-edits",
++    // Rung 1b, criterion 12 (`violations-1b`).
++    "wgpu-outside-gpu",
++    "winit-outside-platform",
++    "rwh-outside-seam",
++    "core-depends-on-gpu",
++    "golden-edit",
+ ];
+ 
++/// `cargo xtask selftest [CASE]`: one line per case, then the counts.
+ pub fn main(args: &[&str]) -> Result<String, String> {
+     let root = util::root()?;
+-    let mut steps = Steps::default();
+-    match args {
+-        [] => steps_all(&root, &mut steps),
+-        [case] if CASES.contains(case) => {
+-            steps.run(&format!("violation:{case}"), || run_case(&root, case));
+-        }
++    let cases: Vec<&str> = match args {
++        [] => CASES.to_vec(),
++        [case] if CASES.contains(case) => vec![*case],
+         _ => return Err(format!("selftest cases: {}", CASES.join(" "))),
++    };
++    let strict = strict();
++    let mut outcomes = Vec::new();
++    for case in cases {
++        let name = format!("violation:{case}");
++        let started = Instant::now();
++        let result = outcome(run_case(&root, case), strict);
++        let seconds = started.elapsed().as_secs_f64();
++        println!("{name:.<40} {} ({seconds:.1}s)", status(&result));
++        if let Err(detail) = &result {
++            println!("{detail}");
++        }
++        outcomes.push((name, result));
+     }
+-    if steps.ok() {
+-        Ok(format!("selftest: {} cases ok", steps.results.len()))
+-    } else {
+-        Err("selftest: a deliberate violation was not caught".into())
+-    }
++    last_line(&outcomes, strict)
+ }
+ 
++/// `ci --job selftest` and `all`: each case is a step of the job's report.
++/// A case not run here is pending: never ok, so acceptance never counts
++/// it, and it fails no job. In a strict run it fails the job.
+ pub fn steps(root: &Path, steps: &mut Steps) {
+-    steps_all(root, steps);
+-}
+-
+-fn steps_all(root: &Path, steps: &mut Steps) {
++    let strict = strict();
+     for case in CASES {
+-        steps.run(&format!("violation:{case}"), || run_case(root, case));
++        steps.run_judged(&format!("violation:{case}"), || {
++            judged(outcome(run_case(root, case), strict))
++        });
+     }
+ }
+ 
+@@ -165,6 +192,32 @@ fn run_case(root: &Path, case: &str) -> Result<String, String> {
+             "Bash",
+             serde_json::json!({ "command": "cargo insta accept" }),
+         ),
++        // Rung 1b, criterion 12. A crate can name a floor crate only by
++        // depending on it, so each case adds the dependency; arch-check's
++        // `[floor]` and core-set rules and cargo-deny's wrapper ban
++        // (ADR-0016) read dependencies.
++        "wgpu-outside-gpu" => arch_rejects(
++            root,
++            case,
++            "[E-ARCH-FLOOR] eng-render depends on wgpu; only eng-gpu may",
++            |ws| add_dependency(ws, "eng-render", "wgpu"),
++        ),
++        "winit-outside-platform" => arch_rejects(
++            root,
++            case,
++            "[E-ARCH-FLOOR] eng-app depends on winit; only eng-platform-winit may",
++            |ws| add_dependency(ws, "eng-app", "winit"),
++        ),
++        "rwh-outside-seam" => deny_rejects(root, case, ("raw-window-handle", "eng-render"), |ws| {
++            add_dependency(ws, "eng-render", "raw-window-handle")
++        }),
++        "core-depends-on-gpu" => arch_rejects(
++            root,
++            case,
++            "[E-ARCH-CORE-DEP] core crate eng-sim reaches eng-gpu (via eng-sim)",
++            |ws| add_dependency(ws, "eng-sim", "eng-gpu"),
++        ),
++        "golden-edit" => crate::selftest_golden::run(root),
+         "guard-allows-ordinary-edits" => {
+             let ws = copy_workspace(root, case)?;
+             let input = serde_json::json!({
+@@ -233,6 +286,16 @@ fn edit(ws: &Path, rel: &str, from: &str, to: &str) -> Result<(), String> {
+     fs::write(&path, text.replacen(from, to, 1)).map_err(|e| format!("{rel}: {e}"))
+ }
+ 
++/// `crates/<krate>` gains `<dep>.workspace = true` as a normal dependency.
++fn add_dependency(ws: &Path, krate: &str, dep: &str) -> Result<(), String> {
++    edit(
++        ws,
++        &format!("crates/{krate}/Cargo.toml"),
++        "[dependencies]\n",
++        &format!("[dependencies]\n{dep}.workspace = true\n"),
++    )
++}
++
+ fn clippy_rejects(
+     root: &Path,
+     case: &str,
+@@ -330,3 +393,67 @@ fn guard_blocks(
+         ))
+     }
+ }
++
++/// Whether `cargo deny check bans` refused `banned` because `parent`, its
++/// direct user, is not one of its wrappers.
++fn deny_verdict(
++    succeeded: bool,
++    output: &str,
++    banned: &str,
++    parent: &str,
++) -> Result<String, String> {
++    let ban = format!("error[banned]: crate '{banned} = ");
++    let user = format!("direct parent '{parent} = ");
++    let of = format!("of banned crate '{banned} = ");
++    let named = output
++        .lines()
++        .any(|line| line.contains(&user) && line.contains(&of));
++    if succeeded {
++        Err("cargo-deny accepted the violation".into())
++    } else if output.contains(&ban) && named {
++        Ok(format!(
++            "rejected: error[banned] {banned}, used by {parent}"
++        ))
++    } else {
++        Err(format!(
++            "failed, but not with error[banned] for {banned} used by {parent}:\n{}",
++            util::tail(output, 15)
++        ))
++    }
++}
++
++/// `cargo deny check bans` on a fresh copy changed by `mutate`: it must
++/// refuse `banned` because `parent` is not one of its wrappers.
++fn deny_rejects(
++    root: &Path,
++    case: &str,
++    (banned, parent): (&str, &str),
++    mutate: impl FnOnce(&Path) -> Result<(), String>,
++) -> Result<String, String> {
++    let ws = copy_workspace(root, case)?;
++    mutate(&ws)?;
++    let installed = util::cargo(&ws)
++        .args(["deny", "--version"])
++        .output()
++        .is_ok_and(|o| o.status.success());
++    if !installed {
++        return Err(format!(
++            "{NOT_RUN} {case} could not run: cargo-deny is not installed \
++             (cargo install --locked cargo-deny@0.20.2, as CI's lint job has it)"
++        ));
++    }
++    let out = util::cargo(&ws)
++        .args(["deny", "check", "bans"])
++        .output()
++        .map_err(|e| format!("cannot run cargo-deny: {e}"))?;
++    let text = format!(
++        "{}{}",
++        String::from_utf8_lossy(&out.stdout),
++        String::from_utf8_lossy(&out.stderr)
++    );
++    deny_verdict(out.status.success(), &text, banned, parent)
++}
++
++#[cfg(test)]
++#[path = "selftest_tests.rs"]
++mod tests;
+diff --git a/xtask/src/selftest_golden.rs b/xtask/src/selftest_golden.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..29bb017ef0c441a3dc55afe74bf03778e1ce3273
+--- /dev/null
++++ b/xtask/src/selftest_golden.rs
+@@ -0,0 +1,361 @@
++//! `cargo xtask selftest golden-edit` (rung 1b, criterion 12; amendment 58
++//! of `docs/rungs/1b/PROGRESS.md`): a golden with one level of one pixel
++//! changed must fail the shots harness (`crates/game-testbed/tests/shots.rs`)
++//! with `[E-GOLDEN] 1 of N pixels differ from the golden`.
++//!
++//! Only an exact comparison sees one level; FLIP passes it by design. So the
++//! case runs the harness with `ENG_SHOT_MODE=exact`, which needs the pinned
++//! lavapipe (Mesa 25.2.7 from gfx-rs/ci-build build26, Linux x86_64), and
++//! `ENG_REQUIRE_GPU=1`. Anywhere else, with no adapter or another one, it
++//! says that it could not run ([`NOT_RUN`]): never a pass.
++//!
++//! 1. An unedited run renders the shots and checks them, exactly, against
++//!    `golden/`. Before the owner commits goldens (G6) there are none, and
++//!    the run saves each shot as a candidate instead.
++//! 2. The goldens, or else those candidates, and `thresholds.toml` are
++//!    copied to `target/selftest/golden-edit/golden/`; `golden/` itself is
++//!    the owner's and is never written.
++//! 3. One level of one pixel of the first golden changes.
++//! 4. A run with `ENG_GOLDEN_DIR` set to the copy must fail on that golden,
++//!    for one pixel, and on nothing else.
++
++use std::fs;
++use std::path::Path;
++
++use crate::selftest::NOT_RUN;
++use crate::util;
++
++pub fn run(root: &Path) -> Result<String, String> {
++    let work = root.join("target/selftest/golden-edit");
++    let _ = fs::remove_dir_all(&work);
++    let refs = work.join("golden");
++    fs::create_dir_all(&refs).map_err(|e| format!("{}: {e}", refs.display()))?;
++    let (succeeded, output) = shots(root, None, "unedited")?;
++    preflight(succeeded, &output)?;
++    let golden = root.join("crates/game-testbed/golden");
++    let candidates = root.join("target/golden-candidates");
++    let from = if pngs(&golden).is_empty() {
++        candidates
++    } else {
++        golden.clone()
++    };
++    let names = pngs(&from);
++    let Some(edited) = names.first().cloned() else {
++        return Err(format!(
++            "the unedited run left no golden or candidate to edit in {}",
++            from.display()
++        ));
++    };
++    for name in &names {
++        let file = format!("{name}.png");
++        copy(&from.join(&file), &refs.join(&file))?;
++    }
++    if golden.join("thresholds.toml").is_file() {
++        copy(
++            &golden.join("thresholds.toml"),
++            &refs.join("thresholds.toml"),
++        )?;
++    }
++    let path = refs.join(format!("{edited}.png"));
++    let read = |path: &Path| {
++        fs::read(path)
++            .map_err(|e| format!("{}: {e}", path.display()))
++            .and_then(|bytes| read_png(&bytes))
++    };
++    let original = read(&path)?;
++    let mut image = original.clone();
++    let (at, old, new) = nudge(&mut image);
++    fs::write(&path, write_png(&image)?).map_err(|e| e.to_string())?;
++    // What the harness will decode: one byte away from the original.
++    let back = read(&path)?;
++    let changed = (back.rgba.iter().zip(&original.rgba))
++        .filter(|(a, b)| a != b)
++        .count();
++    if (back.width, back.height, changed) != (original.width, original.height, 1) {
++        return Err(format!(
++            "the edited {edited}.png decodes {changed} bytes away from the original, not 1"
++        ));
++    }
++    let (succeeded, output) = shots(root, Some(&refs), "edited")?;
++    judge(succeeded, &output, &edited)
++        .map(|caught| format!("{caught} (byte {at} of {edited}.png: {old} -> {new})"))
++}
++
++/// The run of the harness's one GPU test, `shots_match_their_goldens`, in
++/// exact mode and requiring an adapter; with `ENG_GOLDEN_DIR` set to `refs`
++/// or unset. Returns whether it passed and its output, which is also logged.
++fn shots(root: &Path, refs: Option<&Path>, label: &str) -> Result<(bool, String), String> {
++    let mut cmd = util::cargo(root);
++    cmd.args(["test", "-p", "game-testbed", "--test", "shots"]);
++    if util::on_ci() {
++        cmd.arg("--locked");
++    }
++    cmd.args(["--", "--exact", "shots_match_their_goldens"]);
++    cmd.env("ENG_REQUIRE_GPU", "1")
++        .env("ENG_SHOT_MODE", "exact");
++    match refs {
++        Some(dir) => cmd.env("ENG_GOLDEN_DIR", dir),
++        None => cmd.env_remove("ENG_GOLDEN_DIR"),
++    };
++    let out = cmd
++        .output()
++        .map_err(|e| format!("cannot run cargo test: {e}"))?;
++    let text = format!(
++        "{}{}",
++        String::from_utf8_lossy(&out.stdout),
++        String::from_utf8_lossy(&out.stderr)
++    );
++    let log = root.join(format!(
++        "target/agent-logs/xtask-selftest-golden-edit-{label}.log"
++    ));
++    let _ = fs::create_dir_all(log.parent().expect("has parent"));
++    let _ = fs::write(&log, &text);
++    Ok((out.status.success(), text))
++}
++
++/// The names of the PNG files directly in `dir`, sorted.
++fn pngs(dir: &Path) -> Vec<String> {
++    let mut names: Vec<String> = fs::read_dir(dir)
++        .into_iter()
++        .flatten()
++        .flatten()
++        .map(|entry| entry.path())
++        .filter(|path| path.is_file() && path.extension().is_some_and(|e| e == "png"))
++        .filter_map(|path| Some(path.file_stem()?.to_string_lossy().into_owned()))
++        .collect();
++    names.sort();
++    names
++}
++
++fn copy(from: &Path, to: &Path) -> Result<(), String> {
++    fs::copy(from, to)
++        .map(|_| ())
++        .map_err(|e| format!("{}: {e}", from.display()))
++}
++
++/// The first line of `output` that holds `text`, trimmed.
++fn line_with<'a>(output: &'a str, text: &str) -> Option<&'a str> {
++    output.lines().find(|l| l.contains(text)).map(str::trim)
++}
++
++/// What the unedited run says about this machine.
++fn preflight(succeeded: bool, output: &str) -> Result<(), String> {
++    if succeeded {
++        return Ok(());
++    }
++    let why = line_with(output, "[E-NO-ADAPTER]")
++        .or_else(|| line_with(output, "ENG_SHOT_MODE=exact needs the pinned configuration"));
++    match why {
++        Some(why) => Err(format!(
++            "{NOT_RUN} golden-edit could not run here: one level of one pixel shows only in \
++             an exact comparison, which needs the pinned lavapipe (Mesa 25.2.7, gfx-rs/ci-build \
++             build26, Linux x86_64). The shots harness says: {why}"
++        )),
++        None => Err(format!(
++            "the shots harness fails before any golden is edited:\n{}",
++            util::tail(output, 15)
++        )),
++    }
++}
++
++/// Whether the run against the edited copy failed on `edited` alone, for
++/// one differing pixel.
++fn judge(succeeded: bool, output: &str, edited: &str) -> Result<String, String> {
++    if succeeded {
++        return Err(format!(
++            "the shots harness passed an edited golden ({edited}.png)"
++        ));
++    }
++    let expected = format!("{edited}: [E-GOLDEN] 1 of ");
++    let caught = output
++        .lines()
++        .map(str::trim)
++        .find(|l| l.starts_with(&expected) && l.ends_with("pixels differ from the golden"));
++    let Some(caught) = caught else {
++        return Err(format!(
++            "failed, but not with `{expected}N pixels differ from the golden`:\n{}",
++            util::tail(output, 15)
++        ));
++    };
++    let mut others: Vec<&str> = output
++        .lines()
++        .filter_map(|l| l.trim().split_once(": [E-GOLDEN]"))
++        .map(|(shot, _)| shot)
++        .filter(|shot| *shot != edited)
++        .collect();
++    others.sort_unstable();
++    others.dedup();
++    if others.is_empty() {
++        Ok(format!("rejected: {caught}"))
++    } else {
++        Err(format!(
++            "{edited} failed as it should, but unedited shots failed too: {}",
++            others.join(", ")
++        ))
++    }
++}
++
++/// Moves the red channel of the middle pixel by one level. Returns the byte's
++/// index and its old and new values.
++fn nudge(image: &mut Image) -> (usize, u8, u8) {
++    let (x, y) = (image.width as usize / 2, image.height as usize / 2);
++    let at = (y * image.width as usize + x) * 4;
++    let old = image.rgba[at];
++    let new = if old == 255 { 254 } else { old + 1 };
++    image.rgba[at] = new;
++    (at, old, new)
++}
++
++/// Decoded pixels, row after row, four bytes each: 8-bit RGBA, which is
++/// what `shot` writes and the harness compares.
++#[derive(Debug, Clone, PartialEq)]
++struct Image {
++    width: u32,
++    height: u32,
++    rgba: Vec<u8>,
++}
++
++/// Decodes as the harness does (`crates/game-testbed/tests/shots/compare.rs`).
++fn read_png(bytes: &[u8]) -> Result<Image, String> {
++    let error = |e: png::DecodingError| format!("PNG: {e}");
++    let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
++        .read_info()
++        .map_err(error)?;
++    let size = reader
++        .output_buffer_size()
++        .ok_or("PNG: too large to decode")?;
++    let mut rgba = vec![0; size];
++    let info = reader.next_frame(&mut rgba).map_err(error)?;
++    if (info.color_type, info.bit_depth) != (png::ColorType::Rgba, png::BitDepth::Eight) {
++        let what = format!("{:?} {:?}", info.color_type, info.bit_depth);
++        return Err(format!("PNG: {what}, not 8-bit RGBA"));
++    }
++    rgba.truncate(info.buffer_size());
++    Ok(Image {
++        width: info.width,
++        height: info.height,
++        rgba,
++    })
++}
++
++fn write_png(image: &Image) -> Result<Vec<u8>, String> {
++    let error = |e: png::EncodingError| format!("PNG: {e}");
++    let mut bytes = Vec::new();
++    let mut encoder = png::Encoder::new(&mut bytes, image.width, image.height);
++    encoder.set_color(png::ColorType::Rgba);
++    encoder.set_depth(png::BitDepth::Eight);
++    let mut writer = encoder.write_header().map_err(error)?;
++    writer.write_image_data(&image.rgba).map_err(error)?;
++    writer.finish().map_err(error)?;
++    Ok(bytes)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{Image, NOT_RUN, judge, nudge, preflight, read_png, write_png};
++
++    #[test]
++    fn a_png_written_reads_back_the_same() {
++        let image = Image {
++            width: 3,
++            height: 2,
++            rgba: (0..24).collect(),
++        };
++        let bytes = write_png(&image).unwrap();
++        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
++        assert_eq!(read_png(&bytes).unwrap(), image);
++    }
++
++    #[test]
++    fn only_8_bit_rgba_is_read() {
++        // RGB, as the FLIP maps are: never a golden.
++        let mut bytes = Vec::new();
++        let mut encoder = png::Encoder::new(&mut bytes, 2, 1);
++        encoder.set_color(png::ColorType::Rgb);
++        encoder.set_depth(png::BitDepth::Eight);
++        let mut writer = encoder.write_header().unwrap();
++        writer.write_image_data(&[1, 2, 3, 4, 5, 6]).unwrap();
++        writer.finish().unwrap();
++        let err = read_png(&bytes).unwrap_err();
++        assert!(err.contains("not 8-bit RGBA"), "{err}");
++        assert!(read_png(b"GIF89a").is_err());
++    }
++
++    const NO_ADAPTER: &str = "thread 'shots_match_their_goldens' panicked at crates/game-testbed/tests/shots.rs:372:62:\n\
++        ENG_REQUIRE_GPU=1: [E-NO-ADAPTER] no GPU adapter matches ENG_GPU_ADAPTER=none\n";
++    const NOT_PINNED: &str = "thread 'shots_match_their_goldens' panicked at crates/game-testbed/tests/shots.rs:381:76:\n\
++        [E-GOLDEN] ENG_SHOT_MODE=exact needs the pinned configuration (linux x86_64, vulkan, \
++        `llvmpipe (LLVM 18.1.3, 256 bits)`, `Mesa 25.2.7 (LLVM 18.1.3)`), not macos aarch64 metal `Apple M2 Pro` ``\n";
++    const CAUGHT: &str = "dot-square-0: [E-GOLDEN] 1 of 76800 pixels differ from the golden\n\
++        dot-square-120: exact\ndot-square-240: exact\nten-dots-0: exact\n\
++        thread 'shots_match_their_goldens' panicked at crates/game-testbed/tests/shots.rs:384:5:\n\
++        dot-square-0: [E-GOLDEN] 1 of 76800 pixels differ from the golden\n\
++        test result: FAILED. 0 passed; 1 failed";
++
++    #[test]
++    fn the_unedited_run_tells_a_machine_that_cannot_run_the_case() {
++        assert_eq!(preflight(true, "test result: ok. 1 passed"), Ok(()));
++        for (output, why) in [
++            (NO_ADAPTER, "[E-NO-ADAPTER]"),
++            (NOT_PINNED, "needs the pinned configuration"),
++        ] {
++            let err = preflight(false, output).unwrap_err();
++            assert!(err.starts_with(NOT_RUN) && err.contains(why), "{err}");
++        }
++        // Any other failure is the harness's, before anything was edited.
++        let err = preflight(false, "error[E0425]: cannot find value").unwrap_err();
++        assert!(!err.starts_with(NOT_RUN) && err.contains("before"), "{err}");
++    }
++
++    #[test]
++    fn the_edited_run_must_fail_on_the_edited_golden_alone() {
++        let caught = judge(false, CAUGHT, "dot-square-0").unwrap();
++        assert_eq!(
++            caught,
++            "rejected: dot-square-0: [E-GOLDEN] 1 of 76800 pixels differ from the golden"
++        );
++        let passed = judge(true, "test result: ok. 1 passed", "dot-square-0").unwrap_err();
++        assert!(passed.contains("passed an edited golden"), "{passed}");
++        // Failing for another reason, or on another shot, is not this case.
++        for (output, edited) in [(NOT_PINNED, "dot-square-0"), (CAUGHT, "ten-dots-0")] {
++            let err = judge(false, output, edited).unwrap_err();
++            assert!(err.contains("but not with"), "{err}");
++        }
++        // One level of one pixel differs by exactly one pixel; more is
++        // another edit, or another render.
++        let more = CAUGHT.replace("] 1 of", "] 2 of");
++        let err = judge(false, &more, "dot-square-0").unwrap_err();
++        assert!(err.contains("but not with"), "{err}");
++        // The harness prints each failure twice: as it goes, then in its panic.
++        let other = "ten-dots-0: [E-GOLDEN] 3 of 76800 pixels differ from the golden";
++        let two = format!("{CAUGHT}\n{other}\n{other}");
++        let err = judge(false, &two, "dot-square-0").unwrap_err();
++        assert_eq!(
++            err,
++            "dot-square-0 failed as it should, but unedited shots failed too: ten-dots-0"
++        );
++    }
++
++    #[test]
++    fn the_nudge_moves_one_channel_of_one_pixel_by_one_level() {
++        let mut image = Image {
++            width: 4,
++            height: 2,
++            rgba: vec![200; 32],
++        };
++        let before = image.clone();
++        let (at, from, to) = nudge(&mut image);
++        // The middle pixel (2, 1), its red byte.
++        assert_eq!((at, from, to), ((4 + 2) * 4, 200, 201));
++        let changed: Vec<usize> = (0..32)
++            .filter(|&i| image.rgba[i] != before.rgba[i])
++            .collect();
++        assert_eq!(changed, [at]);
++        let mut white = Image {
++            width: 4,
++            height: 2,
++            rgba: vec![255; 32],
++        };
++        assert_eq!(nudge(&mut white).2, 254);
++    }
++}
+diff --git a/xtask/src/selftest_tests.rs b/xtask/src/selftest_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..1bdf2f8a8605eb2982550239f04f03146a310616
+--- /dev/null
++++ b/xtask/src/selftest_tests.rs
+@@ -0,0 +1,23 @@
++use super::deny_verdict;
++
++/// cargo-deny 0.20.2's lines for `raw-window-handle` in eng-render.
++const DENIED: &str = "\
++warning[unmatched-wrapper]: direct parent 'eng-render = 0.1.0' of banned crate 'raw-window-handle = 0.6.2' was not marked as a wrapper
++error[banned]: crate 'raw-window-handle = 0.6.2' is explicitly banned
++bans FAILED";
++
++#[test]
++fn the_ban_must_name_the_crate_and_its_user() {
++    let ok = deny_verdict(false, DENIED, "raw-window-handle", "eng-render");
++    assert_eq!(
++        ok.unwrap(),
++        "rejected: error[banned] raw-window-handle, used by eng-render"
++    );
++    let accepted = deny_verdict(true, "bans ok", "raw-window-handle", "eng-render");
++    assert!(accepted.unwrap_err().contains("cargo-deny accepted"));
++    // Refused, but for another crate or another user: not this case's rule.
++    for (banned, parent) in [("wgpu", "eng-render"), ("raw-window-handle", "eng-app")] {
++        let other = deny_verdict(false, DENIED, banned, parent).unwrap_err();
++        assert!(other.contains("but not with error[banned]"), "{other}");
++    }
++}
+diff --git a/xtask/src/selftest_verdict.rs b/xtask/src/selftest_verdict.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..4e56017e011388e8c8a1b2a2b81c53a2093995f6
+--- /dev/null
++++ b/xtask/src/selftest_verdict.rs
+@@ -0,0 +1,199 @@
++//! How `cargo xtask selftest` reports a case that cannot run where it is
++//! asked to, because cargo-deny or the pinned lavapipe is missing. As GPU
++//! tests do (plan decision 4), that fails only a strict run, on CI or with
++//! `ENG_REQUIRE_GPU=1` ([`NOT_RUN`]); elsewhere it is a warning
++//! ([`NOT_RUN_HERE`]). It is never a pass: the step is not ok, and the last
++//! line counts it apart.
++
++use crate::util::{self, Done};
++
++/// Starts the message of a case that could not run where it was asked to,
++/// such as `golden-edit` without the pinned lavapipe: in a strict run, a
++/// failure.
++pub const NOT_RUN: &str = "[E-SELFTEST-NOT-RUN]";
++/// The same outside a strict run: a warning, and still not a pass.
++const NOT_RUN_HERE: &str = "[W-SELFTEST-NOT-RUN]";
++
++/// Whether a case that cannot run fails the run: on CI (`CI` set to
++/// anything, even empty) or with `ENG_REQUIRE_GPU=1`.
++pub(super) fn strict() -> bool {
++    let require_gpu = std::env::var("ENG_REQUIRE_GPU").ok();
++    strict_from(util::on_ci(), require_gpu.as_deref())
++}
++
++/// Strict on CI (`util::on_ci`: `CI` set to anything, as for `--locked`)
++/// or with `ENG_REQUIRE_GPU=1`.
++fn strict_from(ci: bool, require_gpu: Option<&str>) -> bool {
++    ci || require_gpu == Some("1")
++}
++
++/// A case's outcome as a step of a CI job (`ci --job selftest`): a case not
++/// run here ([`NOT_RUN_HERE`]) is pending, which fails no job and passes no
++/// acceptance check; a strict [`NOT_RUN`] stays a failure.
++pub(super) fn judged(result: Result<String, String>) -> Result<Done, String> {
++    match result {
++        Ok(detail) => Ok(Done::Pass(detail)),
++        Err(detail) if detail.starts_with(NOT_RUN_HERE) => Ok(Done::Pending(detail)),
++        Err(detail) => Err(detail),
++    }
++}
++
++/// A case's result as this run reports it: outside a strict run, "could not
++/// run" becomes a warning, though the step is still not ok.
++pub(super) fn outcome(result: Result<String, String>, strict: bool) -> Result<String, String> {
++    match result {
++        Err(detail) if !strict && detail.starts_with(NOT_RUN) => {
++            Err(detail.replacen(NOT_RUN, NOT_RUN_HERE, 1))
++        }
++        other => other,
++    }
++}
++
++/// The word a case's line shows.
++pub(super) fn status(result: &Result<String, String>) -> &'static str {
++    match result {
++        Ok(_) => "ok",
++        Err(detail) if detail.starts_with(NOT_RUN_HERE) => "not run",
++        Err(_) => "FAILED",
++    }
++}
++
++/// One case's step name and how it ended.
++pub(super) type Outcome = (String, Result<String, String>);
++
++/// The selftest's last line: how many cases caught their violation, how
++/// many could not run here, and which let one through. A case not run
++/// fails only a strict run, and the line never reads as all caught.
++pub(super) fn last_line(outcomes: &[Outcome], strict: bool) -> Result<String, String> {
++    let not_run_mark = |d: &str| d.starts_with(NOT_RUN) || d.starts_with(NOT_RUN_HERE);
++    let names = |pick: &dyn Fn(&str) -> bool| -> Vec<&str> {
++        outcomes
++            .iter()
++            .filter_map(|(name, result)| result.as_ref().err().map(|d| (name, d)))
++            .filter(|(_, detail)| pick(detail))
++            .map(|(name, _)| name.trim_start_matches("violation:"))
++            .collect()
++    };
++    let not_run = names(&|d| not_run_mark(d));
++    let missed = names(&|d| !not_run_mark(d));
++    let caught = outcomes.len() - not_run.len() - missed.len();
++    if !missed.is_empty() {
++        return Err(format!(
++            "selftest: a deliberate violation was not caught \
++             ({caught} caught, {} not run, {} not caught: {})",
++            not_run.len(),
++            missed.len(),
++            missed.join(", ")
++        ));
++    }
++    if not_run.is_empty() {
++        return Ok(format!("selftest: {caught} cases ok"));
++    }
++    let counts = format!(
++        "selftest: {caught} caught, {} not run ({})",
++        not_run.len(),
++        not_run.join(", ")
++    );
++    if strict {
++        Err(format!(
++            "{counts}; with CI or ENG_REQUIRE_GPU=1 set, a case not run fails"
++        ))
++    } else {
++        let it = if not_run.len() == 1 { "it" } else { "them" };
++        Ok(format!(
++            "{counts}; not run is not a pass: CI runs {it}, and CI=1 or \
++             ENG_REQUIRE_GPU=1 makes this fail"
++        ))
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{NOT_RUN, NOT_RUN_HERE, judged, last_line, outcome, status, strict_from};
++    use crate::util::Done;
++
++    /// In a job, a case not run here is pending (it fails no job and passes
++    /// no check); a case that fails a strict run is never pending.
++    #[test]
++    fn only_a_warning_becomes_pending() {
++        let warned = format!("{NOT_RUN_HERE} golden-edit could not run here");
++        assert_eq!(judged(Err(warned.clone())), Ok(Done::Pending(warned)));
++        let strict = format!("{NOT_RUN} golden-edit could not run here");
++        assert_eq!(judged(Err(strict.clone())), Err(strict));
++        let miss = "clippy accepted the violation".to_string();
++        assert_eq!(judged(Err(miss.clone())), Err(miss));
++        assert_eq!(
++            judged(Ok("rejected".into())),
++            Ok(Done::Pass("rejected".into()))
++        );
++    }
++
++    /// Strict as GPU tests are: on CI, or with `ENG_REQUIRE_GPU=1`.
++    #[test]
++    fn a_run_is_strict_on_ci_or_when_a_gpu_is_required() {
++        // `util::on_ci`: CI set to anything, even empty (AGENTS.md).
++        assert!(!strict_from(false, None));
++        assert!(strict_from(true, None));
++        assert!(strict_from(false, Some("1")));
++        assert!(!strict_from(false, Some("0")));
++        assert!(!strict_from(false, Some("")));
++    }
++
++    #[test]
++    fn could_not_run_is_a_warning_only_outside_a_strict_run() {
++        let not_run = || {
++            Err(format!(
++                "{NOT_RUN} golden-edit could not run here: needs the pinned lavapipe"
++            ))
++        };
++        let warned = outcome(not_run(), false).unwrap_err();
++        assert_eq!(
++            warned,
++            format!("{NOT_RUN_HERE} golden-edit could not run here: needs the pinned lavapipe")
++        );
++        assert_eq!(status(&Err(warned)), "not run");
++        let strict = outcome(not_run(), true);
++        assert_eq!(strict, not_run());
++        assert_eq!(status(&strict), "FAILED");
++        // A miss stays a miss, and a catch a catch.
++        let miss = || Err("clippy accepted the violation".to_string());
++        assert_eq!(outcome(miss(), false), miss());
++        assert_eq!(status(&outcome(miss(), false)), "FAILED");
++        assert_eq!(status(&outcome(Ok("rejected".into()), false)), "ok");
++    }
++
++    fn case(name: &str, result: Result<&str, &str>) -> (String, Result<String, String>) {
++        let result = result.map(str::to_string).map_err(str::to_string);
++        (format!("violation:{name}"), result)
++    }
++
++    #[test]
++    fn the_last_line_counts_what_was_caught_and_what_was_not_run() {
++        let caught = case("float-sin", Ok("rejected"));
++        assert_eq!(
++            last_line(std::slice::from_ref(&caught), false).unwrap(),
++            "selftest: 1 cases ok"
++        );
++        let warned = format!("{NOT_RUN_HERE} no adapter");
++        let not_run = case("golden-edit", Err(&warned));
++        let both = [caught.clone(), not_run.clone()];
++        assert_eq!(
++            last_line(&both, false).unwrap(),
++            "selftest: 1 caught, 1 not run (golden-edit); not run is not a pass: \
++             CI runs it, and CI=1 or ENG_REQUIRE_GPU=1 makes this fail"
++        );
++        let failed = format!("{NOT_RUN} no adapter");
++        let strict = [caught.clone(), case("golden-edit", Err(&failed))];
++        assert_eq!(
++            last_line(&strict, true).unwrap_err(),
++            "selftest: 1 caught, 1 not run (golden-edit); \
++             with CI or ENG_REQUIRE_GPU=1 set, a case not run fails"
++        );
++        let missed = case("float-min", Err("clippy accepted the violation"));
++        assert_eq!(
++            last_line(&[caught, not_run, missed], false).unwrap_err(),
++            "selftest: a deliberate violation was not caught \
++             (1 caught, 1 not run, 1 not caught: float-min)"
++        );
++    }
++}
+diff --git a/xtask/src/util.rs b/xtask/src/util.rs
+index 23595b0c61f9c3c0c5457c6a85d000d760ed38d8..c5cddc10b9bee2d833292e27e554b04f4514499b 100644
+--- a/xtask/src/util.rs
++++ b/xtask/src/util.rs
+@@ -127,10 +127,21 @@ pub fn walk(dir: &Path) -> Vec<PathBuf> {
+ pub struct StepResult {
+     pub name: String,
+     pub ok: bool,
++    /// Neither passed nor failed: the step cannot be judged yet, as a shot
++    /// without its golden (rung 1b, plan decision 3). It fails no job, and
++    /// `ok` stays false, so no acceptance check counts it as a pass.
++    pub pending: bool,
+     pub seconds: f64,
+     pub detail: String,
+ }
+ 
++/// How a step that may be pending ended, when it did not fail.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum Done {
++    Pass(String),
++    Pending(String),
++}
++
+ /// Runs named steps, prints one line each, and keeps going after failures.
+ #[derive(Default)]
+ pub struct Steps {
+@@ -139,14 +150,24 @@ pub struct Steps {
+ 
+ impl Steps {
+     pub fn run(&mut self, name: &str, f: impl FnOnce() -> Result<String, String>) -> bool {
++        self.run_judged(name, || f().map(Done::Pass))
++    }
++
++    /// [`Steps::run`] for a step that may end pending; true if it passed.
++    pub fn run_judged(&mut self, name: &str, f: impl FnOnce() -> Result<Done, String>) -> bool {
+         let started = Instant::now();
+         let outcome = f();
+         let seconds = started.elapsed().as_secs_f64();
+-        let (ok, detail) = match outcome {
+-            Ok(detail) => (true, detail),
+-            Err(detail) => (false, detail),
++        let (ok, pending, detail) = match outcome {
++            Ok(Done::Pass(detail)) => (true, false, detail),
++            Ok(Done::Pending(detail)) => (false, true, detail),
++            Err(detail) => (false, false, detail),
++        };
++        let status = match (ok, pending) {
++            (true, _) => "ok",
++            (false, true) => "PENDING",
++            (false, false) => "FAILED",
+         };
+-        let status = if ok { "ok" } else { "FAILED" };
+         println!("{name:.<40} {status} ({seconds:.1}s)");
+         if !ok {
+             println!("{detail}");
+@@ -154,13 +175,15 @@ impl Steps {
+         self.results.push(StepResult {
+             name: name.to_string(),
+             ok,
++            pending,
+             seconds,
+             detail,
+         });
+         ok
+     }
+ 
++    /// No step failed; pending steps fail no job.
+     pub fn ok(&self) -> bool {
+-        self.results.iter().all(|r| r.ok)
++        self.results.iter().all(|r| r.ok || r.pending)
+     }
+ }

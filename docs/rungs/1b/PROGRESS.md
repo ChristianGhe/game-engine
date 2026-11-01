@@ -5174,6 +5174,970 @@ another; on the final tree unless said):
   Docker (arm64, T11's Linux target copied): 12 s to build, 20 s of tests.
 - Reviewer subagent: 14 minutes, 191k tokens, 77 tool calls.
 
+## 2026-11-01, session 18: T13, the native job, the summary and the workflow (X2, X3, X6) (Claude Opus 5.5, subagent, owner away)
+
+The task: the core of T13, patches X2, X3 and X6 of proposal 7, with
+amendments 23, 36, 37, 42, 46, 57, 58 and 61:
+- X2, `cargo xtask ci --job native`;
+- X3, the summary across the native jobs, and `native-duration`;
+- X6, `.github/workflows/ci.yml`: the five native jobs, the pinned drivers,
+  and the selftest job's pinned Mesa.
+
+All of it is protected tooling (`xtask/**`, `.github/workflows/**`,
+`budgets.toml`), so it reaches main as one patch for the owner,
+`t13-native.patch`, applied at G5 after the six oracle patches. A subagent
+built it test first in a scratch clone while the owner was away. The base
+was main at 5b38ce8 with the six oracle patches committed as "G5 oracles
+(base)" (e21109a). No crate, no dependency, no hash stream and no
+unprotected file changed. Builder t13b built X4, X5 and `.claude/` alongside
+in its own clone; the two patches touch different hunks of
+`xtask/src/main.rs`.
+
+**What was built**
+
+```text
+cargo xtask ci --job native     build, tests, replay, crash-json, version, then
+                                shot-exact (Linux x64) or shot-flip (the rest), window,
+                                gpu-budgets; esc and proof-video (Linux x64);
+                                check-intel-mac (macOS)
+cargo xtask ci --job summary    compare-hashes (PR tier and native, against the committed
+                                streams), pr-duration, native-duration
+ENG_CI_STEPS=a,b                runs only those native steps (local debugging); the report
+                                lists them under `only_steps`
+```
+
+```text
+xtask/src/ci_native.rs           the native job: STEPS (name, hosts, step), RUNNERS, the steps
+xtask/src/ci_verdicts.rs         what each step concludes from its files: pure functions
+xtask/src/ci_durations.rs        pr-duration and native-duration: GitHub's job list, and verdicts
+xtask/src/ci_report.rs           the job report and the job's exit (moved from ci.rs), with pending
+xtask/src/ci_native_tests.rs     the job against acceptance.json and the workflow; pending end to end
+xtask/src/ci_verdicts_tests.rs   each verdict from made-up shots.json, stamps, reports and APNGs
+xtask/src/ci_durations_tests.rs  the durations from made-up job lists; the date parser
+xtask/src/ci.rs, util.rs         the summary (X3), cargo with an environment, a step's pending state
+.github/workflows/ci.yml         the native matrix job; the selftest job's Mesa and cargo-deny;
+                                 a timeout on every job
+budgets.toml                     [ci] native_job_minutes = 25
+```
+
+Each native step and what it runs (from the repo root):
+
+| Step | Hosts | Runs | Passes when |
+|---|---|---|---|
+| `build` | all | `cargo build --workspace --all-targets` | it builds |
+| `tests` | all | `tests()` (nextest and doctests) with `ENG_REQUIRE_GPU=1 ENG_REQUIRE_DISPLAY=1` | every test passes; none can skip for want of a GPU or a display |
+| `replay` | all | `replay::run` | the streams equal the committed ones; uploaded as `hashes-native-<runner>` |
+| `crash-json` | all | `cargo test -p game-testbed --test crash_json`, both variables (amendment 46) | `run`'s and `play`'s halves pass |
+| `version` | all | `game-testbed --version` and `--version --json` | every `build` value set (not `unknown`, not null); the plain line is the same stamp; on GitHub the stamp names `GITHUB_SHA` and `github-<run>/<attempt>` |
+| `shot-exact` | Linux x64 | `cargo test -p game-testbed --test shots`, `ENG_SHOT_MODE=exact`, `ENG_GPU_ADAPTER` the pinned lavapipe | `shots.json`: every shot `pass`, mode exact, `configuration.pinned`, the committed `golden/` |
+| `shot-flip` | the rest | the same without `ENG_SHOT_MODE` | every shot `pass`, mode flip, the committed `golden/` |
+| `window` | all | `play --ticks 240 --seed 1 --input dot-square --hashes --report` (amendment 46) | exit 0, platform `winit`, the stream byte-equal to `hashes/dot-square.seed1.txt`, frames presented |
+| `gpu-budgets` | all | `shot --at-tick 240 ... --budgets budgets.toml` (amendment 42) | exit 0 (13 is over); the report has the adapter, driver and capabilities; the shot's and the window's per-frame peaks within `[gpu]` |
+| `esc` | Linux x64 | `play.rs`'s `escape_from_the_keyboard_quits_within_5_seconds`, by exact name | the test ran and passed: `xdotool search --pid`, `windowfocus --sync`, `key Escape`, exit 0 within 5 s (amendments 37, 46) |
+| `proof-video` | Linux x64 | `video --ticks 240 --seed 1 --input dot-square --out target/ci/proof.apng` | an APNG whose `acTL` says 241 frames, and a report that rendered 241 |
+| `check-intel-mac` | macOS | `cargo check --workspace --all-targets --target x86_64-apple-darwin` | it checks; a missing standard library is `[E-NO-TARGET]` |
+
+**Decisions** (proposals; the owner can overrule any):
+1. **The job is a table.** `STEPS` holds each step's name, its hosts and
+   its function, and `steps_for(host)` reads it. A test reads the current
+   rung's `acceptance.json` and checks that each of its 53 native checks
+   names a runner's host and a step the job runs there. Another checks that
+   the workflow's matrix is `RUNNERS` and that it uploads each artifact
+   under the names `compare-hashes` and T16 look for.
+2. **Pending is a third outcome** (plan decision 3, amendment 57). A step
+   ends `Pass`, `Pending` or failed. A pending step prints `PENDING`, is
+   written to the report as `"ok": false, "pending": true`, and fails no
+   job. `acceptance` is unchanged: it counts only `"ok": true`, so a shot
+   without its golden keeps criteria 4 and 5 false while `main` stays green.
+3. **The shot steps judge `shots.json`, not the exit code.** The harness
+   exits 0 for "no golden yet", so the step deletes the old `shots.json`
+   first, runs the harness, and then reads it. It is a pass only if every
+   shot is `pass`, the mode is the step's (exact for `shot-exact`, FLIP for
+   `shot-flip`), the configuration is pinned for `shot-exact`, and the
+   golden directory is the committed `golden/`. The step also removes
+   `ENG_GOLDEN_DIR` from the harness's environment, and `ENG_SHOT_MODE` for
+   `shot-flip`, so a variable left in the environment cannot redirect it.
+4. **Two lavapipes on `ubuntu-24.04`.** Mesa 25.2.7 from build26 offers
+   no window surface: `vulkaninfo` lists only `VK_EXT_headless_surface`
+   (no xcb, xlib or Wayland), and the library links no libxcb. So the
+   pinned build can render the shots, but `play` cannot open a window on
+   it. Windows need Ubuntu's own lavapipe (`mesa-vulkan-drivers`, Mesa
+   25.2.8 with LLVM 20.1.2), which the workflow installs on both Linux
+   runners. On x64:
+   - `VK_DRIVER_FILES` lists Ubuntu's ICD first, then the pinned one.
+     Ubuntu's ICD names its library `libvulkan_lvp.so`, so if the pinned
+     library loaded first, the loader would resolve that name to it. Seen:
+     with the pinned ICD first, both devices were Mesa 25.2.7.
+   - The offscreen renders (`shot-exact`, `gpu-budgets`, `proof-video`)
+     set `ENG_GPU_ADAPTER=llvmpipe (LLVM 18.1.3, 256 bits)`, the adapter
+     `shots.rs` pins (`offscreen_adapter`; a test checks that the two
+     names agree). Exact mode still checks the whole configuration.
+   - Windows open on the only adapter that can present to them, Ubuntu's
+     (eng-gpu filters by presentation first).
+   - The `tests` step's offscreen tests may use either lavapipe. They pass
+     on both, and its shot harness then compares exactly or with FLIP; it
+     is `shot-exact` that judges criterion 4.
+5. **The report** adds `gpu` (adapter, backend, device type, driver,
+   driver info, tier, capabilities and the per-frame counters), taken from
+   the budget shot's report, or else the window's or the video's. It also adds `os_version` and
+   `image_version`, and each step's detail names its adapter (spec 8.2).
+6. **`esc` runs the protected test** that amendment 46 allows, by exact
+   name. `ran_test` checks that the test ran and passed, because a filter
+   that matches nothing makes `cargo test` exit 0.
+7. **`window` needs presented frames.** A window that is never visible
+   presents nothing, and on a Mac with a locked screen this step fails.
+   The protected `play.rs` asks the same under `ENG_REQUIRE_DISPLAY=1`.
+8. **`gpu-budgets` also holds the window's frames.** A window frame adds
+   the present pass (3, 3, 2, 96 against the shot's 2, 2, 1, 96), and
+   `play` takes no `--budgets`. So the step holds `window.json`'s
+   per-frame peaks to `[gpu]` too, when the window presented frames.
+9. **`compare-hashes`** needs eight named artifacts: the test job's two
+   (`hashes-ubuntu-24.04`, `hashes-ubuntu-24.04-arm`), `hashes-riscv`, and
+   `hashes-native-<runner>` for each of the five runners. It compares each
+   with the committed streams, so a missing runner fails by name, and so
+   does a divergence (`[E-CROSS-ARCH]` with the file and the tick).
+10. **The durations come from GitHub's job list.** Both steps ask `gh api
+    .../jobs` for this run's jobs (the summary's `actions: read`).
+    - `native-duration` lists each native job's minutes and holds the
+      slowest to `native_job_minutes`. Going over says `OVER` and passes. A
+      runner's job that is missing or unfinished fails the step, since then
+      the tier was not measured.
+    - `pr-duration` now ends at the PR tier's last job (lint, the two test
+      jobs, riscv, wasm, selftest), not at "now". The summary waits for the
+      native jobs too, so its own clock would have counted them (the
+      review's catch). It still starts at the run's start, as in 1a, and no
+      longer needs GNU `date`.
+11. **WARP 1.0.20**, the version wgpu's CI installs, not 1.0.22 (four days
+    old). Its x64 or arm64 `d3d10warp.dll` goes into `target/debug/` and
+    `target/debug/deps/`, so D3D12 loads it from the binary's directory.
+    `ENG_GPU_ADAPTER` is not set on Windows: the first run's report names
+    the adapter, and pinning by name can follow.
+12. **Line ends.** The Windows images check text out with CRLF
+    (`core.autocrlf` true). The committed streams must stay byte for byte,
+    so the native job sets `core.autocrlf false` and `core.eol lf` before
+    checkout.
+13. **windows-11-arm** runs `rustup set default-host
+    aarch64-pc-windows-msvc` and fails unless `rustc -vV`'s host is
+    `aarch64-pc-windows-msvc` (T5, open question 4). Rust 1.99 is
+    preinstalled there.
+14. **Smaller choices.**
+    - nextest is installed on all five runners (it has an aarch64 Windows
+      build).
+    - **Every job has a timeout** (the orchestrator's request: a present
+      that blocks would otherwise hang a job for GitHub's six hours).
+      - The native jobs get 45 minutes: the budget is 25, so a slow first
+        run still finishes and is measured.
+      - lint, test, riscv, wasm, selftest and the summary get 30. riscv
+        took 1 min 34 s before the testbed held wgpu; a cold build of
+        wgpu and winit for riscv64 fits with room to spare.
+      - The `ci` gate gets 5.
+    - The Linux job runs under `xvfb-run -a -s "-screen 0 1280x1024x24"`.
+    - **The selftest job** gets the pinned Mesa, cargo-deny 0.20.2 and an
+      `rm -rf target/selftest` step (amendments 58 and 23):
+      - it provides the Vulkan loader, Ubuntu's LLVM 18 (with libdrm2,
+        libexpat1, libzstd1 and zlib1g) and `VK_DRIVER_FILES` naming the
+        pinned ICD only (no window is opened there);
+      - cargo-deny is for t13b's `rwh-outside-seam` case, which runs `cargo
+        deny check bans`;
+      - nothing else: the `golden-edit` case sets `ENG_REQUIRE_GPU`,
+        `ENG_SHOT_MODE` and `ENG_GOLDEN_DIR` itself, and the harness sets
+        the llvmpipe variables. This is t13b's amendment 80, as the
+        orchestrator relayed it.
+    - Beyond the fixed artifact names: `hashes-native-<runner>`, which
+      compare-hashes needs, and `logs-native-<runner>` (`target/agent-logs/`),
+      because a report keeps only a step's last lines.
+    - `crash-native-<runner>` also holds `target/tmp/shots/render/logs/`,
+      where a shot that panics inside the harness writes its `crash.json`.
+    - `report-native-<runner>` leaves out `target/ci/report.json`, the copy
+      of `reports/native-<host>.json`, so acceptance counts each report once.
+    - Module lines go right after `mod ci;` (`ci_durations`, `ci_native`,
+      `ci_report`, `ci_verdicts`, alphabetical for rustfmt).
+      `xtask/Cargo.toml` is unchanged. `main.rs`'s usage line is left to
+      t13b, to keep the hunks apart.
+
+**Tests** (34 new xtask tests, 73 in all). 32 were written first and
+watched failing against stubs that gave wrong answers: 28 at first, then
+one each for decision 4 and the report's counters, and two for the PR
+tier's duration. Two guard behaviour the code already had, and planted
+bugs show that both bite:
+- every shot passing passed against a stub that always said "pass"; its
+  pending and failing counterparts failed;
+- the job's exit with a pending step and with a failed one, which `finish`
+  now takes from `Steps::ok()` (the review's catch).
+
+The tests by file:
+- `ci_verdicts_tests.rs`, 20:
+  - the shots: a pass only when every shot passes; a shot without its
+    golden or thresholds is pending, alone or among passes; a failed shot
+    fails; exact needs the pinned configuration and FLIP refuses exact; a
+    `shots.json` that does not parse, names no shot, has an unknown status
+    or another golden directory fails;
+  - the version stamp, both forms, unknown and null values, one line, and
+    GitHub's commit and run;
+  - the window's stream (first differing line, CRLF), frames, platform
+    and exit;
+  - every budget counter at and over its limit, for the shot and the
+    window, and missing report keys and limits;
+  - the APNG, including every truncation;
+  - `ran_test`; the eight hash artifacts.
+- `ci_durations_tests.rs`, 6:
+  - the UTC date parser (leap years, 2100);
+  - native durations within and over budget, and with a runner missing or
+    unfinished;
+  - the PR tier ending at its last job, within and over budget, and with a
+    job missing, unfinished or only named like one.
+- `ci_native_tests.rs`, 8:
+  - the step list per host;
+  - the 53 native checks of `acceptance.json`;
+  - the workflow's matrix, artifact names and PR jobs;
+  - the pinned adapter's name;
+  - a pending step end to end (step, report, job), and `finish`'s exit;
+  - the report's extra keys, and its adapter, driver and counters.
+
+**Planted bugs** (`scripts/mutate.py`, each alone in a separate clone,
+then restored): 32, all caught by a named test, on the final code. They
+include the brief's four:
+- a missing step (renamed, on the wrong host, on no host);
+- a wrong target (windows-11-arm reporting x64 as an emulated toolchain
+  would; a musl Linux);
+- the workflow's matrix disagreeing with xtask; the native artifacts'
+  names drifting;
+- a pending shot counted as a pass three ways (the verdict, the step
+  result, the report), and a pending step failing the job, in the step
+  results and in `finish`;
+- one for each verdict's rule, the PR tier's three among them (over the
+  budget, an unfinished job, a job named only like a PR job).
+
+At the report level (`scripts/planted-reports.sh`, xtask's own commands):
+- windows-11-arm's report says `x86_64-pc-windows-msvc`: `acceptance`
+  fails 9 features with "no report from job native on
+  aarch64-pc-windows-msvc";
+- a native report without `gpu-budgets`: criterion 9 fails with "has no
+  step gpu-budgets";
+- in `ci --job summary`, with eight artifacts holding the committed
+  streams: compare-hashes passes; one tick changed in
+  `hashes-native-windows-2025` fails `[E-CROSS-ARCH] dot-square.seed1.txt:
+  first divergence at tick 97`, naming the artifact; and with
+  `hashes-native-windows-11-arm` missing, it fails `[E-CROSS-ARCH] no hash
+  streams from hashes-native-windows-11-arm`.
+
+The guard refused the mutation script twice. Its check for Python that
+writes matches `xtask/` anywhere in a path, even in a scratch clone outside
+the repo, and it also matched the word `config` in a mutation pattern. The
+script reached the clone's sources through two symlinks with neutral names
+(`mut-src`, `mut-wf`). The two mutations whose patterns held `config` or
+`golden` were replaced by others; their tests had been watched failing
+against the stubs. Nothing in the main checkout was touched.
+
+**Runs**
+- **This Mac** (aarch64-apple-darwin, Metal, Apple M2 Pro; the screen was
+  locked all night), `CI=1 cargo xtask ci --job native`, 107 s:
+  - ok: `build`, `replay`, `crash-json` (`play`'s half too: it needs
+    ticks, not a visible window), `version`, `gpu-budgets` (2, 2, 1, 96);
+  - pending: `shot-flip` (four shots, no golden yet);
+  - failed: `tests`, `window` and `check-intel-mac`.
+    - `tests` and `window`: with the screen locked macOS reports the
+      window occluded, so no frame is presented. `play.rs`'s windowed test
+      and the `window` step both require frames under
+      `ENG_REQUIRE_DISPLAY=1` (T11 decision 13). This is what they should
+      do here.
+    - `check-intel-mac`: `[E-NO-TARGET]`, since this Mac has no
+      x86_64-apple-darwin standard library and nothing is installed
+      globally tonight.
+  - The report has every step, `gpu` (`Apple M2 Pro`, metal,
+    integrated-gpu, driver and driver info empty: Metal names none; the
+    counters 2, 2, 1, 96) and `os_version` `macOS 26.5.1`.
+  - The same again on the final code, after the review's fixes.
+- **Linux arm64 in Docker** (`eng-escfix:gxx`: Debian 13, Xvfb, xdotool,
+  Debian's lavapipe Mesa 25.0.7 with LLVM 19.1.7; `CI=1`), the whole job,
+  311 s from a warm cache:
+  - 7 of 8 steps ok; `shot-flip` pending; exit 0;
+  - `tests`: 427 tests run, 427 passed, 0 skipped, with both variables
+    set (windowed play, Escape, the crash harness's `play` half and the
+    winit suite among them);
+  - `window`: 217 frames of 800x600 presented, the committed stream;
+  - again on the final code: 7 of 8 ok, `shot-flip` pending, 431 tests,
+    none skipped.
+- **Linux x64, emulated, in Docker** (`eng-t13a-lvp-xvfb:25.2.7`: T12's
+  pinned-Mesa image plus Xvfb, xdotool, X11 libraries and Ubuntu's
+  `mesa-vulkan-drivers` 25.2.8; the two ICDs as the workflow sets them;
+  `LP_NATIVE_VECTOR_WIDTH=256`; `CI=1`):
+  - first the x64 steps alone (`ENG_CI_STEPS`), then the whole job,
+    187 s: 9 of 10 ok, `shot-exact` pending, exit 0;
+  - `tests`: 427 passed, 0 failed (plain `cargo test`: no nextest in that
+    image);
+  - `shot-exact`: exact mode on `llvmpipe (LLVM 18.1.3, 256 bits)`, `Mesa
+    25.2.7 (LLVM 18.1.3)`, four shots with no golden yet;
+  - `window`: 222 frames on Ubuntu's `llvmpipe (LLVM 20.1.2, 256 bits)`,
+    the committed stream, 34 dropped ticks (emulation; no tick is
+    skipped);
+  - `gpu-budgets` and `proof-video` (241 frames, 239,539 bytes) on the
+    pinned adapter, which the report's `gpu` names;
+  - `esc`: Escape through XTEST quit `play` within 5 s;
+  - again on the final code: 9 of 10 ok, `shot-exact` pending, 431 tests
+    passed; the report's `gpu` names the pinned adapter, with its
+    counters.
+- **Windows**: the Windows targets are not installed on this Mac. In a
+  throwaway arm64 container that added them, `cargo check -p xtask
+  --all-targets` and clippy with `-D warnings` pass for
+  `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc`. The one warning
+  is old: `guard_tests.rs:92`, an unused `link` off Unix (amendment 71).
+  The steps' Windows paths were also read by hand: `.exe` from
+  `EXE_SUFFIX`, no xvfb, `cmd /c ver`, WARP in pwsh.
+- **The workflow**: actionlint 1.7.12 (the release's darwin arm64 binary,
+  SHA-256 `aba9ced2...953f` as in its checksums file, in the task
+  directory) reports nothing. shellcheck is not installed here, so the
+  `run:` scripts were read by hand.
+
+**Acceptance dry run** (`scripts/dry-run.sh`: xtask's own `acceptance`
+over three sets of reports):
+- `real`: this Mac's, the arm64 run's and the emulated x64 run's reports,
+  with synthetic ones for the two Windows runners, the other jobs, and the
+  x64 steps not run under emulation. 12 of 19 pass. Criteria 1, 2, 3 and
+  18 fail on this Mac's locked screen ("tests failed on
+  aarch64-apple-darwin"). 4 and 5 fail because their shots are pending.
+  16 has no checks (X4's).
+- `pending`: everything synthetic and passing, shots pending: 16 of 19.
+  Only 4, 5 and 16 fail.
+- `golden`: shots passing too: 18 of 19, every criterion but 16. Every
+  check of criteria 1 to 9, 13 and 15 finds its step and passes.
+- The summary job over artifacts laid out as `download-artifact` gives
+  them (`scripts/summary-layout.py`; the real `report-native-*`,
+  `hashes-native-*` and `golden-candidates-*` of the three hosts above,
+  with stand-ins for Windows and the PR tier):
+  - `compare-hashes` passes on the real streams of three hosts and the
+    committed ones;
+  - the duration steps fail off GitHub, as they should;
+  - `acceptance` over the 61 JSON files there (probe reports, `shots.json`
+    and stamps among them) reads only the job reports: 11 of 19, as the
+    `real` set predicts, with `native-duration` now failing off GitHub.
+
+**Review** (the `reviewer` subagent, fresh context, read-only; 21 min,
+274k tokens, 72 tool calls). Verdict: approve with fixes, no blockers. It
+ran the xtask tests, clippy and `quick` in a clone with the patch. It
+checked the 53 names, the pending path end to end, that `esc` cannot pass
+a skipped test, the shot verdict, the WARP pin against NuGet, and the Mesa
+setup. It also compared the pinned lavapipe's candidates, rendered with
+Ubuntu's ICD loaded beside it, with this Mac's Metal ones: byte-identical.
+Its points, and what was done:
+1. should-fix: `pr-duration` measured "now" minus the run's start, which
+   would count the native jobs once the summary waits for them. Now it
+   ends at the PR tier's last job (decision 10), with two tests.
+2. should-fix: `finish` repeated `Steps::ok()`'s rule for the job's exit,
+   untested. Now it takes the exit from `Steps::ok()`, and a test runs
+   `finish` on a scratch root with a pending step and then a failed one.
+3. nit: `acceptance` reads a pending step as "failed": amendment 66
+   (t13b's file).
+4. nit: a doc named a function that had moved: fixed.
+5. nit: `main.rs`'s usage line lacks `native`: amendment 71 (t13b's hunk).
+6. nit: the window message blamed macOS on every OS: reworded.
+7. nit: the report's `gpu` lacked the counters: added (spec 8.2).
+8. nit: each native report was counted twice by acceptance:
+   `report.json` is now left out of `report-native-<runner>`.
+9. nit: parenthesised receivers such as `(STEPS.iter())`, which the rest
+   of the code does not use: removed.
+
+Its untestable risks are in "What could go wrong", below. One of them is
+xtask's own tests on Windows, now run by the native `tests` step: the only
+Unix path they use, `/tmp/elsewhere.txt`, stays unprotected on Windows
+too, and the workflow test now ignores CRLF.
+
+The splits the fixes needed (`ci_durations.rs` and its tests) keep every
+file under 500 lines.
+
+**Checks** (aarch64-apple-darwin, the work clone with the patch on the base,
+one after another, on the final code):
+- `cargo xtask quick`: 7 of 7 (41 s);
+- `CI=1 cargo xtask ci --job lint`: 7 of 7, cargo-deny and typos
+  included;
+- `cargo xtask selftest`: 17 of 17;
+- `cargo xtask replay`: 5 runs; the hash streams match and are unchanged;
+- `cargo xtask docs-check`: AGENTS.md 144 of 150 lines;
+- `cargo test -p xtask`: 73 of 73; `cargo clippy -p xtask --all-targets
+  -- -D warnings`: clean;
+- no file over 500 lines (the largest, `ci_native.rs`, is 484);
+- typos with the repo's config, on this entry and the patch: clean.
+
+**With t13b's patch** (the orchestrator's request): `scripts/combined-check.sh`
+applies this patch and t13b's `t13-checks.patch` on the base, each checked
+first. It ran twice, with the same results: on t13b's 01:13 version, and
+on its 01:25 revision (SHA-256 `ee8c2f00...4a98`). Both patches apply
+cleanly. The two touch different
+lines of `xtask/src/main.rs` (`mod ci_durations` to `mod ci_verdicts`
+after `mod ci;`, `mod selftest_golden` after `mod selftest;`). On that
+tree:
+- `cargo test -p xtask`: 89 of 89;
+- `cargo xtask quick`: 7 of 7;
+- `CI=1 cargo xtask ci --job lint`: 7 of 7;
+- `cargo xtask selftest`: 21 caught, and `golden-edit` not run here (it
+  needs the pinned lavapipe). Under `CI=1`, a case not run fails.
+
+**The patch**: `scratchpad/t13a/t13-native.patch`, made with `git add -A`
+and `git diff --cached --full-index` against e21109a. `scripts/make-patch.sh`
+checks it on a fresh clone of main:
+- main had moved to f5367f2 (T14's docs, which touch none of the patch's
+  files);
+- the six oracle patches applied in the brief's order;
+- `git apply --check` and `git apply` pass;
+- every file the patch touches equals the work clone's.
+
+**What the first push after G5 should show**, job by job:
+- **lint, test, riscv, wasm**: as today. The test job's steps are
+  unchanged.
+- **selftest**: the pinned Mesa and cargo-deny are installed (about a
+  minute), then xtask's cases, including t13b's five once X5 lands.
+  `golden-edit` runs exactly on the pinned lavapipe.
+- **native ubuntu-24.04**: `build`, `tests`, `replay`, `crash-json`,
+  `version`, `window`, `gpu-budgets`, `esc` and `proof-video` should pass,
+  as they did under emulation with the same drivers. `shot-exact` reports
+  "no golden yet" (pending).
+- **native ubuntu-24.04-arm**: the same, without `esc` and
+  `proof-video`. `shot-flip` is pending.
+- **native windows-2025 and windows-11-arm**: `build`, `replay` and
+  `version` should pass. Nothing has drawn through D3D12 and WARP yet (T7,
+  open question 4). So `tests`, `crash-json` (its `play` half opens a
+  window), `window`, `gpu-budgets` and `shot-flip` are the first real test
+  of FXC, WARP and a window on the runner's desktop. `shot-flip` is pending
+  at best.
+- **native macos-26**: `build`, `replay`, `version` and `check-intel-mac`
+  should pass. `tests`, `window` and `shot-flip` (pending at best) depend
+  on the paravirtual Metal device and on whether the runner's window
+  counts as visible (T11, open question 1).
+- **summary**:
+  - `compare-hashes` passes only if all eight stream artifacts arrive;
+  - `pr-duration` measures to the PR tier's last job, as 1a did in effect;
+  - `native-duration` lists the five jobs. The first run builds wgpu and
+    winit cold, so it may say OVER without failing.
+- **ci**: green only if every native job passes. Pending shots fail
+  nothing.
+- **acceptance**: if every native job passes, 16 of 19. 4 and 5 wait for
+  G6; 16 is the owner's.
+
+**What could go wrong on GitHub's runners that no local check covers:**
+1. WARP on both Windows runners, the arm64 DLL in particular: D3D12 must
+   load the DLL from the binary's directory. Also untested there: FXC,
+   the surface format, and windows in the runner's session.
+2. windows-11-arm: switching rustup's default host, and the install-action
+   build of nextest for arm64.
+3. macos-26: a window that counts as occluded presents nothing, which
+   fails `tests` and `window` (the owner then chooses another check). The
+   paravirtual device is unconfirmed on macos-26 (spec 8.3). nv-flip-sys's
+   C++ is checked for x86_64 by clang under `check-intel-mac`.
+4. ubuntu-24.04:
+   - `libllvm18` or `mesa-vulkan-drivers` could update;
+   - the pinned adapter's name would then change, and `shot-exact` would
+     fail loudly with the configuration it found;
+   - a CPU with AVX-512 is held at 256 bits by `LP_NATIVE_VECTOR_WIDTH`;
+   - the real VM's timing under xvfb is unseen (emulation worked).
+5. ubuntu-24.04-arm: Ubuntu's lavapipe 25.2.8 on arm64. The local run used
+   Debian's 25.0.7.
+6. The jobs' names in the API: `native-duration` looks for `native
+   (<runner>)` and `pr-duration` for `test (<runner>)`, GitHub's default
+   names for matrix jobs.
+7. xtask's own tests now run on both Windows runners, inside `tests`. They
+   were compiled and linted for Windows here, but never run there. Their
+   guard tests use git, temporary directories and, behind `cfg(unix)`,
+   symlinks.
+8. A hung present or GPU readback stops at the job's timeout: 45 minutes
+   for a native job (amendment 72 proposes a per-test limit). Five cold
+   builds take time and space too, and the summary downloads every native
+   artifact.
+
+**Open questions**
+1. **Windows and macOS have never drawn** in CI. If WARP or the
+   paravirtual Metal device fails, the owner decides: skip with a report,
+   or another adapter (plan, "Risks").
+2. **Two lavapipes on x64** (decision 4). The alternative is a pinned Mesa
+   built with X11, which gfx-rs/ci-build does not publish.
+3. **`acceptance` says "failed" for a pending step.** It is X4's file
+   (t13b); it could say "pending" (amendment 66).
+4. **The cross-runner FLIP numbers** of amendment 57's optional point are
+   not wired in. That would make the four other jobs wait for
+   ubuntu-24.04's artifact. T16 can compare the candidates offline.
+
+**Costs and timings**
+- Session 18's t13a subagent, from 23:51 EET:
+  - reading and the base clone to 00:00;
+  - the tests against stubs, red at 00:05;
+  - the code green at 00:16;
+  - `quick` and the workflow to 00:22;
+  - the two-lavapipe finding, its fix and its test to 00:25;
+  - Docker, the Mac run, the planted bugs and the dry run to 00:40;
+  - the review from 00:37 to 00:58, alongside the checks, the summary
+    layout run and this entry;
+  - the review's fixes, the orchestrator's three requests (the selftest
+    job, the crash directory, the timeouts), the reruns, the planted bugs
+    again and the combined check to about 01:30;
+  - then waiting until 02:20 for a further revision of t13b's patch,
+    which did not come, and delivery.
+- Research subagent: 98k tokens, 61 tool calls, 9 minutes.
+- Reviewer subagent: 21 minutes, 274k tokens, 72 tool calls.
+- Builds:
+  - the seeded targets made wgpu free;
+  - the whole native job took 107 s on this Mac, 311 s on arm64 in
+    Docker (216 s on the rerun), and 187 s under amd64 emulation (warm,
+    after a first 262 s run of the x64 steps);
+  - each round of 32 planted bugs took about 5 minutes.
+
+## 2026-11-01, session 18: T13, owner-checked features, the 1b selftest cases, golden-update and visual-qa (X4, X5) (Claude Opus 5.5, subagent, owner away)
+
+The task: the part of T13 that is patches X4 and X5 of proposal 7, plus
+the `.claude/` additions of amendment 61 for G5. X4 teaches `cargo xtask
+acceptance` owner-checked features (criterion 16). X5 adds the five
+selftest cases of criterion 12, `violations-1b`. The `golden-update` skill
+and the advisory `visual-qa` subagent come from spec 7.5. Everything is
+under `xtask/**`, `.claude/**` and one line of `Cargo.lock`, so it
+reaches main as one patch for the owner, `t13-checks.patch`. Builder t13a
+wrote X2, X3 and X6 (`ci.rs`, `ci.yml`, `budgets.toml`) at the same time,
+and this patch touches none of them. A subagent built it test first, in a
+scratch clone of main at 5b38ce8 with the six queued oracle patches
+committed on top (`0e15b92`, "G5 oracles (base)"). A second round, at the
+orchestrator's request, replaced xtask's own PNG code with the `png`
+crate and made a case that cannot run follow the GPU tests' convention.
+It wrote nothing into `golden/` and regenerated no hash stream.
+
+**What it adds**
+
+```text
+xtask/src/acceptance.rs          owner-checked features: listed, never computed (X4)
+xtask/src/acceptance_tests.rs    its 7 tests
+xtask/src/hooks.rs               session-start lists the owner's features apart
+xtask/src/selftest.rs            22 cases (17 + 5), the cargo-deny case
+xtask/src/selftest_verdict.rs    a case that cannot run: warning or failure; the last line; 3 tests
+xtask/src/selftest_tests.rs      1 test
+xtask/src/selftest_golden.rs     golden-edit and its 5 tests
+xtask/src/main.rs                `mod selftest_golden;`, after `mod selftest;`
+xtask/Cargo.toml, Cargo.lock     png =0.18.1 for xtask (one lock line)
+.claude/skills/golden-update/SKILL.md
+.claude/agents/visual-qa.md
+```
+
+**Decisions** (proposals; the owner can overrule any):
+1. **An owner-checked feature is listed and never computed (X4).** The
+   spec has the owner play each playable rung and accept it (2.2,
+   touchpoint 1), and has CI compute every `passes` (7.3, rule 4). The
+   plan's G7 row changes no file. So for a feature with `"owner": true`:
+   - CI writes `"passes": null` in its computed copy, never true or
+     false, and no `why_not`;
+   - the summary gives it its own line, `OWNER owner-play: the owner
+     checks this feature; CI does not compute it`;
+   - the totals count only computed features: `rung 1b: 0/18 computed
+     features pass; 1 for the owner: owner-play`;
+   - the session-start hook lists it apart (`for the owner:
+     owner-play`), not among the failing features;
+   - the rung is done when every computed feature passes and the owner
+     has accepted at G7. The acceptance is recorded in that sitting's
+     `PROGRESS.md` entry, as G1 to G4 were.
+
+   An owner feature that lists checks fails the computation, as `passes`
+   written by hand does: CI would ignore those checks. Its `checks` must
+   be `[]` or absent. An `owner` that is not true or false fails too. The
+   alternative is amendment 76.
+2. **The four dependency cases change a manifest, not the source.** A
+   crate can name a floor crate only through a dependency, and every rule
+   involved reads dependencies. Each case adds one line to one
+   `Cargo.toml` in a fresh copy under `target/selftest/<case>/`:
+
+   | Case | Change | Caught by | Expected text |
+   |---|---|---|---|
+   | `wgpu-outside-gpu` | eng-render gains `wgpu` | arch-check `[floor]` | `[E-ARCH-FLOOR] eng-render depends on wgpu; only eng-gpu may` |
+   | `winit-outside-platform` | eng-app gains `winit` | arch-check `[floor]` | `[E-ARCH-FLOOR] eng-app depends on winit; only eng-platform-winit may` |
+   | `rwh-outside-seam` | eng-render gains `raw-window-handle` | `cargo deny check bans` (ADR-0016) | `error[banned]: crate 'raw-window-handle = ...` and `direct parent 'eng-render = ...' ... was not marked as a wrapper` |
+   | `core-depends-on-gpu` | eng-sim gains `eng-gpu` | arch-check, core set | `[E-ARCH-CORE-DEP] core crate eng-sim reaches eng-gpu (via eng-sim)` |
+
+   The expected text names the crate and the rule, so a failure for
+   another reason does not count. In `core-depends-on-gpu` the layer rule
+   fires as well, since every core crate sits below L3, but the case
+   insists on the core-set rule. eng-render and eng-app are where such a
+   shortcut is most likely: eng-render sits beside eng-gpu in L3, and
+   eng-app composes the platform.
+3. **`golden-edit` (amendment 58).** It runs the shots harness's one GPU
+   test, `shots_match_their_goldens`, with `ENG_REQUIRE_GPU=1` and
+   `ENG_SHOT_MODE=exact`, twice:
+   - the unedited run checks the shots against `golden/`. Before G6 there
+     are no goldens, so it saves each shot as a candidate;
+   - the case copies the goldens, or before G6 those candidates, with
+     `thresholds.toml` to `target/selftest/golden-edit/golden/`. Through
+     the `png` crate, as the harness decodes, it moves the red channel of
+     the middle pixel of the first golden by one level, and checks that
+     the written file decodes one byte away from the original;
+   - the edited run, with `ENG_GOLDEN_DIR` set to the copy, must fail with
+     `<shot>: [E-GOLDEN] 1 of 76800 pixels differ from the golden` for
+     that shot and no other.
+
+   If the unedited run fails for any reason but a missing or unpinned
+   adapter, the case fails as well ("the shots harness fails before any
+   golden is edited"). After G6, a red `shot-exact` therefore also turns
+   the selftest red.
+4. **A case that cannot run fails only a strict run, as GPU tests do**
+   (round 2; plan decision 4). The cases concerned are `golden-edit`
+   without an adapter or on any adapter but the pinned lavapipe (the
+   harness's own exact-mode check decides, and its line is quoted), and
+   `rwh-outside-seam` without cargo-deny.
+   - Strict means `CI` set and not empty, or `ENG_REQUIRE_GPU=1`. There
+     the message starts `[E-SELFTEST-NOT-RUN]`, and `cargo xtask
+     selftest` exits 1.
+   - Anywhere else the message starts `[W-SELFTEST-NOT-RUN]` and names
+     the case and what it needs. The case's line says `not run`, and the
+     run exits 0.
+   - Either way the step is not ok (`ok: false` in a job's report), so
+     acceptance never counts it. The last line counts it apart: "selftest:
+     21 caught, 1 not run (golden-edit); not run is not a pass: CI runs it,
+     and CI=1 or ENG_REQUIRE_GPU=1 makes this fail".
+   - This is the default because a check that is red on every Mac teaches
+     agents to ignore red. It reverses round 1, whose always-failing
+     version is now the alternative (amendment 78). CI's selftest job is
+     strict, so it stays the oracle for criterion 12. The logic lives in
+     `selftest_verdict.rs`, which keeps `selftest.rs` under 500 lines.
+5. **The `png` crate for xtask** (round 2). `xtask/Cargo.toml` gains
+   `png = "=0.18.1"`, the version the workspace already locks (crate batch
+   2). `Cargo.lock` gains one line, `png` in xtask's own dependency list,
+   and nothing else. `cargo metadata --locked --offline` passes, and so do
+   arch-check and `cargo deny check`, with `architecture.toml` and
+   `deny.toml` unchanged. Round 1 had read "no new dependency for xtask"
+   strictly and carried 400 lines of PNG and inflate code of its own; the
+   orchestrator clarified that it meant no new third-party crate.
+6. **`.claude/`**: the `golden-update` skill (fetch, compare, hand over,
+   later changes) and the `visual-qa` subagent. visual-qa has only Read,
+   Grep and Glob, so it cannot write or run anything. It describes what
+   differs and a likely cause, and never says pass or fail. Both follow
+   the formats of `reviewer.md` and `replay-debug`; `settings.json` needs
+   no change.
+
+**Tests** (16 new xtask unit tests; 55 in xtask in all). Each was written
+first and watched failing, against a stub or before its fix:
+- acceptance (7): a CI feature passes only when every report has its step
+  ok (existing behaviour, now under test); an owner feature gets `passes:
+  null` and its own line, and counts neither way; one that lists checks
+  is refused, and so is one whose `checks` is not a list (from the
+  review); `owner` must be true or false (`false` is an ordinary
+  feature); `passes` written by hand is refused on owner features too;
+  the session line lists the owner's features apart.
+- selftest (1): cargo-deny's verdict needs the ban on the named crate and
+  the named user, so a refusal of another crate or user does not count.
+- the verdict (3): strict means `CI` set and not empty, or
+  `ENG_REQUIRE_GPU=1`; "could not run" is a warning (`not run`) only
+  outside a strict run, while a miss stays a miss; the last line counts
+  caught and not-run cases, fails a strict run with any not run, and
+  reports a miss above both.
+- golden-edit (5): the unedited run's failure is "could not run" only for
+  `[E-NO-ADAPTER]` or the exact-mode refusal, and the harness's own
+  failure otherwise; the edited run must fail on the edited shot for one
+  pixel, and not pass, fail for another reason, fail for 2 pixels, or
+  fail on another shot; the nudge moves one byte by one level, down at
+  255; a PNG written reads back the same; anything but 8-bit RGBA is
+  refused.
+- Planted bugs, one at a time in a scratch copy
+  (`scratchpad/t13b/scripts/planted*.sh`):
+  - round 1: 23 on the first version. 20 were caught at once. One was
+    planted wrongly and did not compile; replanted, it was caught. Two
+    survived in the hand-written PNG decoder, and tests were added for
+    them. Those PNG mutations went with that code in round 2;
+  - round 2: 8 on the new code, all caught: an empty `CI` taken as
+    strict, `ENG_REQUIRE_GPU` ignored, never strict, not run shown as
+    ok, not run counted as caught, a strict not run passing, a miss
+    hidden among not-run cases, and any colour type read.
+
+**Each case is not a no-op.** In a scratch copy, with the rule it relies
+on removed, each reported the violation as not caught and exited 1. With
+the rule back, each passed:
+- `wgpu-outside-gpu`, `winit-outside-platform`: their `[floor]` line
+  deleted from `architecture.toml`. Result: "arch-check accepted the
+  violation".
+- `rwh-outside-seam`: the raw-window-handle wrapper ban deleted from
+  `deny.toml`. Result: "cargo-deny accepted the violation".
+- `core-depends-on-gpu`: the core-set reach check in `arch.rs` switched
+  off. Result: "failed, but without [E-ARCH-CORE-DEP] ...", with only
+  `[E-ARCH-LAYER]` left.
+- `golden-edit`: in Docker on the pinned lavapipe, exact mode in
+  `shots/compare.rs` made to pass whatever differs. Result: "the shots
+  harness passed an edited golden (dot-square-0.png)". This was redone in
+  round 2 through the `png` crate.
+
+**Checks** (on round 2's final code, in the work clone with the patch
+applied on the base; aarch64-apple-darwin, Metal, unless it says Docker):
+- `cargo xtask quick`: 7 of 7. Every file is under 500 lines;
+  `selftest.rs` is 458.
+- `CI=1 cargo xtask ci --job lint`: 7 of 7, cargo-deny and typos
+  included. Round 1's first lint run was red twice: clippy in a test, and
+  typos reading a PNG filter's name. Both were fixed; that PNG code is
+  now gone.
+- `cargo test -p xtask`: 55 tests. With t13a's X2/X6 draft as well (the
+  reviewer's combined clone, this patch's files on top), 85 pass, `clippy
+  -p xtask --all-targets -D warnings` is clean, and `cargo metadata
+  --locked --offline` passes.
+- `cargo xtask selftest`: the 17 earlier cases and the four dependency
+  cases ok. `golden-edit` is `not run` on Metal (`[W-SELFTEST-NOT-RUN]`,
+  quoting the harness's line, which names `macos aarch64 metal Apple M2
+  Pro`). Last line: "selftest: 21 caught, 1 not run (golden-edit); not run
+  is not a pass: CI runs it, and CI=1 or ENG_REQUIRE_GPU=1 makes this
+  fail". Exit 0.
+- `CI=1 cargo xtask selftest`: the same, but `[E-SELFTEST-NOT-RUN]` and
+  "with CI or ENG_REQUIRE_GPU=1 set, a case not run fails". Exit 1.
+  `ENG_REQUIRE_GPU=1 cargo xtask selftest golden-edit`: exit 1.
+- `cargo xtask ci --job selftest`, without `CI`: 22 steps. golden-edit's
+  step is not ok, with the warning under it, and the job fails through
+  `ci.rs` (amendment 83).
+- `cargo xtask replay`: 5 runs, hash streams equal the committed ones;
+  `git status` shows no change under `hashes/` or `scenarios/`.
+- `cargo xtask docs-check`: AGENTS.md 144 of 150 lines; CODEOWNERS covers
+  `protected.toml`.
+- `cargo xtask acceptance` on `acceptance.json` as it is, with this Mac's
+  lint, quick and selftest reports:
+  - `PASS lint-tier` and `PASS agents-md-length`;
+  - `FAIL violations-1b: selftest/violation:golden-edit failed on
+    "aarch64-apple-darwin"`, since a case not run is never counted;
+  - `OWNER owner-play: the owner checks this feature; CI does not compute
+    it`, and 15 features with no report;
+  - the totals: "rung 1b: 2/18 computed features pass; 1 for the owner:
+    owner-play".
+
+  The written file has `"owner": true, "passes": null` for `owner-play`.
+- Docker, on the pinned lavapipe (`eng-t12-lavapipe:25.2.7-gxx`, emulated
+  x86_64, with only `VK_DRIVER_FILES` set), `cargo xtask selftest
+  golden-edit` on round 2's final code, three runs in a row:
+  - caught: "dot-square-0: [E-GOLDEN] 1 of 76800 pixels differ from the
+    golden", the other three shots exact, and `pinned: true`, `mode:
+    exact` in `shots.json`;
+  - with exact mode switched off in `shots/compare.rs`: "the shots
+    harness passed an edited golden", exit 1;
+  - with it back: caught again.
+
+  Each took 13 to 23 s on a warm cache, and 307 s on a cold one.
+- The patch, from a script: a fresh clone of main (f5367f2, after T14's
+  docs), with the six oracle patches committed, then `git apply`. It
+  applies, the staged diff is byte-identical to `t13-checks.patch` (12
+  files), and `cargo metadata --locked --offline` passes there.
+
+**Review** (the `reviewer` subagent, fresh context, read-only, in its own
+clone of the base with the patch staged; 23 min, 299k tokens, 95 tool
+calls). Verdict on round 1: changes needed. Both blockers came from
+applying this patch together with t13a's X2/X6 draft, which the owner
+does at G5:
+1. **Blocker:** a test built `StepResult` with a struct literal, and X2
+   adds a field (`pending`), so the two patches together did not compile.
+   That test went through `Steps::run` instead. In round 2 no test builds
+   a `StepResult` at all.
+2. **Blocker, X6's:** CI's selftest job in t13a's draft installs the
+   pinned Mesa but not cargo-deny, so `rwh-outside-seam` would fail
+   there. This patch cannot fix it. Amendment 80 lists cargo-deny, and
+   the orchestrator has passed it to t13a.
+3. **Should-fix:** the guard blocks `gh run download`, which the skill
+   used. The skill now reads artifacts through `gh api` and unzips
+   outside the repo. The guard binary allows each of those commands
+   (checked one by one) and still blocks the download and an unzip inside
+   the repo.
+4. **Should-fix:** step 2 of the skill assumed the native jobs compare the
+   other runners against ubuntu-24.04's candidates, which X2 does not do.
+   Before G6 the skill now compares runners with `cmp` only; FLIP numbers
+   per runner come from `shot-flip` after G6.
+5. **Nit:** a shot that panics writes its crash file under
+   `target/tmp/shots/render/logs/`, which `crash-native-<runner>` does not
+   hold. The skill says so; X6 could upload that directory too.
+6. **Nit:** an owner feature whose `checks` was not a list passed. It
+   must now be `[]` or absent (test first).
+7. **Nit:** golden-edit empties `target/golden-candidates/` even when it
+   cannot run. Kept: every run of the harness does that (`quick`'s too),
+   and a separate target directory would not be cached by CI's
+   rust-cache. The module doc says so.
+
+It also cross-checked round 1's PNG reader against png 0.18.1 (5,394
+encodings, no difference); that code is gone in round 2. The same
+reviewer then checked the fixes (5 min, 11 tool calls). Points 1 and 3
+to 7 were verified, with t13a's draft applied too, and `quick` was 7 of
+7. Point 2 stays X6's. Its verdict: approve, on condition that the owner
+applies this patch with an X6 whose selftest job has cargo-deny.
+
+The same reviewer then rechecked round 2 (8 min, 24 tool calls). Verdict:
+**approve**, with no blocker or should-fix left.
+- It confirmed the 12 files byte for byte, and that the split is a pure
+  move.
+- The patch alone: 55 tests, strict clippy clean, `fmt --check` clean.
+- With t13a's latest draft (01:20): 89 tests and strict clippy clean.
+- `png` is safe in xtask: one lock line, `--locked --offline` passes, it
+  is on the allow-list with no wrapper ban, and `read_png` decodes as
+  `shots/compare.rs` does.
+- Strictness on this Mac:
+  - nothing set, or `CI=` empty: `[W-SELFTEST-NOT-RUN]`, exit 0;
+  - `CI=1` or `ENG_REQUIRE_GPU=1`: `[E-SELFTEST-NOT-RUN]`, exit 1.
+- The Docker runs agree with the logs.
+- `quick` was 7 of 7.
+- t13a's 01:20 X6 draft now installs cargo-deny 0.20.2 in the selftest
+  job, so round 1's second blocker is gone.
+
+Its one nit: `util::on_ci` takes an empty `CI` as set (for `--locked`),
+while the selftest's strictness, as the orchestrator specified, takes it
+as unset. That does no harm; align the two when X2 touches `util.rs`.
+Its caution for amendment 83: only the lenient `[W-...]` outcome may
+become pending, never a strict `[E-...]`. Otherwise CI's selftest job
+would pass with golden-edit not run. Both are in the amendments.
+
+**Open questions**
+1. **Where `golden-edit` runs.** Acceptance looks for it in the selftest
+   job, so that job needs the pinned Mesa, as the native ubuntu-24.04
+   job does (amendment 80). The other way is to run the case in the
+   native job and point criterion 12's check there, which is an
+   `acceptance.json` change.
+2. **The selftest job gets slower.** It now builds game-testbed's tests
+   (wgpu, nv-flip-sys's C++) for `golden-edit`: a few minutes cold, then
+   rust-cache. The 15-minute PR-tier budget covers it if the jobs run in
+   parallel, as they do.
+3. **X2 with this patch** (amendment 83). A local `cargo xtask ci --job
+   selftest` without `CI` still fails on a case not run, through
+   `ci.rs`'s `finish`. `cargo xtask selftest` does not.
+
+**Costs and timings**
+- Round 1, from 23:51 EET on 2026-10-31:
+  - reading to 23:59; X4 by 00:02; the four dependency cases by 00:04;
+    the PNG code by 00:06; golden-edit and its NOT RUN on Metal by 00:08;
+  - the first Docker run and the `.claude/` files at 00:13, and the
+    not-a-no-op runs at 00:16;
+  - the checks, the patch and its test at 00:19, and the reviewer from
+    00:20;
+  - a Docker re-run at 00:21 reused a stale test binary from the no-op
+    run, because cargo's mtime check missed the restored file. The
+    scripts now touch it;
+  - the planted bugs by 00:34; the review's points at 00:43 and its fixes
+    by 00:50; the final runs at 00:51; the reviewer's check of the fixes
+    at 00:55; delivered at 00:58.
+- Round 2, from about 01:00, the orchestrator's request:
+  - the png crate red, then green, by 01:03 (the lock and metadata were
+    checked at 01:02); the not-run convention red, then green, by 01:05;
+  - Docker on a cold cache (307 s) and the Mac checks to 01:12; round 2's
+    planted bugs and the patch at 01:14; the check with t13a's draft at
+    01:15;
+  - the reviewer from 01:16; the move to `selftest_verdict.rs` at 01:18;
+    the final checks, Docker and the patch at 01:21; the reviewer's
+    approval at about 01:27; this entry.
+- Reviewer subagent: 23 minutes, 299k tokens and 95 tool calls for the
+  review; 5 minutes and 11 tool calls to check the fixes; 8 minutes and
+  24 tool calls for round 2. In all, about 35 minutes and 128 tool calls.
+- Builds: Mac `quick` took 19 to 203 s; the long run rebuilt after a
+  cleanup had removed the seeded `target/`. Docker (emulated x86_64, on a
+  copy-on-write clone of T12's target cache) took 197 and 307 s cold, and
+  12 to 23 s warm.
+- Tokens: not shown to this subagent.
+
+**Integration of T13's two patches** (session 18, t13b, after both
+builders delivered; Claude Opus 5.5, subagent, owner away). t13a's
+`t13-native.patch` and t13b's `t13-checks.patch` were applied together
+on main at 783d0d7 with the six oracle patches, and committed as "T13".
+`t13-integration.patch` (6 files under `xtask/src/`, +209 −59) was built
+on top, test first, at the orchestrator's request:
+1. **Amendment 83, done.** `cargo xtask ci --job selftest` now runs each
+   case through X2's `run_judged` (`verdict::judged`). Only a case not
+   run here (`[W-SELFTEST-NOT-RUN]`) becomes `Done::Pending`; a strict
+   `[E-SELFTEST-NOT-RUN]` stays a failure. Without `CI` the job exits 0,
+   with `violation:golden-edit` pending (`ok: false, pending: true` in
+   the report). With `CI=1` it fails.
+2. **One rule for "strict":** `util::on_ci()` (`CI` set to anything,
+   even empty, as for `--locked`) or `ENG_REQUIRE_GPU=1`. This replaces
+   the "set and not empty" of t13b's decision 4 and amendment 78.
+3. **Amendment 66, done.** `cargo xtask acceptance` shows a feature whose
+   only miss is a pending step as `PENDING <id>: <job>/<step> is pending
+   on <target>: <the step's first detail line>`. The feature keeps
+   `passes: false`, and gains `"pending": true` and a `why_not`. A
+   failure in any check outranks a pending one, and a missing report or
+   step is still a failure. The totals add ", N pending", and the
+   session-start line lists pending features apart.
+4. **Amendment 71's first point, done.** `ci::JOBS` is the one list of
+   jobs. The unknown-job error and xtask's usage line, which now names
+   `native` and `summary`, both use it, and a test holds the usage line
+   to it. AGENTS.md's job list and 71's second point (the Windows-only
+   unused `link` in `guard_tests.rs`) are untouched.
+
+**Tests:** five new and two changed (`judged`, strictness, two
+acceptance cases, a hand-written `pending`, the session line, the usage
+line). Each was watched failing first. With both patches there are 94
+xtask tests.
+
+**Checks** on the combined tree (aarch64-apple-darwin):
+- `quick` 7 of 7; `CI=1 cargo xtask ci --job lint` 7 of 7.
+- `cargo xtask selftest`: exit 0, "21 caught, 1 not run (golden-edit)".
+  With `CI=1`: exit 1. With `CI=` (empty): exit 1.
+- `cargo xtask ci --job selftest` without `CI`: exit 0, golden-edit
+  pending. With `CI=1`: exit 1.
+- `cargo xtask acceptance` on those reports: "PENDING violations-1b:
+  selftest/violation:golden-edit is pending on …" and "rung 1b: 2/18
+  computed features pass, 1 pending; 1 for the owner: owner-play".
+- Replay unchanged; `docs-check` ok.
+- The patch applies to a second clone rebuilt the same way and gives the
+  same tree.
+
+**Review:** the `reviewer` subagent (read-only, on the second clone)
+approved, with no blocker. It confirmed three things:
+- no strict outcome can become pending;
+- the order is failure, then pending, then pass, and a missing report or
+  step is still a failure;
+- t13a's `Steps` and `Done` code is untouched.
+
+On its tree, 93 tests pass and strict clippy is clean. It took about 5
+minutes and 4 tool calls; the account's usage limit had paused this
+round from 02:31 to 04:30. Its three nits:
+- the doc comment on `strict()` still said "not empty". Fixed;
+- a hand-written `pending` was not refused as `passes` is. It is now
+  refused, test first;
+- AGENTS.md's job list still lacks `native`. That is docs, and is left
+  out of this patch.
+
+After those two fixes: 94 xtask tests, `CI=1 cargo xtask ci --job lint`
+green, and the patch rebuilt, applying to a fresh clone with the same
+tree.
+
+## 2026-11-01, session 18: T15, the second rung review, and T13 as one patch (Claude Opus 5.5, orchestrator, owner away)
+
+**The review.** A fresh `reviewer` subagent read the whole G5 package as
+the owner will apply it: the six oracle patches, then t13a's
+`t13-native.patch` and t13b's `t13-checks.patch`, on main at 783d0d7, in
+the integration clone. Its brief asked for the acceptance contract (every
+check's producer, job and target), the workflow on the five real runners,
+the supply chain and permissions, xtask's verdicts (nothing passing
+vacuously), and the morning sequence.
+- Verdict: approve. No blocker and no should-fix; three nits.
+- Every one of acceptance.json's checks has a producer under its own name,
+  job and target. A report's target is `rustc -vV`'s host, and the
+  windows-11-arm job fails unless its host is aarch64. Pending shots fail
+  no job and keep criteria 4 and 5 false. golden-edit runs in CI's
+  selftest job, which is strict and has the pinned Mesa and cargo-deny.
+  owner-play is listed, never computed.
+- The supply chain: every action pinned by SHA, Mesa and WARP checked by
+  SHA-256 before they are unpacked, `permissions: {}` with `contents:
+  read` per job, no `${{ }}` inside `run:`, `pull_request` only, no
+  secrets, no `curl | sh`.
+- The morning sequence: the eight patches then on disk applied in one
+  `git apply` on a clean 783d0d7 and gave the integration clone's tree.
+- It ran `quick` (7 of 7), xtask's tests (89), the lint job (7 of 7) and
+  the selftest on this Mac (21 caught, golden-edit not run, exit 0).
+- Its table, for the first CI run after G5: at best 16 of the 19
+  features pass; 4 and 5 stay pending until G6, and 16 is the owner's
+  (G7). Six of the 16 (1, 2, 3, 6, 9 and 18) also need Windows (WARP,
+  FXC, a window on a runner) and macos-26's paravirtual Metal, which have
+  never run. Its time: 12 minutes,
+  282k tokens, 24 tool calls, plus a pause from 02:35 to 04:30, when the
+  account's 5-hour usage limit stopped every agent.
+
+**What was done with the nits**
+1. The workflow found Ubuntu's lavapipe ICD with `ls ... | head -n 1`.
+   An i686 ICD would sort first and the 64-bit loader would skip it, and
+   under `bash -eo pipefail` a missing ICD failed before the error message.
+   Fixed: the step names `lvp_icd.x86_64.json` and tests it with `-f`.
+2. `ci_native_tests.rs` unwrapped `checks`, which X4 lets an owner feature
+   leave out. Fixed: a missing `checks` reads as none.
+3. Only the native checks are tied to their producers by a test; the
+   selftest, summary and test-job steps match acceptance.json by name only,
+   so a rename would show as a false feature, not a red job. All 19 match
+   today. Left as amendment 94.
+
+**T13 as one patch.** `docs/rungs/1b/patches/t13-x2-x6.patch` holds
+t13a's and t13b's patches, t13b's integration round (above, in its entry)
+and the two fixes. Its base is main plus the six oracle patches. On the
+combined tree: actionlint clean, `quick` 7 of 7, `CI=1 cargo xtask ci
+--job lint` 7 of 7, 94 xtask tests, the selftest exit 0 with "21 caught, 1
+not run (golden-edit)", `cargo metadata --locked --offline` ok. One `git
+apply` of the six oracle patches and this one on a fresh clone of 783d0d7
+gives the same tree, object for object. The two builders' separate
+patches are not committed: this one replaces them.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1
@@ -6172,3 +7136,241 @@ otherwise have to change; the owner applies it, or unlocks the path.
     window opens. A library target for game-testbed would let the twin use
     the binary's `GAME`, so CI's test job (no display) would catch a wrong
     value in `src/main.rs` too.
+
+62. **Amendment from session 18, T13** (proposal 7, X2, X3 and X6; G5).
+    `docs/rungs/1b/patches/t13-native.patch` (the orchestrator files it
+    there), applied after the six oracle patches and with t13b's patch, in
+    one sitting. It holds:
+    - `cargo xtask ci --job native`;
+    - the summary's native streams, `native-duration`, and `pr-duration`
+      measured to the PR tier's last job;
+    - the workflow's five native jobs, and the selftest job's pinned Mesa
+      and cargo-deny;
+    - a timeout on every job;
+    - `budgets.toml [ci] native_job_minutes = 25`.
+
+    Then push: the first run is T16's source of candidates.
+63. **Amendment from session 18, T13** (to plan decision 3, criterion 4's
+    text, spec 8.3's Linux row, and amendment 57). The pinned Mesa 25.2.7
+    from build26 has no window system: its lavapipe offers only
+    `VK_EXT_headless_surface`. So `ubuntu-24.04` also installs Ubuntu's
+    lavapipe for windows, and the pinned one renders the shots, the budget
+    shot and the proof video, by name (decision 4). Suggested plan text for
+    criterion 4: "... exactly, on Mesa 25.2.7 lavapipe (gfx-rs/ci-build
+    build26) with a fixed llvmpipe environment; windows on that runner use
+    Ubuntu's lavapipe, since the pinned build has no X11 surface." When the
+    Mesa pin moves (ADR-0011's revisit), check the new build's surfaces
+    and the ICD order.
+64. **Amendment from session 18, T13** (to `plan.md`'s T13 row, with
+    amendments 37 and 46). The `esc` step runs `play.rs`'s Escape test by
+    exact name. Suggested row text: "the esc step runs play.rs's Escape
+    test: `xdotool search --pid`, `windowfocus --sync`, `key Escape`".
+65. **Amendment from session 18, T13** (to proposal 7, X6). The pins and
+    where they came from:
+    - Mesa 25.2.7: `629bb3ce...5809`, from T7's check of the release asset
+      (build26 has only the x86_64 asset);
+    - WARP 1.0.20 (NuGet `Microsoft.Direct3D.WARP`, the version wgpu's
+      `install-warp` uses): SHA-256
+      `e5fe5de661ce98b58ef9cfb736e73c0a7a2623d3bbf5f14839b2d55566d87e40`,
+      computed here. The package's SHA-512 matches NuGet's catalog entry
+      (published 2026-05-28). It holds `build/native/bin/{x64,arm64,win32}/d3d10warp.dll`;
+    - the actions: the SHAs `ci.yml` already pinned (checkout,
+      rust-cache, install-action, upload-artifact, download-artifact);
+    - nextest 0.9.148, as in the test job.
+66. **Amendment from session 18, T13** (to X4, `xtask/src/acceptance.rs`,
+    t13b's). A pending step is `"ok": false, "pending": true` in a report.
+    `acceptance` counts it as not passed, which is right, but its reason
+    reads "native/shot-exact failed on ...". "... is pending (no golden
+    yet)" would say what the owner should do.
+67. **Amendment from session 18, T13** (criterion 13's text). The budget
+    is held against the slowest native job, and each job's minutes are
+    listed; a job missing or unfinished fails the step. If the owner meant
+    the tier's wall time (first start to last end), it is a one-line
+    change in `native_duration`.
+68. **Amendment from session 18, T13** (criterion 7). `compare-hashes`
+    now names the eight artifacts it needs and compares each with the
+    committed streams, not only with each other. Adding a runner changes
+    `RUNNERS` and the workflow's matrix together; a test holds them equal.
+69. **Amendment from session 18, T13** (`.github/workflows/ci.yml`). Two
+    choices beyond the brief:
+    - two artifacts beyond the fixed names: `hashes-native-<runner>` (for
+      compare-hashes) and `logs-native-<runner>` (every step's full log);
+    - every job's timeout, at the orchestrator's request: native 45
+      minutes; lint, test, riscv, wasm, selftest and summary 30; the `ci`
+      gate 5. The PR tier's jobs took 0.5 to 3 minutes warm before wgpu.
+      The native budget is 25, so 45 lets a slow first run finish and be
+      measured.
+70. **Amendment from session 18, T13** (`.gitattributes`, not protected).
+    The native job keeps CRLF out of Windows checkouts with `core.autocrlf
+    false`. A `.gitattributes` holding `*.txt text eol=lf` (or `-text` for
+    `crates/game-testbed/hashes/`) would keep a developer's Windows
+    checkout byte-exact too.
+71. **Amendment from session 18, T13** (`xtask/src/main.rs`,
+    `xtask/src/guard_tests.rs`, AGENTS.md). Two small follow-ups:
+    - AGENTS.md's job list and xtask's usage line do not name `native` (or
+      `summary`). This patch leaves `main.rs`'s usage alone, so its hunk
+      stays apart from t13b's.
+    - On Windows targets, `guard_tests.rs` warns about an unused `link`
+      (line 92; the symlink case is Unix-only). It fails only clippy with
+      `-D warnings` for Windows, which no job runs. `let _link` or a
+      `#[cfg(unix)]` would silence it.
+72. **Amendment from session 18, T13** (`.config/nextest.toml`, protected;
+    G5 "as needed", amendment 11). The T15 reviewer found that `play.rs`'s
+    tests and `crash_json.rs`'s `play` half wait for their child with no
+    deadline, and that GPU readback waits indefinitely. Jobs now have
+    timeouts (amendment 69), but one hung test would still cost a native
+    job its 45 minutes. Proposed, for the profile CI's test and native jobs
+    use:
+
+    ```toml
+    [profile.ci]
+    fail-fast = false
+    # A test still running after 5 minutes is stopped and fails, so a hung
+    # present or readback names its test instead of timing the job out.
+    slow-timeout = { period = "60s", terminate-after = 5 }
+    ```
+
+    The slowest tests tonight took seconds: the shot harness's four shots,
+    and `play` for 240 ticks. Doctests run under `cargo test` and stay
+    bounded by the job's timeout only.
+73. **Amendment from session 18, T13** (to amendments 57 and 61). Two
+    points are still open:
+    - amendment 61's second point: in exact mode, a drifted configuration
+      leaves no candidates in the artifact. That is a change to `shots.rs`,
+      the owner's at G5;
+    - amendment 57's optional cross-runner FLIP against ubuntu-24.04's
+      candidates is not wired in (open question 4).
+74. **Amendment from session 18, T13** (`ENG_CI_STEPS`, new). The native
+    job runs only the named steps when it is set, which was useful under
+    emulation. The report lists them under `only_steps`, so a subset can
+    never pass acceptance unnoticed: the missing steps fail their checks.
+
+75. **Amendment from session 18, T13** (to proposal 7, X4; G5). X4 as
+    built, in `t13-checks.patch`: a feature with `"owner": true` is
+    listed and never computed. In `target/ci/acceptance.json` it gets
+    `"passes": null`, never true or false. The summary gives it its own
+    line, `OWNER <id>: the owner checks this feature; CI does not compute
+    it`, and the totals leave it out: `rung 1b: N/18 computed features
+    pass; 1 for the owner: owner-play`. The session-start hook lists it as
+    "for the owner", not as failing. An owner feature's `checks` must be
+    `[]` or absent, and `owner` must be true or false; otherwise the
+    computation fails, as for `passes` written by hand. The rung is done
+    when every computed feature passes and the owner accepts at G7,
+    recorded in that sitting's `PROGRESS.md` entry. The G7 row changes no
+    file.
+76. **Amendment from session 18, T13** (to `docs/rungs/1b/acceptance.json`,
+    feature `owner-play`; the owner's file). Once X4 lands, the clause
+    "until patch X4 teaches `cargo xtask acceptance` owner-checked
+    features, it reports no checks" no longer holds. Suggested
+    description ending: "CI does not compute this feature (`owner:
+    true`): `cargo xtask acceptance` lists it as the owner's, with
+    `passes: null`, and counts it neither way." If the owner would rather
+    record the acceptance in the file, a follow-up to X4 could read an
+    owner-written `"accepted": "<date>"` on the feature, print `OWNER
+    owner-play: accepted by the owner on <date>` and count it as passing.
+    It is not built, because the G7 row changes no file.
+77. **Amendment from session 18, T13** (to proposal 7, X5; criterion 12).
+    X5 as built: the five cases, what each changes and the text each
+    expects are in session 18's decisions 2 and 3. Their step names,
+    `violation:<case>`, are the ones `acceptance.json` lists. Each
+    was shown to catch its violation and to report "not caught" with
+    its rule removed. The 17 earlier cases are unchanged.
+78. **Amendment from session 18, T13** (to proposal 7, X5; a case that
+    cannot run; rewritten in round 2 at the orchestrator's request).
+    - **The default, as built:** a case that lacks what it needs (golden-edit
+      without the pinned lavapipe, rwh-outside-seam without cargo-deny)
+      fails only a strict run, as GPU tests do (plan decision 4). Strict
+      means `CI` set and not empty, or `ENG_REQUIRE_GPU=1`. There it is
+      `[E-SELFTEST-NOT-RUN]` and `cargo xtask selftest` exits 1.
+    - Elsewhere it is `[W-SELFTEST-NOT-RUN]`, naming the case and what it
+      needs. Its line says `not run`, and `cargo xtask selftest` exits 0.
+    - Either way the step is not ok, so acceptance never counts it, and
+      the last line says "N caught, M not run (names)". The selftest stays
+      green on a Mac without counting golden-edit as caught.
+    - **The alternative for the owner** (round 1's): a case not run fails
+      every run. `selftest` is then red on every machine without the
+      pinned Mesa, including every Mac.
+    - The docs (T14) may want a note beside `cargo xtask selftest` in
+      AGENTS.md: `CI=1` makes a case not run fail, as on CI.
+79. **Amendment from session 18, T13** (to proposal 7, X5; xtask's
+    dependencies, protected; round 2). `golden-edit` reads and writes PNG
+    through the `png` crate.
+    - `xtask/Cargo.toml` gains `png = "=0.18.1"`, the version the
+      workspace already locks (crate batch 2).
+    - `Cargo.lock` gains one line, `png` in xtask's own dependency list,
+      and nothing else. `cargo metadata --locked --offline` passes.
+    - arch-check and `cargo deny check` pass with `architecture.toml` and
+      `deny.toml` unchanged.
+    - Round 1 carried a PNG reader and writer of its own (400 lines with
+      inflate), because the brief then read "no new dependency for xtask".
+      The orchestrator clarified that it meant no new third-party crate.
+    - The xtask binary is also the guard hook, so png and its deflate
+      crates now build into the guard as well (the reviewer's note).
+80. **Amendment from session 18, T13** (to proposal 7, X6: CI's
+    `selftest` job; for builder t13a). With X5 the job needs:
+    - to stay on `ubuntu-24.04` (x86_64): `golden-edit` runs only on the
+      pinned configuration;
+    - the pinned Mesa, as in the native ubuntu-24.04 job:
+      `https://github.com/gfx-rs/ci-build/releases/download/build26/mesa-25.2.7-linux-x86_64.tar.xz`,
+      SHA-256
+      `629bb3cebcd8845e496106e83bfafbee4521f8b7087e9767d083cf5a73285809`,
+      extracted (T7 used `/opt/mesa`);
+    - an ICD file written beside it, because the tarball's own points
+      into its build machine: `{"file_format_version": "1.0.0", "ICD":
+      {"library_path": "<dir>/lib/x86_64-linux-gnu/libvulkan_lvp.so",
+      "api_version": "1.4.0"}}`, with `VK_DRIVER_FILES` set to its path;
+    - Ubuntu's `libvulkan1` (the loader) and `libllvm18`, which that
+      lavapipe links. T7's image also installs `libdrm2`, `libexpat1`,
+      `libzstd1` and `zlib1g`;
+    - cargo-deny 0.20.2 for `rwh-outside-seam`, installed as in the lint
+      job (`taiki-e/install-action`). CI is strict, so without it the
+      case fails and the job is red. t13a's draft at 00:22 did not have
+      it (the review's second blocker);
+    - nothing else. The case sets `ENG_REQUIRE_GPU=1` and
+      `ENG_SHOT_MODE=exact` for its own runs and sets or clears
+      `ENG_GOLDEN_DIR` itself. The harness sets `LP_NATIVE_VECTOR_WIDTH=256`
+      and removes every other `LP_*` and `GALLIVM_*`. `ENG_GPU_ADAPTER` is
+      optional, there is no display (shots are offscreen), and the
+      runner's `g++` builds nv-flip-sys.
+
+    Separately, for the native jobs: a shot that panics inside the
+    harness writes its `crash-*.json` under
+    `target/tmp/shots/render/logs/` (the harness's `ENG_AGENT_LOG_DIR`),
+    which `crash-native-<runner>` does not hold unless X6 uploads that
+    directory too.
+81. **Amendment from session 18, T13** (to amendment 58). Two departures
+    from its sketch:
+    - the copy goes to `target/selftest/golden-edit/golden/`, inside
+      `target/` but outside `golden-candidates/`, which is all the harness
+      asks (`ENG_GOLDEN_DIR`'s check);
+    - only the GPU test, `shots_match_their_goldens`, runs (`--exact`),
+      so the twelve GPU-free tests do not run twice.
+82. **Amendment from session 18, T13** (to the G5 row for `.claude/**`;
+    amendment 61). `.claude/skills/golden-update/SKILL.md` and
+    `.claude/agents/visual-qa.md` are in `t13-checks.patch`, for T16 and
+    G6. visual-qa has only Read, Grep and Glob. `settings.json` is
+    unchanged. `docs/ARCHITECTURE.md` or AGENTS.md may name both (T14).
+83. **Amendment from session 18, T13** (to proposal 7, X2 with X5; for
+    the integrator). X2 adds `pending` to the job's steps: not ok, and
+    failing no job. Once both patches are in, `selftest::steps` should
+    report a case not run in a non-strict run as pending
+    (`Steps::run_judged`, `Done::Pending`). A local `cargo xtask ci --job
+    selftest` or `ci --job all` would then fail no job for it either.
+    On CI the run is strict, so nothing changes there. This patch cannot
+    do it alone, since it must apply without X2. Until then a local
+    non-strict job lists that step as FAILED, with the warning under it.
+    Only the lenient `[W-SELFTEST-NOT-RUN]` outcome may become pending,
+    never a strict `[E-SELFTEST-NOT-RUN]`, or CI's selftest job would
+    pass with golden-edit not run (the reviewer's caution). When X2
+    touches `util.rs`, it can also align `on_ci`, which takes an empty
+    `CI` as set, with the selftest's strictness, which does not.
+
+94. **Amendment from session 18, T15** (to proposal 7; xtask, protected).
+    Extend `every_native_check_in_acceptance_finds_its_step` to every
+    job: each check in acceptance.json names a step that its job really
+    produces on its target (`violation:*` from the selftest cases,
+    `compare-hashes` and `native-duration` from the summary, the test
+    job's harness steps, `docs-check`). Today only the native checks are
+    bound; a renamed step elsewhere would make a feature false without
+    turning any job red. Low priority: reviewer B matched all 19 features
+    by hand.

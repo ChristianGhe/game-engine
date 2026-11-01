@@ -6363,6 +6363,68 @@ crates.
   game-testbed` replaces the binary that the tests of a concurrent `quick`
   are running.
 
+## 2026-11-01, session 18 (continued): the first native run, red for five reasons (Claude Opus 5.5, with the owner)
+
+The owner pushed `main` (f99431b). CI run 41297620605 took 11 minutes (10:28
+to 10:39 UTC) and failed. Windows and macOS had never run before.
+
+- **What worked the first time:**
+  - `lint`, `wasm`, `riscv` and `selftest` are green.
+  - On macos-26, windows-2025, windows-11-arm and ubuntu-24.04-arm, `replay`,
+    `crash-json`, `version`, `window` and `gpu-budgets` pass, and `shot-flip`
+    is pending with its candidates, as it should be before G6. The adapters
+    are `Apple Paravirtual device`, `Microsoft Basic Render Driver` and
+    `llvmpipe (LLVM 20.1.2, 256 bits)`. `check-intel-mac` passes.
+  - The five hash streams are identical on all seven sets that exist (RISC-V,
+    both PR-tier Linux targets, and the four native jobs above). This was
+    compared by hand with `cmp`: `compare-hashes` stopped at the missing eighth
+    set, ubuntu-24.04's native job, so CI has not said so yet.
+  - Durations: PR tier 3.8 min; native jobs 4.5, 6.2, 6.9 and 10.5 min, against
+    a budget of 25.
+- **Acceptance:** 6 of 19 pass (shaders, wire-session, violations-1b,
+  native-duration, lint-tier, agents-md-length) and `owner-play` is the
+  owner's. Ten of the others say `no report from job native on
+  x86_64-unknown-linux-gnu`, so they follow from cause 5 below.
+- **The causes.** Each message is from the run's logs:
+  1. **Every runner: `fetches_githubs_main_when_it_is_missing`, my test.**
+     `error: src refspec main does not match any`. `setup` ran `git init
+     --bare` with no branch, so the stand-in's HEAD is git's default, and a
+     clone checks out what HEAD names. Xcode's git sets `init.defaultBranch=main`
+     in its system config, so the test passed on this Mac; on CI the default
+     is `master` and the clone stayed empty. Reproduced here with `-b master`:
+     the same message, on this test alone.
+  2. **Windows: the other eight push tests, also mine.** `hostname contains
+     invalid characters`: `fs::canonicalize` gives `\\?\C:\...`, and git read
+     that URL as a host. Only the tests pass such a URL; the real one is
+     `https://`. `git -C \\?\...` itself works: `git init` and `git commit`
+     got through it in the same setup.
+  3. **Windows: `build`.** `failed to remove file ...\target\debug\xtask.exe:
+     Access is denied`. A workspace build compiles xtask again and replaces
+     the program that is running it. Seen here too: the binary's inode changes
+     with `--workspace` and stays the same with `--exclude xtask`. Linux and
+     macOS allow the replacement, so only Windows fails.
+  4. **Windows: `the_scan_skips_only_the_build_and_hidden_directories_at_the_root`.**
+     The test compares `crates\a\...` with `crates/a/...`.
+  5. **ubuntu-24.04's native job stopped in its setup.** `mesa-vulkan-drivers
+     installed no x86_64 lavapipe ICD`. Ubuntu's package
+     25.2.8-0ubuntu0.24.04.4 installs `lvp_icd.json`, read from the package
+     itself; its `library_path` is the bare `libvulkan_lvp.so` that the
+     workflow's comment already expected. `lvp_icd.x86_64.json` had never run:
+     this step only runs on GitHub.
+- **The fix:** `docs/rungs/1b/patches/ci-first-run.patch`, for the owner: all
+  five, plus `has` sending stderr to null (the second half of amendment 98) and
+  `symlinks_into_the_repo_are_followed` moved under `#[cfg(unix)]`, which
+  removes Windows' one compiler warning.
+- **Checked** on aarch64-apple-darwin, in a scratch clone with the patch:
+  `quick` 7 of 7; `CI=1 cargo xtask ci --job lint` 7 of 7; xtask's 102 tests
+  with `GIT_CONFIG_NOSYSTEM=1`, so git's default branch is `master` as on CI.
+  The patch applies to f99431b and gives the same tree.
+- **Not checked, and it cannot be here:** causes 2 to 5 only run on CI. In
+  ubuntu-24.04's native job, `shot-exact`, `esc`, `proof-video` and the two
+  lavapipe ICDs loaded together have never run, so that job may show more.
+- **Lesson:** "102 xtask tests pass" was true on one machine. A test that runs
+  git inherits that machine's settings, so name what it depends on.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1

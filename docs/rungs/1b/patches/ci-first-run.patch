@@ -1,0 +1,112 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 85cc935..70c947b 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -243,11 +243,11 @@ jobs:
+           # would resolve to the pinned library if that one loaded first. The
+           # shots, the budget shot and the proof video name the pinned
+           # adapter; windows can only open on Ubuntu's (xtask, ci_native.rs).
+-          # Named, not globbed: an i686 ICD would sort first and the 64-bit
+-          # loader would skip it.
+-          distro=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
++          # The name mesa-vulkan-drivers 25.2.8-0ubuntu0.24.04.4 gives it: one
++          # file for every architecture, with no architecture in its name.
++          distro=/usr/share/vulkan/icd.d/lvp_icd.json
+           if [ ! -f "$distro" ]; then
+-            echo "::error::mesa-vulkan-drivers installed no x86_64 lavapipe ICD ($distro)"
++            echo "::error::mesa-vulkan-drivers installed no lavapipe ICD ($distro)"
+             exit 1
+           fi
+           echo "VK_DRIVER_FILES=$distro:$mesa/lvp_icd.json" >> "$GITHUB_ENV"
+diff --git a/crates/eng-gpu/tests/shaders.rs b/crates/eng-gpu/tests/shaders.rs
+index 4261229..42b78a2 100644
+--- a/crates/eng-gpu/tests/shaders.rs
++++ b/crates/eng-gpu/tests/shaders.rs
+@@ -238,6 +238,7 @@ fn the_scan_skips_only_the_build_and_hidden_directories_at_the_root() {
+                 .expect("inside")
+                 .display()
+                 .to_string()
++                .replace('\\', "/")
+         })
+         .collect();
+     assert_eq!(
+diff --git a/xtask/src/ci_native.rs b/xtask/src/ci_native.rs
+index 93091a9..b15717e 100644
+--- a/xtask/src/ci_native.rs
++++ b/xtask/src/ci_native.rs
+@@ -257,12 +257,20 @@ fn arg(root: &Path, path: &str) -> String {
+     root.join(path).display().to_string()
+ }
+ 
+-/// The workspace and every test target build (criterion 1).
++/// The workspace and every test target build (criterion 1). Not xtask's: it
++/// is the program running this, which cargo cannot replace on Windows, and
++/// `cargo xtask` and the `tests` step build its binary and its tests anyway.
+ fn build(root: &Path) -> Result<Done, String> {
+     pass(ci::cargo_step(
+         root,
+         "native-build",
+-        &["build", "--workspace", "--all-targets"],
++        &[
++            "build",
++            "--workspace",
++            "--exclude",
++            "xtask",
++            "--all-targets",
++        ],
+     ))
+ }
+ 
+diff --git a/xtask/src/guard_tests.rs b/xtask/src/guard_tests.rs
+index 35be60e..4d16614 100644
+--- a/xtask/src/guard_tests.rs
++++ b/xtask/src/guard_tests.rs
+@@ -87,12 +87,11 @@ fn root_manifest_tables() {
+ }
+ 
+ #[test]
++#[cfg(unix)]
+ fn symlinks_into_the_repo_are_followed() {
+     let root = repo();
+     let link = root.join("crates/innocent.toml");
+-    #[cfg(unix)]
+     std::os::unix::fs::symlink(root.join("deny.toml"), &link).unwrap();
+-    #[cfg(unix)]
+     assert!(matches!(
+         decide_in(&root, "Write", json!({ "file_path": link }), &[]),
+         Decision::Block(_)
+diff --git a/xtask/src/push_tests.rs b/xtask/src/push_tests.rs
+index af4b10d..0291342 100644
+--- a/xtask/src/push_tests.rs
++++ b/xtask/src/push_tests.rs
+@@ -3,7 +3,7 @@
+ 
+ use std::fs;
+ use std::path::{Path, PathBuf};
+-use std::process::Command;
++use std::process::{Command, Stdio};
+ use std::sync::atomic::{AtomicU32, Ordering};
+ 
+ use super::push;
+@@ -36,8 +36,12 @@ fn setup() -> (PathBuf, PathBuf) {
+     let _ = fs::remove_dir_all(&dir);
+     fs::create_dir_all(dir.join("work")).unwrap();
+     let dir = fs::canonicalize(dir).unwrap();
++    // Without Windows' `\\?\`: git would read such a path as a host name.
++    let dir = PathBuf::from(dir.to_str().unwrap().trim_start_matches(r"\\?\"));
+     let (hub, work) = (dir.join("hub.git"), dir.join("work"));
+-    git(&dir, &["init", "-q", "--bare", "hub.git"]);
++    // `-b`, because a clone checks out what HEAD names and git's default
++    // branch depends on the machine: `main` from Xcode's git, `master` on CI.
++    git(&dir, &["init", "-q", "--bare", "-b", "main", "hub.git"]);
+     git(&work, &["init", "-q", "-b", "main"]);
+     fs::write(work.join(".gitignore"), "target/\n").unwrap();
+     fs::write(work.join("deny.toml"), "").unwrap();
+@@ -174,6 +178,7 @@ fn fetches_githubs_main_when_it_is_missing() {
+             .arg("-C")
+             .arg(&work)
+             .args(["cat-file", "-e", &format!("{id}^{{commit}}")])
++            .stderr(Stdio::null())
+             .status()
+             .unwrap()
+             .success()

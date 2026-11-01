@@ -6425,6 +6425,69 @@ to 10:39 UTC) and failed. Windows and macOS had never run before.
 - **Lesson:** "102 xtask tests pass" was true on one machine. A test that runs
   git inherits that machine's settings, so name what it depends on.
 
+## 2026-11-01, session 18 (continued): T16 and T17, the first green native run and what the owner gets (Claude Opus 5.5, with the owner)
+
+The owner applied `ci-first-run.patch` (6443ea5) and pushed. CI run 41302087332
+was green on every job, in 9.6 minutes (11:29 to 11:39 UTC), the first time all
+five native runners have passed. T16 and T17 were done together from this run.
+
+- **Numbers from the run:**
+  - `compare-hashes: 5 streams identical across 9 directories`.
+  - The PR tier took 2.5 min. The native jobs took 4.1 min (ubuntu-24.04), 5.1
+    (ubuntu-24.04-arm), 7.8 (macos-26), 8.4 (windows-2025) and 8.8
+    (windows-11-arm), against a budget of 25.
+  - Acceptance: 16 of 19 pass. `shot-exact` and `shot-flip` are pending until
+    G6, and `owner-play` is the owner's (G7). That is the most this run could
+    give.
+- **T16, the candidates** (`golden-candidates-<runner>`, fetched through the
+  API as the `golden-update` skill says):
+
+  | Shot | Reference, ubuntu-24.04 (SHA-256) | ubuntu-24.04-arm | macos-26 | windows-2025 | windows-11-arm |
+  |---|---|---|---|---|---|
+  | `dot-square-0` | `c6cb0547eb48a67e` | same bytes | same bytes | same bytes | same bytes |
+  | `dot-square-120` | `bd264452cd2f5ef4` | same bytes | same bytes | same bytes | same bytes |
+  | `dot-square-240` | `d1726b1ecac42ebc` | same bytes | same bytes | same bytes | same bytes |
+  | `ten-dots-0` | `8bb9845b5e6aa2c2` | same bytes | same bytes | same bytes | same bytes |
+
+  - **The reference is valid:** its `shots.json` says `mode: exact`, `pinned:
+    true`, `llvmpipe (LLVM 18.1.3, 256 bits)`, `Mesa 25.2.7 (LLVM 18.1.3)`.
+  - **The runners really differ:** their reports name llvmpipe with LLVM 20.1.2
+    on Vulkan, `Apple Paravirtual device` on Metal, and `Microsoft Basic Render
+    Driver` on D3D12 on x64 and arm64. Each single-dot image has only three
+    colours: the dots have hard edges, with nothing blended for a renderer to
+    round differently. T12 saw the same on an M2 Pro.
+  - **The images:** all four are 320x240 with alpha 255 everywhere. Each
+    separate dot's centre is within 0.15 px of `dump-world`'s position, at 40
+    px per metre with y flipped; the colours that appear twice, or overlap,
+    were not compared one by one.
+  - **Things the owner may notice:** `dot-square-240` ends 12 px above its start
+    (y 3.58 against 3.28 in the simulation). `ten-dots-0` has eight slot colours
+    for ten dots, so orange and blue repeat, and green shows only 103 pixels
+    from under a blue dot.
+  - **A dry run of G6**, in a scratch clone with the candidates as
+    `ENG_GOLDEN_DIR`: on this Mac's Metal (Apple M2 Pro), `shots_match_their_goldens`
+    passes with FLIP 0 and 0 differing pixels on all four. `ENG_SHOT_MODE=exact`
+    refuses this Mac, as it should: only the pinned configuration compares
+    exactly. So `shot-exact` has not yet compared against a committed golden.
+- **T17, for G7:**
+  - `proof.apng` from the run: 241 frames at 1/60 s, 4.02 s, looping. Frames 0,
+    120 and 240 have the same pixels as the three `dot-square` candidates.
+  - The session: the same walk in a real window (`play --ticks 240 --input
+    dot-square.input.toml`), then live (`play`). W moves the dot up, D to its
+    right (`crates/game-testbed/tests/play.rs`), and Esc quits. Nothing has
+    pressed real keys on a Mac window; that is what G7 checks.
+- **The files** are outside the repo, in this session's scratch folder, so they
+  will not outlive it: the owner copies the four candidates in for G6.
+- **The AI budget:** by the wrap-up's count, T16 and T17 are sessions 29 and 30
+  of 30. The fixes from the first native run make 31, one over, as the wrap-up
+  warned would be the owner's call; the owner applied them. Any failure after
+  G6 adds to that.
+- **Next, the owner's third sitting:** watch, play, then accept or send back
+  (G7), and commit the goldens (G6). `thresholds.toml` is already in, with
+  mean 0.01, p99 0.2 and p999 0.5. The plan's G6 row proposed only the first
+  two; the third came from T12 and catches a missing dot. With every runner on
+  the same bytes, all FLIP numbers are 0 today. CI should then show 18 of 19.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1

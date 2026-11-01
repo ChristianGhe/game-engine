@@ -8,15 +8,20 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
 
-use serde_json::json;
-
 use crate::util::{self, Steps};
-use crate::{arch, docs, replay, selftest, size};
+use crate::{arch, ci_durations, ci_native, ci_report, ci_verdicts, docs, replay, selftest, size};
+
+/// The jobs `cargo xtask ci --job` runs, as its error and the usage text
+/// (`main.rs`) list them.
+pub const JOBS: [&str; 8] = [
+    "lint", "test", "riscv", "wasm", "selftest", "native", "summary", "all",
+];
 
 pub const RISCV: &str = "riscv64gc-unknown-linux-gnu";
 pub const WASM: &str = "wasm32-unknown-unknown";
 
-fn cargo_step(root: &Path, name: &str, args: &[&str]) -> Result<String, String> {
+/// `cargo <args>` in `root`, with `--locked` on CI.
+pub(crate) fn cargo_command(root: &Path, args: &[&str]) -> Command {
     let mut args = args.to_vec();
     if util::on_ci() && !matches!(args.first(), Some(&("fmt" | "deny"))) {
         // After the subcommand, never after a `--`.
@@ -29,6 +34,22 @@ fn cargo_step(root: &Path, name: &str, args: &[&str]) -> Result<String, String> 
     }
     let mut cmd = util::cargo(root);
     cmd.args(&args);
+    cmd
+}
+
+pub(crate) fn cargo_step(root: &Path, name: &str, args: &[&str]) -> Result<String, String> {
+    cargo_step_env(root, name, args, &[])
+}
+
+/// [`cargo_step`] with `env` added to cargo's environment.
+pub(crate) fn cargo_step_env(
+    root: &Path,
+    name: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Result<String, String> {
+    let mut cmd = cargo_command(root, args);
+    cmd.envs(env.iter().copied());
     util::run_quiet(root, name, &mut cmd).map(|_| String::new())
 }
 
@@ -47,6 +68,13 @@ fn has_tool(root: &Path, args: &[&str]) -> bool {
 }
 
 fn tests(root: &Path) -> Result<String, String> {
+    tests_env(root, &[])
+}
+
+/// Every test and doctest, with `env` added (the native job requires a GPU
+/// and a display).
+pub(crate) fn tests_env(root: &Path, env: &[(&str, &str)]) -> Result<String, String> {
+    let cargo_step = |root: &Path, name: &str, args: &[&str]| cargo_step_env(root, name, args, env);
     let nextest = has_tool(root, &["cargo", "nextest", "--version"]);
     let mut args = if nextest {
         vec!["nextest", "run", "--workspace", "--no-fail-fast"]
@@ -158,7 +186,7 @@ pub fn quick() -> Result<String, String> {
     steps.run("docs-check", || docs::check(&root));
     steps.run("tests", || tests(&root));
     steps.run("replay", || replay::run(&root, &replay::Options::default()));
-    finish(&root, "quick", steps, started)
+    ci_report::finish(&root, "quick", steps, started, serde_json::Map::new())
 }
 
 pub fn job(name: &str) -> Result<String, String> {
@@ -176,6 +204,10 @@ pub fn job(name: &str) -> Result<String, String> {
             steps.run("wasm-check", || cargo_step(&root, "wasm-check", &args));
         }
         "selftest" => selftest::steps(&root, &mut steps),
+        "native" => {
+            ci_native::steps(&root, &mut steps);
+            return ci_report::finish(&root, name, steps, started, ci_native::extra(&root));
+        }
         "summary" => summary(&root, &mut steps),
         "all" => {
             lint(&root, &mut steps);
@@ -189,12 +221,10 @@ pub fn job(name: &str) -> Result<String, String> {
             selftest::steps(&root, &mut steps);
         }
         other => {
-            return Err(format!(
-                "unknown job {other:?}: lint test riscv wasm selftest summary all"
-            ));
+            return Err(format!("unknown job {other:?}: {}", JOBS.join(" ")));
         }
     }
-    finish(&root, name, steps, started)
+    ci_report::finish(&root, name, steps, started, serde_json::Map::new())
 }
 
 fn lint(root: &Path, steps: &mut Steps) {
@@ -276,27 +306,37 @@ fn riscv(root: &Path, steps: &mut Steps) -> Result<(), String> {
     Ok(())
 }
 
-/// The last PR-tier job: cross-architecture equality of the downloaded hash
-/// streams, and the measured duration of the whole run.
+/// The last job: cross-architecture equality of the downloaded hash streams,
+/// the PR tier's and the native jobs', each against the committed streams
+/// (criterion 7), and the measured durations of the PR tier and of the
+/// native jobs (criterion 13).
 fn summary(root: &Path, steps: &mut Steps) {
     let incoming = root.join("target/ci/in");
     steps.run("compare-hashes", || {
-        let mut dirs: Vec<String> = fs::read_dir(&incoming)
+        let mut found: Vec<(String, String)> = fs::read_dir(&incoming)
             .map_err(|e| format!("{}: {e}", incoming.display()))?
             .flatten()
-            .filter(|e| e.file_name().to_string_lossy().starts_with("hashes-"))
-            .map(|e| stream_dir(&e.path()).to_string_lossy().into_owned())
+            .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
+            .filter(|(name, _)| name.starts_with("hashes-"))
+            .map(|(name, path)| (name, stream_dir(&path).to_string_lossy().into_owned()))
             .collect();
-        dirs.sort();
-        if dirs.len() < 3 {
+        found.sort();
+        let names: Vec<String> = found.iter().map(|(name, _)| name.clone()).collect();
+        let missing = ci_verdicts::missing_streams(&names);
+        if !missing.is_empty() {
             return Err(format!(
-                "[E-CROSS-ARCH] expected x64, arm64 and riscv hash streams, found {dirs:?}"
+                "[E-CROSS-ARCH] no hash streams from {}; found {names:?}",
+                missing.join(", ")
             ));
         }
+        // The committed streams first, so every runner is held to them.
+        let mut dirs = vec![replay::COMMITTED.to_string()];
+        dirs.extend(found.into_iter().map(|(_, dir)| dir));
         let refs: Vec<&str> = dirs.iter().map(String::as_str).collect();
         replay::compare_dirs(root, &refs)
     });
-    steps.run("pr-duration", || pr_duration(root));
+    steps.run("pr-duration", || ci_durations::pr_tier(root));
+    steps.run("native-duration", || ci_durations::native_tier(root));
 }
 
 /// An artifact holds `<triple>/*.txt`; use the directory with the streams.
@@ -306,88 +346,6 @@ fn stream_dir(artifact: &Path) -> std::path::PathBuf {
         .find(|p| p.extension().is_some_and(|e| e == "txt"))
         .and_then(|p| p.parent().map(Path::to_path_buf))
         .unwrap_or_else(|| artifact.to_path_buf())
-}
-
-fn pr_duration(root: &Path) -> Result<String, String> {
-    let (Ok(repo), Ok(run)) = (
-        std::env::var("GITHUB_REPOSITORY"),
-        std::env::var("GITHUB_RUN_ID"),
-    ) else {
-        return Err("not on GitHub Actions; the PR-tier duration is measured there".into());
-    };
-    let mut cmd = Command::new("gh");
-    cmd.args([
-        "api",
-        &format!("repos/{repo}/actions/runs/{run}"),
-        "--jq",
-        ".run_started_at",
-    ]);
-    let started = util::run_quiet(root, "gh-run", &mut cmd)?;
-    let mut date = Command::new("date");
-    date.args(["-u", "-d", started.trim(), "+%s"]);
-    let started_s: u64 = util::run_quiet(root, "date", &mut date)?
-        .trim()
-        .parse()
-        .map_err(|e| format!("{e}"))?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_secs();
-    let minutes = now.saturating_sub(started_s) as f64 / 60.0;
-    let budget = fs::read_to_string(root.join("budgets.toml"))
-        .ok()
-        .and_then(|t| t.parse::<toml::Table>().ok())
-        .and_then(|t| t.get("ci")?.get("pr_tier_minutes")?.as_integer())
-        .unwrap_or(15);
-    let verdict = if minutes <= budget as f64 {
-        "within"
-    } else {
-        "OVER"
-    };
-    Ok(format!(
-        "PR tier took {minutes:.1} min ({verdict} the {budget} min budget)"
-    ))
-}
-
-fn finish(root: &Path, job: &str, steps: Steps, started: Instant) -> Result<String, String> {
-    let target = replay::host_triple(root).unwrap_or_else(|_| "unknown".into());
-    let report = json!({
-        "report_version": 1,
-        "job": job,
-        "target": target,
-        "runner": std::env::var("RUNNER_NAME").unwrap_or_else(|_| "local".into()),
-        "os": std::env::var("ImageOS").unwrap_or_else(|_| std::env::consts::OS.into()),
-        "git_sha": std::env::var("GITHUB_SHA").unwrap_or_default(),
-        "ok": steps.ok(),
-        "seconds": started.elapsed().as_secs_f64(),
-        "steps": steps.results.iter().map(|r| json!({
-            "name": r.name, "ok": r.ok, "seconds": r.seconds,
-            "detail": util::tail(&r.detail, 5),
-        })).collect::<Vec<_>>(),
-    });
-    let dir = root.join("target/ci");
-    let text = serde_json::to_string_pretty(&report).expect("report serializes");
-    let _ = fs::create_dir_all(dir.join("reports"));
-    let _ = fs::write(dir.join("report.json"), &text);
-    let _ = fs::write(
-        dir.join("reports").join(format!("{job}-{target}.json")),
-        &text,
-    );
-    let failed: Vec<&str> = steps
-        .results
-        .iter()
-        .filter(|r| !r.ok)
-        .map(|r| r.name.as_str())
-        .collect();
-    if failed.is_empty() {
-        Ok(format!(
-            "{job}: all {} steps ok in {:.0}s",
-            steps.results.len(),
-            started.elapsed().as_secs_f64()
-        ))
-    } else {
-        Err(format!("{job}: failed steps: {}", failed.join(", ")))
-    }
 }
 
 #[cfg(test)]

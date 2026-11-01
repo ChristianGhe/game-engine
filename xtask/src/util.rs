@@ -127,8 +127,19 @@ pub fn walk(dir: &Path) -> Vec<PathBuf> {
 pub struct StepResult {
     pub name: String,
     pub ok: bool,
+    /// Neither passed nor failed: the step cannot be judged yet, as a shot
+    /// without its golden (rung 1b, plan decision 3). It fails no job, and
+    /// `ok` stays false, so no acceptance check counts it as a pass.
+    pub pending: bool,
     pub seconds: f64,
     pub detail: String,
+}
+
+/// How a step that may be pending ended, when it did not fail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Done {
+    Pass(String),
+    Pending(String),
 }
 
 /// Runs named steps, prints one line each, and keeps going after failures.
@@ -139,14 +150,24 @@ pub struct Steps {
 
 impl Steps {
     pub fn run(&mut self, name: &str, f: impl FnOnce() -> Result<String, String>) -> bool {
+        self.run_judged(name, || f().map(Done::Pass))
+    }
+
+    /// [`Steps::run`] for a step that may end pending; true if it passed.
+    pub fn run_judged(&mut self, name: &str, f: impl FnOnce() -> Result<Done, String>) -> bool {
         let started = Instant::now();
         let outcome = f();
         let seconds = started.elapsed().as_secs_f64();
-        let (ok, detail) = match outcome {
-            Ok(detail) => (true, detail),
-            Err(detail) => (false, detail),
+        let (ok, pending, detail) = match outcome {
+            Ok(Done::Pass(detail)) => (true, false, detail),
+            Ok(Done::Pending(detail)) => (false, true, detail),
+            Err(detail) => (false, false, detail),
         };
-        let status = if ok { "ok" } else { "FAILED" };
+        let status = match (ok, pending) {
+            (true, _) => "ok",
+            (false, true) => "PENDING",
+            (false, false) => "FAILED",
+        };
         println!("{name:.<40} {status} ({seconds:.1}s)");
         if !ok {
             println!("{detail}");
@@ -154,13 +175,15 @@ impl Steps {
         self.results.push(StepResult {
             name: name.to_string(),
             ok,
+            pending,
             seconds,
             detail,
         });
         ok
     }
 
+    /// No step failed; pending steps fail no job.
     pub fn ok(&self) -> bool {
-        self.results.iter().all(|r| r.ok)
+        self.results.iter().all(|r| r.ok || r.pending)
     }
 }

@@ -40,8 +40,8 @@
 //!   bytes for each shape in view; presenting adds 1, 1 and 1. A scene with
 //!   nothing in view skips the top-down draw. The probe's `shot`, `video`
 //!   and `play` reports carry them; a budgets file's `[gpu]` table, when it
-//!   has one, limits `shot` and `video` frames (acceptance feature
-//!   `gpu-report-budgets`; `budgets.toml`'s is proposed for gate G5).
+//!   has one, limits `shot` and `video` frames (`budgets.toml` has one;
+//!   acceptance feature `gpu-report-budgets`).
 #![forbid(unsafe_code)]
 
 mod error;

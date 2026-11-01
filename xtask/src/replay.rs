@@ -17,7 +17,7 @@ use serde::Deserialize;
 use crate::util;
 
 const SCENARIOS: &str = "crates/game-testbed/scenarios";
-const COMMITTED: &str = "crates/game-testbed/hashes";
+pub(crate) const COMMITTED: &str = "crates/game-testbed/hashes";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

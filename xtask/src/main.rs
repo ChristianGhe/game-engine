@@ -9,6 +9,10 @@ mod acceptance;
 mod arch;
 mod arch_scan;
 mod ci;
+mod ci_durations;
+mod ci_native;
+mod ci_report;
+mod ci_verdicts;
 mod docs;
 mod glob;
 mod guard;
@@ -24,6 +28,7 @@ mod hooks;
 mod oracle;
 mod replay;
 mod selftest;
+mod selftest_golden;
 mod shell;
 mod size;
 mod stamp;
@@ -33,7 +38,7 @@ use std::process::ExitCode;
 
 const USAGE: &str = "\
 cargo xtask quick                      fmt, clippy, arch, size, docs, tests, replays
-cargo xtask ci --job <job>             a CI job: lint test riscv wasm selftest all
+cargo xtask ci --job <job>             a CI job: lint test riscv wasm selftest native summary all
 cargo xtask arch-check                 layering, core-set purity, crate-root attributes
 cargo xtask size-check                 warn over 500 lines, fail over 1000
 cargo xtask docs-check                 AGENTS.md at most 150 lines, no CLAUDE.md
@@ -92,6 +97,22 @@ fn main() -> ExitCode {
         Err(message) => {
             eprintln!("{message}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The usage text names every job `ci --job` runs (amendment 71).
+    #[test]
+    fn the_usage_names_every_ci_job() {
+        let line = super::USAGE
+            .lines()
+            .find(|line| line.starts_with("cargo xtask ci --job"))
+            .expect("a usage line for ci --job");
+        for job in crate::ci::JOBS {
+            let named = line.split_whitespace().any(|word| word == job);
+            assert!(named, "{job} is missing from: {line}");
         }
     }
 }

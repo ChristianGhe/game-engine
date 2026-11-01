@@ -6307,6 +6307,37 @@ committed; it touches 10 files.
 
 This is the owner's request, outside the rung's task list.
 
+## 2026-11-01, session 18 (continued): gate G5 applied (Claude Opus 5.5, with the owner)
+
+The owner applied G5 with one `git apply`: the oracle patches for T10,
+T3, T9, T11, T12 and T8, and `t13-x2-x6.patch`. The agent applied
+`after-g5-docs.patch`, and both are in the same commit.
+
+- **What it brings:**
+  - X2, `ci --job native`, and the five native jobs in `ci.yml`, with
+    Mesa 25.2.7 lavapipe and WARP 1.0.20 pinned, and xvfb and xdotool on
+    Linux;
+  - X3, the summary across the native jobs, and `native-duration`;
+  - X4, owner-checked features, and X5, rung 1b's selftest cases;
+  - `budgets.toml`'s `[gpu]` limits and `[ci] native_job_minutes = 25`;
+  - protection for the new harnesses (`protected.toml`, CODEOWNERS);
+  - `crates/game-testbed/golden/thresholds.toml` and the `png` crate in
+    xtask;
+  - the `golden-update` skill and the `visual-qa` agent.
+- **Checked** on aarch64-apple-darwin:
+  - `quick` 7 of 7 (59 s);
+  - `CI=1 cargo xtask ci --job lint` 7 of 7, with cargo-deny and typos;
+  - `docs-check`, AGENTS.md 150 of 150.
+
+  Session 18's end-to-end check ran the selftest, xtask's tests and
+  Linux arm64 on the same code.
+- **Next:**
+  - The owner's push runs the native jobs for the first time. At best
+    16 of the 19 features pass on that run: 4 and 5 wait for G6, and 16
+    for G7.
+  - T16 collects the golden candidates and FLIP maps from it.
+  - `agent-push.patch` (amendment 95) goes on top of this commit.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1
@@ -6316,10 +6347,12 @@ and `**/*.proptest-regressions` (e14b533); amendment 18's oracle patch,
 which protects eng-net-wire's `golden.rs` and `never_panic.rs`
 (2026-10-31); proposal 5 (G4) as ADR-0016 (75e444f); proposal 4 (G3)
 with amendment 22 (37142b7); amendment 25's libm pin, in one commit with
-T7 (84f0745); and from G5, `t6-oracles.patch` and `t7-oracles.patch`
+T7 (84f0745); from G5, `t6-oracles.patch` and `t7-oracles.patch`
 (2026-10-31: `hash_equality.rs` and `shaders.rs` protected, the
-`wire-session` and `shaders` steps in `ci --job test`). Nothing else
-below is applied. Each item is what an agent would
+`wire-session` and `shaders` steps in `ci --job test`); and the rest of
+G5 on 2026-11-01: the oracle patches for T10, T3, T9, T11, T12 and T8,
+and `t13-x2-x6.patch` (X2 to X6, with the `golden-update` skill and the
+`visual-qa` agent). Nothing else below is applied. Each item is what an agent would
 otherwise have to change; the owner applies it, or unlocks the path.
 
 1. **`docs/rungs/1b/acceptance.json`** (G1). Make it from the table in

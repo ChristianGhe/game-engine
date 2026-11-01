@@ -119,24 +119,10 @@ pub fn session_start() -> Result<String, String> {
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok());
     match computed {
-        Some(doc) => {
-            let features = doc["features"].as_array().cloned().unwrap_or_default();
-            let failing: Vec<String> = features
-                .iter()
-                .filter(|f| f["passes"] != true)
-                .map(|f| f["id"].as_str().unwrap_or("?").to_string())
-                .collect();
-            lines.push(format!(
-                "Acceptance (last computed locally): {}/{} pass{}",
-                features.len() - failing.len(),
-                features.len(),
-                if failing.is_empty() {
-                    String::new()
-                } else {
-                    format!("; failing: {}", failing.join(", "))
-                }
-            ));
-        }
+        Some(doc) => lines.push(format!(
+            "Acceptance (last computed locally): {}",
+            acceptance::status(&doc)
+        )),
         None => {
             lines.push("Acceptance: not computed locally; CI's summary job computes it.".into())
         }

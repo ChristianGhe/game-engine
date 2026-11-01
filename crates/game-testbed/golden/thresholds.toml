@@ -1,0 +1,21 @@
+# FLIP limits for the testbed's golden shots (rung 1b, plan decision 3).
+# PROTECTED: the owner sets them (G6).
+#
+# `crates/game-testbed/tests/shots.rs` compares each shot with its golden
+# exactly on the pinned configuration (Linux x64, Mesa 25.2.7's lavapipe)
+# and with FLIP, at 67 pixels per degree, everywhere else. There a shot
+# passes when its FLIP error against the golden is within all three limits
+# (errors run from 0, the same, to 1):
+# - `mean`: the mean error over the image;
+# - `p99`: the 99th percentile of the per-pixel errors (unweighted);
+# - `p999`: the 99.9th percentile, the 77th-worst of a shot's 76,800
+#   pixels, which sees a small area that is wrong. A missing dot (about
+#   314 pixels, 0.4% of the image) gives mean 0.007 and p99 0.10, within
+#   the first two, but p999 0.98; a dot that lost 12 edge pixels, as
+#   another rasterizer might draw it, gives p999 0.25.
+version = 1
+
+[flip]
+mean = 0.01
+p99 = 0.2
+p999 = 0.5

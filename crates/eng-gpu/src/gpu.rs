@@ -46,7 +46,7 @@ impl GpuOptions {
 }
 
 /// Whether a missing adapter fails rather than skips: `ENG_REQUIRE_GPU=1`,
-/// which CI's native jobs set (plan decision 4; from gate G5).
+/// which CI's native jobs set (plan decision 4).
 pub fn gpu_required() -> bool {
     std::env::var("ENG_REQUIRE_GPU").is_ok_and(|value| value == "1")
 }

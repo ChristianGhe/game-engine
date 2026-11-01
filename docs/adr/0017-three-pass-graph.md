@@ -56,8 +56,8 @@ the surface, which shots cannot read. Three passes meet every rule. Rung
 
 - A frame offscreen costs 2 draws, 2 pipeline switches and 1 bind-group
   switch, plus 32 bytes per shape in view; presenting adds 1, 1 and 1
-  (eng-gpu's `FrameCounters`). The proposed `budgets.toml [gpu]` limits
-  are sized from these numbers (rung 1b, amendment 40).
+  (eng-gpu's `FrameCounters`). The `budgets.toml [gpu]` limits are
+  sized from these numbers (rung 1b, amendment 40).
 - Shots and goldens test the tone-mapped image that every window
   presents, not a swapchain image, so they need no window.
 - Rung 2's tone-mapping curve and EV100 exposure change the tone-map

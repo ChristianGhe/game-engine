@@ -1,16 +1,28 @@
-//! `cargo xtask selftest` (rung 1a, done-when 3): each deliberate violation
-//! must fail. Cases run against a fresh copy of the workspace under
-//! `target/selftest/`, or against the real guard binary, never the tree itself.
+//! `cargo xtask selftest` (rung 1a, done-when 3; rung 1b, criterion 12): each
+//! deliberate violation must fail. Cases run against a fresh copy of the
+//! workspace under `target/selftest/`, or against the real guard binary, and
+//! never change the tree itself. `golden-edit` runs the real shots harness
+//! against goldens copied there; like every run of that harness (`quick`'s
+//! too), it empties and rewrites `target/golden-candidates/`. A case that
+//! needs what this machine lacks (cargo-deny, the pinned lavapipe) says it
+//! could not run: a failure only on CI or with `ENG_REQUIRE_GPU=1`, as for
+//! GPU tests, and never a pass (`selftest_verdict.rs`).
 
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Instant;
 
 use crate::arch;
 use crate::util::{self, Steps};
 
-pub const CASES: [&str; 17] = [
+#[path = "selftest_verdict.rs"]
+mod verdict;
+pub use verdict::NOT_RUN;
+use verdict::{judged, last_line, outcome, status, strict};
+
+pub const CASES: [&str; 22] = [
     "float-sin",
     "float-min",
     "allow-escape",
@@ -28,32 +40,47 @@ pub const CASES: [&str; 17] = [
     "guard-jj",
     "bless",
     "guard-allows-ordinary-edits",
+    // Rung 1b, criterion 12 (`violations-1b`).
+    "wgpu-outside-gpu",
+    "winit-outside-platform",
+    "rwh-outside-seam",
+    "core-depends-on-gpu",
+    "golden-edit",
 ];
 
+/// `cargo xtask selftest [CASE]`: one line per case, then the counts.
 pub fn main(args: &[&str]) -> Result<String, String> {
     let root = util::root()?;
-    let mut steps = Steps::default();
-    match args {
-        [] => steps_all(&root, &mut steps),
-        [case] if CASES.contains(case) => {
-            steps.run(&format!("violation:{case}"), || run_case(&root, case));
-        }
+    let cases: Vec<&str> = match args {
+        [] => CASES.to_vec(),
+        [case] if CASES.contains(case) => vec![*case],
         _ => return Err(format!("selftest cases: {}", CASES.join(" "))),
+    };
+    let strict = strict();
+    let mut outcomes = Vec::new();
+    for case in cases {
+        let name = format!("violation:{case}");
+        let started = Instant::now();
+        let result = outcome(run_case(&root, case), strict);
+        let seconds = started.elapsed().as_secs_f64();
+        println!("{name:.<40} {} ({seconds:.1}s)", status(&result));
+        if let Err(detail) = &result {
+            println!("{detail}");
+        }
+        outcomes.push((name, result));
     }
-    if steps.ok() {
-        Ok(format!("selftest: {} cases ok", steps.results.len()))
-    } else {
-        Err("selftest: a deliberate violation was not caught".into())
-    }
+    last_line(&outcomes, strict)
 }
 
+/// `ci --job selftest` and `all`: each case is a step of the job's report.
+/// A case not run here is pending: never ok, so acceptance never counts
+/// it, and it fails no job. In a strict run it fails the job.
 pub fn steps(root: &Path, steps: &mut Steps) {
-    steps_all(root, steps);
-}
-
-fn steps_all(root: &Path, steps: &mut Steps) {
+    let strict = strict();
     for case in CASES {
-        steps.run(&format!("violation:{case}"), || run_case(root, case));
+        steps.run_judged(&format!("violation:{case}"), || {
+            judged(outcome(run_case(root, case), strict))
+        });
     }
 }
 
@@ -165,6 +192,32 @@ fn run_case(root: &Path, case: &str) -> Result<String, String> {
             "Bash",
             serde_json::json!({ "command": "cargo insta accept" }),
         ),
+        // Rung 1b, criterion 12. A crate can name a floor crate only by
+        // depending on it, so each case adds the dependency; arch-check's
+        // `[floor]` and core-set rules and cargo-deny's wrapper ban
+        // (ADR-0016) read dependencies.
+        "wgpu-outside-gpu" => arch_rejects(
+            root,
+            case,
+            "[E-ARCH-FLOOR] eng-render depends on wgpu; only eng-gpu may",
+            |ws| add_dependency(ws, "eng-render", "wgpu"),
+        ),
+        "winit-outside-platform" => arch_rejects(
+            root,
+            case,
+            "[E-ARCH-FLOOR] eng-app depends on winit; only eng-platform-winit may",
+            |ws| add_dependency(ws, "eng-app", "winit"),
+        ),
+        "rwh-outside-seam" => deny_rejects(root, case, ("raw-window-handle", "eng-render"), |ws| {
+            add_dependency(ws, "eng-render", "raw-window-handle")
+        }),
+        "core-depends-on-gpu" => arch_rejects(
+            root,
+            case,
+            "[E-ARCH-CORE-DEP] core crate eng-sim reaches eng-gpu (via eng-sim)",
+            |ws| add_dependency(ws, "eng-sim", "eng-gpu"),
+        ),
+        "golden-edit" => crate::selftest_golden::run(root),
         "guard-allows-ordinary-edits" => {
             let ws = copy_workspace(root, case)?;
             let input = serde_json::json!({
@@ -231,6 +284,16 @@ fn edit(ws: &Path, rel: &str, from: &str, to: &str) -> Result<(), String> {
         return Err(format!("selftest setup: {rel} does not contain {from:?}"));
     }
     fs::write(&path, text.replacen(from, to, 1)).map_err(|e| format!("{rel}: {e}"))
+}
+
+/// `crates/<krate>` gains `<dep>.workspace = true` as a normal dependency.
+fn add_dependency(ws: &Path, krate: &str, dep: &str) -> Result<(), String> {
+    edit(
+        ws,
+        &format!("crates/{krate}/Cargo.toml"),
+        "[dependencies]\n",
+        &format!("[dependencies]\n{dep}.workspace = true\n"),
+    )
 }
 
 fn clippy_rejects(
@@ -330,3 +393,67 @@ fn guard_blocks(
         ))
     }
 }
+
+/// Whether `cargo deny check bans` refused `banned` because `parent`, its
+/// direct user, is not one of its wrappers.
+fn deny_verdict(
+    succeeded: bool,
+    output: &str,
+    banned: &str,
+    parent: &str,
+) -> Result<String, String> {
+    let ban = format!("error[banned]: crate '{banned} = ");
+    let user = format!("direct parent '{parent} = ");
+    let of = format!("of banned crate '{banned} = ");
+    let named = output
+        .lines()
+        .any(|line| line.contains(&user) && line.contains(&of));
+    if succeeded {
+        Err("cargo-deny accepted the violation".into())
+    } else if output.contains(&ban) && named {
+        Ok(format!(
+            "rejected: error[banned] {banned}, used by {parent}"
+        ))
+    } else {
+        Err(format!(
+            "failed, but not with error[banned] for {banned} used by {parent}:\n{}",
+            util::tail(output, 15)
+        ))
+    }
+}
+
+/// `cargo deny check bans` on a fresh copy changed by `mutate`: it must
+/// refuse `banned` because `parent` is not one of its wrappers.
+fn deny_rejects(
+    root: &Path,
+    case: &str,
+    (banned, parent): (&str, &str),
+    mutate: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<String, String> {
+    let ws = copy_workspace(root, case)?;
+    mutate(&ws)?;
+    let installed = util::cargo(&ws)
+        .args(["deny", "--version"])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !installed {
+        return Err(format!(
+            "{NOT_RUN} {case} could not run: cargo-deny is not installed \
+             (cargo install --locked cargo-deny@0.20.2, as CI's lint job has it)"
+        ));
+    }
+    let out = util::cargo(&ws)
+        .args(["deny", "check", "bans"])
+        .output()
+        .map_err(|e| format!("cannot run cargo-deny: {e}"))?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    deny_verdict(out.status.success(), &text, banned, parent)
+}
+
+#[cfg(test)]
+#[path = "selftest_tests.rs"]
+mod tests;

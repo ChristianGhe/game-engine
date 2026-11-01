@@ -147,8 +147,9 @@ Platform::run(&mut app):  start ─▶ window (windowed only)
   `crates/eng-platform-winit/tests/conformance.rs` (`harness = false`:
   the main thread), which adds real window handles, a clock that restarts
   each run, and more timed frames than a window's opening brings. Without
-  a display (CI's test job) it skips, unless `ENG_REQUIRE_DISPLAY=1`; a
-  watchdog fails it after a minute.
+  a display (CI's test job) it skips, unless `ENG_REQUIRE_DISPLAY=1`
+  makes it fail, as in CI's native jobs; a watchdog fails it after a
+  minute.
 
 ## Live input
 
@@ -272,10 +273,10 @@ Graph::render ──▶ FrameCounters (draws, switches, uploaded bytes)
 - **Adapters.** `ENG_GPU_ADAPTER` picks the first adapter whose name
   contains it, ignoring case; otherwise wgpu chooses, software last. With
   no adapter `Gpu::new` fails with `[E-NO-ADAPTER]`, and GPU tests skip
-  unless `ENG_REQUIRE_GPU=1` makes them fail (CI's native jobs set it,
-  from gate G5; no job sets it yet). Each OS has one backend, so machines
-  agree: Metal on macOS, Vulkan on Linux, and DX12 on Windows, which
-  compiles shaders with FXC, part of Windows.
+  unless `ENG_REQUIRE_GPU=1` makes them fail (CI's native jobs set it).
+  Each OS has one backend, so machines agree: Metal on macOS, Vulkan on
+  Linux, and DX12 on Windows, which compiles shaders with FXC, part of
+  Windows.
 - **Flags.** Debug builds use wgpu's release flags, as the game does;
   `WGPU_DEBUG=1` and `WGPU_VALIDATION=1` add debug labels and the
   backend's validation layer when debugging.
@@ -376,10 +377,12 @@ Renderer::render_to: the same three passes, into a window's SurfaceFrame
 - **Cost.** Offscreen a frame is 2 draws, 2 pipeline switches, 1
   bind-group switch and 32 bytes per shape in view; presenting adds 1, 1
   and 1. With nothing in view the top-down draw is skipped. Reports carry
-  each frame's peaks ("The report"). A `[gpu]` table in `budgets.toml`
+  each frame's peaks ("The report"). The `[gpu]` table in `budgets.toml`
   limits them for each frame of `shot` and `video` (`[E-BUDGET]`, exit
-  13); its values are proposed for gate G5, and until then nothing is
-  limited.
+  13): 12 draws, 12 pipeline switches, 8 bind-group switches and 2,048
+  bytes, about four times the testbed's view with a window. `play` is not
+  limited, but the native job's `gpu-budgets` step holds its window's
+  peaks to the same limits.
 
 ## The frame
 
@@ -486,21 +489,28 @@ client's state at alpha 1, so the pictures are exact.
     outside `golden-candidates/` and hold every shot's golden: another
     machine's candidates, or an edited copy. An edited copy fails only in
     exact mode, as FLIP passes a single changed pixel by design, so
-    criterion 12's selftest (patch X5, gate G5) needs the pinned lavapipe.
+    `cargo xtask selftest golden-edit` (criterion 12) needs the pinned
+    lavapipe. It changes one level of one pixel of a copy and expects
+    `[E-GOLDEN]` for that shot alone. CI's `selftest` job and its
+    `ubuntu-24.04` native job download the pinned build (Mesa 25.2.7 from
+    gfx-rs/ci-build build26, SHA-256 checked) and point `VK_DRIVER_FILES`
+    at it; on any other machine the case says it could not run.
 - **The golden flow.** `golden/` is the owner's, and the harness never
-  writes there; on main it does not exist yet. While it holds no golden,
-  each shot is saved as a candidate in `target/golden-candidates/` and
-  reported as `[W-NO-GOLDEN]`. A FLIP comparison with no
-  `thresholds.toml` beside the goldens (another machine's candidates
-  through `ENG_GOLDEN_DIR`, say) is measured and reported as
-  `[W-NO-THRESHOLDS]`. Neither fails the test, and neither is a pass for
-  acceptance: the run's `golden-candidates/shots.json` gives the
-  configuration, the machine and each shot's status. The owner commits
-  candidates from the pinned lavapipe as the goldens, byte for byte, and
-  the FLIP limits (gates G5 and G6). From then on every shot needs its
-  own golden, and a golden that no shot names fails. A failing shot is
-  saved as a candidate, and every FLIP comparison leaves its error map in
-  `flip/`.
+  writes there. It holds `thresholds.toml`, the owner's FLIP limits; the
+  goldens come with gate G6. While it holds no golden, each shot is saved
+  as a candidate in `target/golden-candidates/` and reported as
+  `[W-NO-GOLDEN]`. A FLIP comparison with no `thresholds.toml` beside the
+  goldens (another machine's candidates through `ENG_GOLDEN_DIR`, say) is
+  measured and reported as `[W-NO-THRESHOLDS]`. Neither fails the test,
+  and neither is a pass for acceptance (the native job's `shot-exact` and
+  `shot-flip` steps are pending): the run's `golden-candidates/shots.json`
+  gives the configuration, the machine and each shot's status. The owner
+  commits candidates from the pinned lavapipe as the goldens, byte for
+  byte. From then on every shot needs its own golden, and a golden that no
+  shot names fails. A failing shot is saved as a candidate, and every FLIP
+  comparison leaves its error map in `flip/`. Each native runner uploads
+  these as `golden-candidates-<runner>`, and the `golden-update` skill
+  brings them to the owner.
 
 ## Invariants
 
@@ -525,7 +535,7 @@ client's state at alpha 1, so the pictures are exact.
 | Cross-architecture equality | `cargo xtask compare-hashes` in CI's summary job | never changes |
 | `eng-math` known answers | `crates/eng-math/tests/known_answers.txt` | the owner |
 | Golden vectors | `crates/*/tests/golden.rs` | the owner |
-| Golden images and FLIP thresholds | `crates/game-testbed/golden/` (none yet), compared by `crates/game-testbed/tests/shots.rs` and `tests/shots/` | the owner |
+| Golden images and FLIP thresholds | `crates/game-testbed/golden/` (thresholds only, no images yet), compared by `crates/game-testbed/tests/shots.rs` and `tests/shots/` | the owner |
 | Harnesses acceptance relies on | the test files `protected.toml` lists | the owner |
 | Semantic assertions | `crates/game-testbed/scenarios/*.assert.toml` | the owner |
 | Budgets | `budgets.toml` | the owner |
@@ -542,6 +552,60 @@ client's state at alpha 1, so the pictures are exact.
   `hash_equality`), then the replays. Each step is an entry in the job's
   report (`target/ci/report.json`, copied to `target/ci/reports/`), which
   `cargo xtask acceptance` reads.
+- CI's `native` job runs on each of the five native runners
+  (`ubuntu-24.04`, `ubuntu-24.04-arm`, `windows-2025`, `windows-11-arm`
+  and `macos-26`; the Linux ones under `xvfb-run`). It sets
+  `ENG_REQUIRE_GPU=1` and `ENG_REQUIRE_DISPLAY=1` for the steps that
+  render or open a window (the shot steps need only the GPU), so none can
+  skip. Its steps are `STEPS` in `xtask/src/ci_native.rs`;
+  `ENG_CI_STEPS=<names>` runs only the named ones. Each is an entry in the
+  job's report, `target/ci/reports/native-<host>.json`, which also records
+  the adapter and driver (`gpu`). The steps:
+  - every runner: `build`, `tests`, `replay`, `crash-json`, `version`
+    (both forms of the stamp, every build value set), `window` (`play` in
+    a real window gives the committed hash stream and presents frames)
+    and `gpu-budgets` (a `shot` held to the `[gpu]` limits, and the
+    window's peaks too);
+  - `shot-exact` on Linux x64 and `shot-flip` on the others: the shot
+    harness against the goldens, pending (not a pass) while a golden is
+    missing;
+  - Linux x64 also runs `esc` (Escape through XTEST quits `play` within
+    5 s) and `proof-video` (the scripted session, 241 frames);
+  - the macOS runner also runs `check-intel-mac`, a compile check of
+    `x86_64-apple-darwin`.
+
+  On Linux x64 the offscreen renders ask for the pinned lavapipe by name,
+  and `play` takes Ubuntu's own lavapipe, installed beside it, since the
+  pinned build offers no window surface. Each runner uploads
+  `report-native-<runner>` (the report and the step outputs),
+  `hashes-native-<runner>`, `golden-candidates-<runner>`,
+  `crash-native-<runner>` and `logs-native-<runner>`.
+- CI's `summary` job waits for all of those. `compare-hashes` needs the
+  hash streams of both `test` runners, `riscv` and the five native
+  runners, and holds each to the committed streams, so all agree
+  (`[E-CROSS-ARCH]`). `pr-duration` times the PR tier, from the run's
+  start to the end of its last job. `native-duration` times each native
+  job. Going over `budgets.toml`'s `[ci]` limits (`pr_tier_minutes`, and
+  `native_job_minutes` for the slowest native job) is reported, never
+  failed; a missing or unfinished job fails (`[E-DURATION]`).
+- `cargo xtask acceptance DIR` reads every job report under DIR and
+  computes each feature's `passes` into `target/ci/acceptance.json`;
+  CI's summary job runs it. A feature prints `PASS`, `FAIL` or `PENDING`:
+  a pending step, such as a shot without its golden, is not a pass and
+  fails no job; its feature gets `passes: false` and `pending: true`. A
+  feature with `owner: true` and no checks prints `OWNER`: the owner
+  plays the rung and accepts it, and its `passes` is `null`.
+- `cargo xtask selftest [CASE]` runs deliberate violations that a check
+  must refuse: a change to a copy of the workspace (or of the goldens),
+  or a command given to the real guard. CI's `selftest` job runs every
+  case as a step. Rung 1b added `wgpu-outside-gpu`,
+  `winit-outside-platform` and `core-depends-on-gpu` (arch-check),
+  `rwh-outside-seam` (`cargo deny check bans`, ADR-0016) and
+  `golden-edit` ("Shots, the proof video and goldens"). A case that needs
+  what the machine lacks (cargo-deny, the pinned lavapipe) is never a
+  pass: it prints `[W-SELFTEST-NOT-RUN]` and is pending in the job, and
+  with `CI` set or `ENG_REQUIRE_GPU=1` it fails as
+  `[E-SELFTEST-NOT-RUN]`.
 - The probe (`eng-cli`, linked by every game) runs `run`, `dump-world`,
   `shot`, `video` and `play` through the in-process session: headless
   with scripted input, offscreen for `shot` and `video`, in a window for
@@ -560,7 +624,10 @@ client's state at alpha 1, so the pictures are exact.
   panic or wait on a lock for long, because a panic inside the hook
   aborts the process instead. `crates/game-testbed/tests/exit_codes.rs`
   runs the real binary for each exit code, and `crash_json.rs` uses `run
-  --panic-at-tick` to check every field of the crash file.
+  --panic-at-tick` to check every field of the crash file, and `play
+  --panic-at-tick` to check it again from a window. That half skips
+  without a display or a GPU, unless `ENG_REQUIRE_DISPLAY=1` or
+  `ENG_REQUIRE_GPU=1`, which CI's native jobs set.
 - Claude Code hooks (`.claude/settings.json`) run a copy of xtask built
   from `main` into `<git dir>/eng-hooks/`: the guard (protected paths, bless
   commands), rustfmt after edits, `quick` at the end of a turn. Before the

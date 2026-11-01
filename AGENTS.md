@@ -11,7 +11,7 @@ and its `acceptance.json`. Append what you did to that rung's `PROGRESS.md`.
 
 ```sh
 cargo xtask quick              # before every commit: fmt, clippy, arch, size, docs, tests, replays
-cargo xtask ci --job lint      # CI jobs: lint test riscv wasm selftest summary all
+cargo xtask ci --job lint      # CI jobs: lint test riscv wasm selftest native summary all
 cargo xtask arch-check         # layering and core-set rules (architecture.toml)
 cargo xtask replay [--regen]   # scenarios vs committed hash streams; --regen: see "Tests and oracles"
 cargo xtask selftest [CASE]    # deliberate violations must fail
@@ -110,7 +110,8 @@ tools. Each crate and edge: `docs/ARCHITECTURE.md`, "Layers".
   required. A difference there is a determinism bug, never a baseline to update.
 - Debug a divergence with `dump-world --at-tick N` on both sides and diff
   the JSON (the `replay-debug` skill).
-- Vision models may sort failures but never decide pass or fail.
+- The owner commits goldens; the `golden-update` skill hands over CI's candidates.
+- Vision models (`visual-qa` agent) may sort failures, never decide pass or fail.
 
 ## Protected paths
 

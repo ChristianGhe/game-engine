@@ -60,10 +60,12 @@ Rung 1b draws the dot in a real window.
     day and applied (37142b7).
   - That change also puts the crate on the allow-list (crate batch 2),
     so the crate is never allowed without its ban.
-- **A selftest will prove the ban.** Patch X5 (gate G5) adds `cargo
-  xtask selftest rwh-outside-seam`, which expects a use of the crate
-  outside the seam to fail. It is part of acceptance criterion 12,
-  `violations-1b`. Until then cargo-deny alone enforces the ban.
+- **A selftest proves the ban.** `cargo xtask selftest
+  rwh-outside-seam` adds the crate as a dependency of `eng-render` in a
+  copy of the workspace and expects `cargo deny check bans` to refuse it,
+  naming `eng-render` as the user. It is part of acceptance criterion 12,
+  `violations-1b`, and CI's `selftest` job runs it. A machine without
+  cargo-deny reports the case as not run, never as a pass.
 - **`arch-check` needs no change.** The crate is not in
   `[core_third_party]`, so core-set purity already keeps it out of every
   core crate and `game-*-sim`. `[floor]` gives each crate one wrapper, so

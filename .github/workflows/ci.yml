@@ -1,5 +1,12 @@
-# The PR tier (spec 8.2). All logic lives in `cargo xtask`; jobs only check
-# out, restore the cache and call it. PROTECTED: changes need the owner.
+# The PR tier and the native jobs (spec 8.2). All logic lives in `cargo
+# xtask`; jobs only set up the runner (drivers, display, targets), check out,
+# restore the cache and call it. PROTECTED: changes need the owner.
+#
+# Pins (rung 1b, T13; PROGRESS.md, session 18):
+# - Mesa 25.2.7 lavapipe, gfx-rs/ci-build build26: the build wgpu 30's CI
+#   used (spec 8.3), SHA-256 as T7 checked it.
+# - WARP 1.0.20, NuGet Microsoft.Direct3D.WARP: the version wgpu's CI
+#   installs; SHA-256 of the .nupkg, whose SHA-512 matches NuGet's catalog.
 name: ci
 
 on:
@@ -22,6 +29,7 @@ env:
 jobs:
   lint:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -45,6 +53,7 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -71,6 +80,7 @@ jobs:
 
   riscv:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       contents: read
     env:
@@ -99,6 +109,7 @@ jobs:
 
   wasm:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -115,26 +126,200 @@ jobs:
 
   selftest:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The golden-edit case renders shots exactly, so it needs the pinned
+      # lavapipe of the native ubuntu-24.04 job (amendment 58), here alone:
+      # nothing opens a window. The case sets ENG_REQUIRE_GPU, ENG_SHOT_MODE
+      # and ENG_GOLDEN_DIR itself, and the harness the llvmpipe variables.
+      - name: pinned Mesa 25.2.7 lavapipe (gfx-rs/ci-build build26)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libvulkan1 libllvm18 libdrm2 libexpat1 libzstd1 zlib1g
+          mesa="$RUNNER_TEMP/mesa"
+          curl -fsSL --retry 5 -o "$RUNNER_TEMP/mesa.tar.xz" \
+            https://github.com/gfx-rs/ci-build/releases/download/build26/mesa-25.2.7-linux-x86_64.tar.xz
+          echo "629bb3cebcd8845e496106e83bfafbee4521f8b7087e9767d083cf5a73285809  $RUNNER_TEMP/mesa.tar.xz" | sha256sum -c -
+          mkdir -p "$mesa"
+          tar -xf "$RUNNER_TEMP/mesa.tar.xz" -C "$mesa"
+          # The tarball's own ICD file points into its build machine.
+          printf '{"file_format_version": "1.0.0", "ICD": {"library_path": "%s", "api_version": "1.4.0"}}\n' \
+            "$mesa/lib/x86_64-linux-gnu/libvulkan_lvp.so" > "$mesa/lvp_icd.json"
+          echo "VK_DRIVER_FILES=$mesa/lvp_icd.json" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # The rwh-outside-seam case runs `cargo deny check bans`.
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-deny@0.20.2
       - run: cargo xtask ci --job selftest
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: report-selftest
           path: target/ci/reports/
+      # Keep rust-cache's post step out of selftest's scratch copies
+      # (amendment 23).
+      - if: always()
+        run: rm -rf target/selftest
 
-  # Cross-architecture equality, the measured PR-tier duration, and the
-  # CI-computed acceptance status.
+  # The five native runners (spec 8.2): build, test with a GPU and a display,
+  # replay, render, open a window. Each runner's adapter is spec 8.3's:
+  # lavapipe on Linux (the pinned build on x64), WARP on Windows, the
+  # runner's Metal device on macOS.
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, windows-2025, windows-11-arm, macos-26]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Windows images check text out with CRLF; the committed hash streams
+      # must stay byte for byte.
+      - name: no line-end conversion
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # A report's target is rustc's host, so this runner needs the native
+      # aarch64 toolchain, not an emulated x64 one (T5, open question 4).
+      - name: native aarch64 toolchain (windows-11-arm)
+        if: matrix.runner == 'windows-11-arm'
+        run: |
+          rustup set default-host aarch64-pc-windows-msvc
+          host=$(rustc -vV | sed -n 's/^host: //p' | tr -d '\r')
+          echo "rustc host: $host"
+          if [ "$host" != aarch64-pc-windows-msvc ]; then
+            echo "::error::rustc's host is $host, not aarch64-pc-windows-msvc"
+            exit 1
+          fi
+      # Ubuntu's lavapipe presents to X11 windows (Linux arm64 renders on it
+      # alone); the pinned build below offers no window surface.
+      - name: xvfb, xdotool, winit's X11 libraries and lavapipe (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb xauth xdotool libx11-6 libx11-xcb1 libxcursor1 \
+            libxi6 libxrandr2 libxkbcommon-x11-0 libvulkan1 mesa-vulkan-drivers
+      - name: pinned Mesa 25.2.7 lavapipe (gfx-rs/ci-build build26, ubuntu-24.04)
+        if: matrix.runner == 'ubuntu-24.04'
+        run: |
+          sudo apt-get install -y -qq libllvm18 libdrm2 libexpat1 libzstd1 zlib1g
+          mesa="$RUNNER_TEMP/mesa"
+          curl -fsSL --retry 5 -o "$RUNNER_TEMP/mesa.tar.xz" \
+            https://github.com/gfx-rs/ci-build/releases/download/build26/mesa-25.2.7-linux-x86_64.tar.xz
+          echo "629bb3cebcd8845e496106e83bfafbee4521f8b7087e9767d083cf5a73285809  $RUNNER_TEMP/mesa.tar.xz" | sha256sum -c -
+          mkdir -p "$mesa"
+          tar -xf "$RUNNER_TEMP/mesa.tar.xz" -C "$mesa"
+          # The tarball's own ICD file points into its build machine.
+          printf '{"file_format_version": "1.0.0", "ICD": {"library_path": "%s", "api_version": "1.4.0"}}\n' \
+            "$mesa/lib/x86_64-linux-gnu/libvulkan_lvp.so" > "$mesa/lvp_icd.json"
+          # Ubuntu's ICD first: it names its library `libvulkan_lvp.so`, which
+          # would resolve to the pinned library if that one loaded first. The
+          # shots, the budget shot and the proof video name the pinned
+          # adapter; windows can only open on Ubuntu's (xtask, ci_native.rs).
+          # Named, not globbed: an i686 ICD would sort first and the 64-bit
+          # loader would skip it.
+          distro=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          if [ ! -f "$distro" ]; then
+            echo "::error::mesa-vulkan-drivers installed no x86_64 lavapipe ICD ($distro)"
+            exit 1
+          fi
+          echo "VK_DRIVER_FILES=$distro:$mesa/lvp_icd.json" >> "$GITHUB_ENV"
+          # The fixed llvmpipe environment (plan decision 3); the shot
+          # harness sets it again for its own shots.
+          echo "LP_NATIVE_VECTOR_WIDTH=256" >> "$GITHUB_ENV"
+      # The Intel Mac is compile-checked only, so only this job downloads
+      # its standard library (amendment 11).
+      - name: the Intel Mac target (macos-26)
+        if: runner.os == 'macOS'
+        run: rustup target add x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-nextest@0.9.148
+      # D3D12 loads d3d10warp.dll from the executable's directory first: the
+      # binaries in target/debug and the test binaries in target/debug/deps.
+      - name: WARP 1.0.20 from its pinned NuGet package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $package = "$env:RUNNER_TEMP\warp.zip"
+          $url = 'https://www.nuget.org/api/v2/package/Microsoft.Direct3D.WARP/1.0.20'
+          Invoke-WebRequest -Uri $url -OutFile $package -MaximumRetryCount 5 -RetryIntervalSec 5
+          $hash = (Get-FileHash -Algorithm SHA256 $package).Hash
+          if ($hash -ne 'e5fe5de661ce98b58ef9cfb736e73c0a7a2623d3bbf5f14839b2d55566d87e40') {
+            throw "WARP package SHA-256 $hash"
+          }
+          Expand-Archive -Path $package -DestinationPath "$env:RUNNER_TEMP\warp"
+          $arch = if ($env:RUNNER_ARCH -eq 'ARM64') { 'arm64' } else { 'x64' }
+          New-Item -ItemType Directory -Force -Path target\debug\deps | Out-Null
+          $dll = "$env:RUNNER_TEMP\warp\build\native\bin\$arch\d3d10warp.dll"
+          Copy-Item $dll target\debug\
+          Copy-Item $dll target\debug\deps\
+      - name: cargo xtask ci --job native
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a -s "-screen 0 1280x1024x24" cargo xtask ci --job native
+          else
+            cargo xtask ci --job native
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: report-native-${{ matrix.runner }}
+          # report.json is the copy of reports/native-<host>.json.
+          path: |
+            target/ci/
+            !target/ci/report.json
+            target/nextest/ci/junit.xml
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: hashes-native-${{ matrix.runner }}
+          path: target/ci/hashes/
+      # Candidates, FLIP maps and shots.json, for the goldens (G6, T16).
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: golden-candidates-${{ matrix.runner }}
+          path: target/golden-candidates/
+      # A shot that panics inside the shot harness writes its crash.json
+      # under the harness's ENG_AGENT_LOG_DIR.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: crash-native-${{ matrix.runner }}
+          path: |
+            target/agent-logs/crash-*.json
+            target/tmp/shots/render/logs/
+          if-no-files-found: ignore
+      # Each step's full log (a report keeps the last lines only).
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: logs-native-${{ matrix.runner }}
+          path: target/agent-logs/
+
+  # Cross-architecture equality across the PR tier and the native jobs, the
+  # measured durations, and the CI-computed acceptance status.
   summary:
-    needs: [lint, test, riscv, wasm, selftest]
+    needs: [lint, test, riscv, wasm, selftest, native]
     if: always()
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       contents: read
       actions: read
@@ -149,7 +334,7 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: target/ci/in
-      - name: compare hashes and measure the PR tier
+      - name: compare hashes and measure the PR tier and the native jobs
         env:
           GH_TOKEN: ${{ github.token }}
         run: cargo xtask ci --job summary
@@ -168,9 +353,10 @@ jobs:
 
   # The one check to require on main: green only if every job above is.
   ci:
-    needs: [lint, test, riscv, wasm, selftest, summary]
+    needs: [lint, test, riscv, wasm, selftest, native, summary]
     if: always()
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     permissions: {}
     steps:
       - name: every job passed

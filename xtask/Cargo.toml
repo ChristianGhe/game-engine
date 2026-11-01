@@ -14,6 +14,9 @@ publish.workspace = true
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 toml = "1.1.8"
+# `selftest golden-edit` reads a golden and writes it back with one pixel
+# changed (rung 1b, criterion 12). The workspace's own version (crate batch 2).
+png = "=0.18.1"
 
 [lints]
 workspace = true

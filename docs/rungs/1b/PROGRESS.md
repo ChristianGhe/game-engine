@@ -6338,6 +6338,31 @@ T3, T9, T11, T12 and T8, and `t13-x2-x6.patch`. The agent applied
   - T16 collects the golden candidates and FLIP maps from it.
   - `agent-push.patch` (amendment 95) goes on top of this commit.
 
+## 2026-11-01, session 18 (continued): a red `quick` from two sessions sharing `target/` (Claude Opus 5.5, with the owner)
+
+After `agent-push.patch` was committed (353872d), the Stop hook's `quick`
+failed at 10:56:45: `-p game-testbed --test version`. The two `quick` runs
+right after it were green, one of them with a forced rebuild of the stamped
+crates.
+
+- **What fails:** `version_json_keys_and_values` compares the stamp in
+  `target/debug/game-testbed` with the values the test was compiled with.
+  Running the test binary directly against a binary with no stamp fails 40
+  times out of 40: `engine_sha: unknown`, `dirty: null`.
+- **What overwrites it:** a second Claude Code session had been open in this
+  repo since about 10:49 (PID 52072), sharing `target/`. An `eng-cli` build
+  with no stamp appeared at 10:57:36, when every build of this session had
+  one, so a plain `cargo` command outside xtask made it. That session's own
+  `xtask quick` ran from 10:59:45 to 11:00:27.
+- **Not proven:** the hook run's detailed log was overwritten by the next
+  run, so the overlap at 10:56 itself cannot be shown. No code on `main`
+  changed between the red run and the green ones, and the same cause
+  reproduces the failure.
+- **Lesson:** one `target/` means one session building at a time, or a
+  `CARGO_TARGET_DIR` per session. A plain `cargo build` or `cargo run -p
+  game-testbed` replaces the binary that the tests of a concurrent `quick`
+  are running.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1
@@ -7602,3 +7627,12 @@ otherwise have to change; the owner applies it, or unlocks the path.
     the guard refuse `git credential fill`, `approve` and `reject`. They
     hand an agent the owner's GitHub token, which would bypass every rule
     above.
+
+98. **Amendment from session 18, shared `target/`** (xtask, protected).
+    - Have `quick` take a lock under `target/xtask/`, so that two sessions'
+      runs queue instead of overwriting each other's binary. A plain `cargo`
+      command can still replace it; the lock covers only what xtask runs.
+    - In `push_tests.rs`, `fetches_githubs_main_when_it_is_missing`, have
+      `has` send git's stderr to null: its expected `fatal: Not a valid
+      object name` shows up in `quick`'s failure output and looks like the
+      cause.

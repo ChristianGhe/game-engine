@@ -634,9 +634,13 @@ client's state at alpha 1, so the pictures are exact.
   first commit, `install-hooks` builds from the working tree instead.
 - Gates: commits go straight to `main` (ADR-0014), so the local guard is
   what stops an agent changing a protected path; it catches accidents and
-  the obvious forms but runs as the agent's own OS user. CI runs every
-  check on every push. If pull requests return, CI's `oracle` workflow
-  (base-branch code only, owner approval or label) becomes the gate.
+  the obvious forms but runs as the agent's own OS user. Agents push with
+  `cargo xtask push`: to `agent/*` branches, and only commits whose
+  protected files match GitHub's `main`. `settings.json` and the guard
+  refuse them `git push`, and `main` stays the owner's (ADR-0018). CI runs
+  every check on every push to either. If pull requests return, CI's
+  `oracle` workflow (base-branch code only, owner approval or label)
+  becomes the gate.
 
 ## The report
 

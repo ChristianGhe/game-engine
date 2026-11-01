@@ -21,3 +21,4 @@ Source: `docs/superpowers/specs/2026-10-20-ai-built-engine-design.md` (draft v3,
 | [0015](0015-open-pulsar-runs.md) | Unattended runs through open-pulsar | Accepted | changes 7.3, 7.5 |
 | [0016](0016-window-handle-traits.md) | Window-handle traits in public APIs | Accepted | changes 6.2 rule 4 (rung 1b gate G4) |
 | [0017](0017-three-pass-graph.md) | Three passes, not two | Proposed | amends ADR-0003 (D7, 6.7): draw, tonemap, present |
+| [0018](0018-agent-branches.md) | Agents push to agent branches | Accepted | amends ADR-0015: agents push `agent/*` branches with `cargo xtask push` |

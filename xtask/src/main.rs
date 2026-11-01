@@ -26,6 +26,7 @@ mod guard_vcs;
 mod guard_words;
 mod hooks;
 mod oracle;
+mod push;
 mod replay;
 mod selftest;
 mod selftest_golden;
@@ -49,6 +50,7 @@ cargo xtask selftest [CASE]            deliberate violations must fail
 cargo xtask acceptance DIR             compute acceptance `passes` from CI job reports
 cargo xtask oracle-check --base REV --head REV
                                        CI: protected changes need the owner
+cargo xtask push [--dry-run] <name>    agents: send HEAD to agent/<name> on GitHub
 cargo xtask hook <guard|verify|fmt|stop|session-start>
                                        Claude Code hooks (run the prebuilt copy)
 cargo xtask install-hooks [--if-stale] build the hook binary from main";
@@ -76,6 +78,7 @@ fn main() -> ExitCode {
         ["selftest", rest @ ..] => selftest::main(rest),
         ["acceptance", dir] => util::root().and_then(|root| acceptance::compute(&root, dir)),
         ["oracle-check", "--base", base, "--head", head] => oracle::check(base, head),
+        ["push", rest @ ..] => push::main(rest),
         ["hook", "fmt"] => hooks::fmt(),
         ["hook", "stop"] => return hooks::stop(),
         ["hook", "session-start"] => hooks::session_start(),

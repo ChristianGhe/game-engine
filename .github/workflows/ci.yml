@@ -12,7 +12,10 @@ name: ci
 on:
   pull_request:
   push:
-    branches: [main]
+    # agent/*: the only branches agents push (ADR-0018). They read main's
+    # build caches and save none, so they cannot push main's out of the
+    # repository's 10 GB.
+    branches: [main, "agent/**"]
 
 permissions: {}
 
@@ -37,6 +40,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
           tool: cargo-deny@0.20.2,typos-cli@1.51.1
@@ -61,6 +66,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
           tool: cargo-nextest@0.9.148
@@ -95,6 +102,8 @@ jobs:
           sudo apt-get install -y -qq gcc-riscv64-linux-gnu libc6-dev-riscv64-cross qemu-user
           rustup target add riscv64gc-unknown-linux-gnu
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo xtask ci --job riscv
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
@@ -117,6 +126,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo xtask ci --job wasm
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
@@ -152,6 +163,8 @@ jobs:
             "$mesa/lib/x86_64-linux-gnu/libvulkan_lvp.so" > "$mesa/lvp_icd.json"
           echo "VK_DRIVER_FILES=$mesa/lvp_icd.json" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # The rwh-outside-seam case runs `cargo deny check bans`.
       - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
@@ -247,6 +260,8 @@ jobs:
         if: runner.os == 'macOS'
         run: rustup target add x86_64-apple-darwin
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
           tool: cargo-nextest@0.9.148
@@ -331,6 +346,8 @@ jobs:
       # rust-cache cleans files out of target/, which would delete artifacts
       # already downloaded to target/ci/in.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: target/ci/in

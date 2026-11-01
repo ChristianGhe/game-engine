@@ -1,6 +1,6 @@
 # ADR-0015: Unattended runs through open-pulsar
 
-- **Status:** Accepted
+- **Status:** Accepted; its push rule is amended by ADR-0018 (2026-11-01)
 - **Date:** 2026-10-24
 - **Decision:** changes the Claude Code setup in spec 7.3 and 7.5 (D14)
 - **Who:** Owner decided to run the work through open-pulsar and asked for

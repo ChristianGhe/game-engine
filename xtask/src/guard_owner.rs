@@ -1,11 +1,12 @@
 //! The guard's checks for what only the owner does: push, change GitHub,
-//! and write jj history (ADR-0015). Agents may read all three.
+//! and write jj history (ADR-0015). Agents may read all three; they send
+//! commits to `agent/*` branches with `cargo xtask push` (ADR-0018).
 
 use crate::guard::Decision;
 use crate::guard_bash::Check;
 use crate::shell::Word;
 
-pub(crate) const OWNER_ONLY: &str = "agents never push or change GitHub; the owner does (ADR-0015)";
+pub(crate) const OWNER_ONLY: &str = "agents never run pushes or change GitHub; `cargo xtask push <name>` sends HEAD to agent/<name> (ADR-0015, ADR-0018)";
 
 /// jj commands that only read (`jj` alone runs `jj log`).
 const JJ_READ: [&str; 12] = [

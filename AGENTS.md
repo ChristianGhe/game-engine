@@ -141,10 +141,10 @@ tooling (`xtask/`, `clippy.toml`, `architecture.toml`, `deny.toml`,
 - Commit directly to `main`; there are no PRs (ADR-0014). Before each
   commit run `cargo xtask quick`; for anything non-trivial, have the
   `reviewer` subagent check the diff against the rung's acceptance list.
-- Agents never push or change GitHub (`gh` writes); the owner pushes (ADR-0015).
+- Push with `cargo xtask push <name>`: it sends HEAD to `agent/<name>`, where
+  CI runs. `git push`, `main`, tags and `gh` writes are the owner's (ADR-0018).
 - Under the open-pulsar loop (your instructions say the outer loop handles
-  version control), commit nothing and only read jj: the loop records each
-  task as a jj change. Finish each task with `cargo xtask quick` green.
-- Keep commits small. CI runs on every push; fix a red `main` first.
-- Write down costs and timings in the rung's `PROGRESS.md`.
+  version control), commit and push nothing and only read jj: the loop
+  records each task as a jj change. Finish each with `cargo xtask quick` green.
+- Small commits; fix a red `main` first; costs and timings go in `PROGRESS.md`.
 - Nothing from this project is sold (ADR-0001): no stores, prices or paid builds.

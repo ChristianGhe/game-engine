@@ -57,7 +57,7 @@ impl Event {
 
 /// 1/512 counts to 1/256 counts, a half away from zero: `m % 2` has the
 /// sign of `m`.
-fn in_256ths(m: i64) -> i128 {
+fn in_sub_counts(m: i64) -> i128 {
     (i128::from(m) + i128::from(m % 2)) / 2
 }
 
@@ -86,9 +86,11 @@ fn model(
                 .rposition(|e| matches!(e, Event::Key(FocusLost)));
             for &event in &events[after.map_or(0, |i| i + 1)..] {
                 match event {
-                    Event::Motion(dx, dy) => (x, y) = (x + in_256ths(dx), y + in_256ths(dy)),
-                    Event::NanX(dy) => y += in_256ths(dy),
-                    Event::InfY(dx) => x += in_256ths(dx),
+                    Event::Motion(dx, dy) => {
+                        (x, y) = (x + in_sub_counts(dx), y + in_sub_counts(dy))
+                    }
+                    Event::NanX(dy) => y += in_sub_counts(dy),
+                    Event::InfY(dx) => x += in_sub_counts(dx),
                     Event::Key(_) => {}
                 }
             }
@@ -208,7 +210,7 @@ proptest! {
         let (mut x, mut y) = (0, 0);
         for &(dx, dy, sample) in &motion {
             rig.live.handle_motion(dx as f64 / 512.0, dy as f64 / 512.0);
-            (x, y) = (x + in_256ths(dx), y + in_256ths(dy));
+            (x, y) = (x + in_sub_counts(dx), y + in_sub_counts(dy));
             if sample {
                 let (yaw, pitch) = rig.tick(&[]);
                 let want = (i128::from(start_yaw) - turn(x, s.sensitivity_microdeg)).rem_euclid(65_536);

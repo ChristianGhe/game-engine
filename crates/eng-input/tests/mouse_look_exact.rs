@@ -1,7 +1,7 @@
 //! Rung 2 criterion 9, `mouse-look`: the exact arithmetic. Each delta
 //! rounds to a 1/256 count, ties away from zero; the turn comes from the
 //! exact sum, so any split into ticks gives the same angles; yaw wraps;
-//! products past `i64` stay exact, and sums saturate at 2^63 256ths.
+//! products past `i64` stay exact, and sums saturate at 2^63 sub-counts.
 //! Values are worked by hand from the rule in `mouse_look.rs`.
 
 mod look_rig;
@@ -39,7 +39,7 @@ fn each_delta_rounds_to_a_256th_of_a_count_first() {
         (neg(1), 1),
         "a half 256th rounds away from zero: 1 right, 1 up"
     );
-    assert_eq!(one(&[(0.3, 0.0)]), (neg(77), 0), "76.8 256ths -> 77");
+    assert_eq!(one(&[(0.3, 0.0)]), (neg(77), 0), "76.8 sub-counts -> 77");
     // Below half a 256th, each delta is 0 on its own, however many come.
     assert_eq!(one(&[(0.0019, 0.0019); 1000]), (0, 0));
     // A delta that is not finite is dropped, on its own axis.
@@ -99,7 +99,7 @@ fn yaw_wraps() {
 fn products_past_i64_are_exact() {
     // 4218.75° per count is 703125 × 6000 millionths, and 703125 millionths
     // turn 128 units a count, so a count turns 768000 units exactly.
-    // 10^15 + 1 counts (exact in f64) are 256 × (10^15 + 1) 256ths, and
+    // 10^15 + 1 counts (exact in f64) are 256 × (10^15 + 1) sub-counts, and
     // that × 4218750000 is about 1.08 × 10^27, far past i64's 9.2 × 10^18.
     let s = with(4_218_750_000, false, 14_563);
     // 768000 × 10^15 is a multiple of 2^16 (768000 = 2^11 × 375, 10^15 =
@@ -117,15 +117,15 @@ fn products_past_i64_are_exact() {
 }
 
 #[test]
-fn sums_saturate_at_2_to_the_63_256ths() {
+fn sums_saturate_at_2_to_the_63_sub_counts() {
     // At 1.40625° per count a 1/256 count is 1 unit, so yaw is minus the
-    // sum in 256ths. f64::MAX × 256 is infinite, which saturates to
+    // sum in sub-counts. f64::MAX × 256 is infinite, which saturates to
     // 2^63 - 1, and -(2^63 - 1) is 1 mod 65536. (2^63 - 1) × 1406250 is
     // about 1.3 × 10^25: i128 again.
     let s = with(1_406_250, false, 16_384);
     assert_eq!(Rig::new(s, 0, 0).tick(&[(f64::MAX, 0.0)]), (1, 0));
     assert_eq!(Rig::new(s, 0, 0).tick(&[(f64::MAX, 0.0); 2]), (1, 0));
-    // 2^54 counts are 2^62 256ths, 0 mod 65536; two ticks of them sum to
+    // 2^54 counts are 2^62 sub-counts, 0 mod 65536; two ticks of them sum to
     // 2^63, one past i64, which saturates to 2^63 - 1.
     let big = (1u64 << 54) as f64;
     let mut rig = Rig::new(s, 0, 0);
@@ -135,7 +135,7 @@ fn sums_saturate_at_2_to_the_63_256ths() {
     // from 2^63 - 1: one count back is 2^63 - 257, so yaw is 257.
     assert_eq!(rig.tick(&[(1.0, 0.0)]), (1, 0));
     assert_eq!(rig.tick(&[(-1.0, 0.0)]), (257, 0));
-    // The other way: f64::MIN is -2^63 256ths; one count right makes
+    // The other way: f64::MIN is -2^63 sub-counts; one count right makes
     // -2^63 + 256, so yaw is 2^63 - 256, which is -256 mod 65536.
     let back = [(f64::MIN, 0.0), (1.0, 0.0)];
     assert_eq!(Rig::new(s, 0, 0).tick(&back), (neg(256), 0));

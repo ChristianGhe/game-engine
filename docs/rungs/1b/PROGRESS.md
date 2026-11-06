@@ -6488,6 +6488,23 @@ five native runners have passed. T16 and T17 were done together from this run.
   two; the third came from T12 and catches a missing dot. With every runner on
   the same bytes, all FLIP numbers are 0 today. CI should then show 18 of 19.
 
+## 2026-11-06, session 19: G6 ready to copy, and amendments 96 and 97 not built (Claude Opus 5.5, orchestrator, owner away)
+
+This was part of the overnight window that drafted rung 2's plan
+(`docs/rungs/2/PROGRESS.md`, session 1).
+
+- **G6:** run 41302087332's candidates are fetched again, since the
+  scratch copies were gone, and kept in the git-ignored
+  `target/g6-candidates-run41302087332/`. All five runners give the same
+  bytes, and the reference is the pinned configuration. With those files
+  as goldens, the harness passes on this Mac's Metal with 0 differing
+  pixels. The owner's three commands are in rung 2's entry. That entry
+  also notes that `main` now carries rung 2's queue, which leaves the
+  four shots byte-identical.
+- **Amendments 96 and 97** (the guard's parser gaps and `git
+  credential`): Anthropic's safeguards stopped the builder partway, and
+  the work was not retried. Both stay open for the owner.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1

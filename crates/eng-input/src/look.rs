@@ -16,17 +16,17 @@
 //!   Multiplying an `f64` by 256 is exact and `f64::round` is an exact IEEE
 //!   operation, so every target gets the same integer. A delta that is not
 //!   finite is dropped.
-//! - The 1/256ths are summed in `i64`, exactly: the angle comes from the
+//! - The sub-counts (1/256 of a count) are summed in `i64`, exactly: the angle comes from the
 //!   sum, never from a sum of rounded turns, so any split of the same
 //!   events into ticks gives the same yaw.
 //! - Sensitivity is an integer, millionths of a degree per count, so the
 //!   setting a player writes (0.066) is exactly the value used. The turn
-//!   for a sum of `n` 1/256ths at `s` millionths of a degree per count is
+//!   for a sum of `n` sub-counts (1/256 of a count) at `s` millionths of a degree per count is
 //!   `n/256 × s/10^6 × 65536/360 = n·s / 1_406_250` binary-angle units,
 //!   rounded half away from zero by one integer division in `i128`. That is
 //!   `round(N·s·65536/360)` for `N = n/256` counts and `s` in degrees.
 //!   `|n·s| < 2^63 · 2^32 = 2^95`, so nothing overflows and nothing is a
-//!   float. The one bound: a sum saturates at `±2^63` 1/256ths (3.6·10^16
+//!   float. The one bound: a sum saturates at `±2^63` sub-counts (1/256 of a count) (3.6·10^16
 //!   counts, years of a mouse moving flat out one way).
 //! - Yaw wraps: it is the base yaw minus the turn, modulo 65536.
 //!
@@ -133,8 +133,8 @@ impl MouseLook {
     /// Takes one motion event: raw device counts, `dx` right and `dy`
     /// towards the user.
     pub fn motion(&mut self, dx: f64, dy: f64) {
-        self.pending.x = self.pending.x.saturating_add(in_256ths(dx));
-        self.pending.y = self.pending.y.saturating_add(in_256ths(dy));
+        self.pending.x = self.pending.x.saturating_add(in_sub_counts(dx));
+        self.pending.y = self.pending.y.saturating_add(in_sub_counts(dy));
     }
 
     /// The window lost focus: motion since the last sample is dropped.
@@ -190,7 +190,7 @@ impl MouseLook {
 /// A delta in 1/256 counts, rounded to nearest, ties away from zero; 0 if
 /// it is not finite. Exact: `× 256` only changes the exponent, `round` is
 /// exact, and `as` saturates.
-fn in_256ths(delta: f64) -> i64 {
+fn in_sub_counts(delta: f64) -> i64 {
     if delta.is_finite() {
         (delta * 256.0).round() as i64
     } else {

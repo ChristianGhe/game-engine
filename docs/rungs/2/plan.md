@@ -259,7 +259,7 @@ passes, all on by default. No new exit code.
    - **Signs:** positive yaw turns toward +Y, so `dx > 0` (right) lowers yaw.
      `dy > 0` is toward the user (`event.rs:19`) and pitch is positive up
      (`script.rs:35`), so `dy > 0` lowers pitch unless inverted.
-   - **Rounding:** each delta becomes a count in 1/256ths, summed exactly in
+   - **Rounding:** each delta becomes a count in sub-counts (1/256 of a count), summed exactly in
      `i64`. A tick's angle is `round(sum × s × 65536 / (360 × 256))` over the
      sum since the last re-base, ties half away from zero, so any split of the
      same motion into ticks gives the same yaw.

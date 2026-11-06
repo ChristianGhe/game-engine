@@ -1,0 +1,222 @@
+//! Ground movement (spec 6.11, rung 2): [`pmove`](crate::pmove) plus
+//! gravity, step-up, step-down and ground snapping, after Quake 2's
+//! `PM_StepSlideMove` and Quake 3's `PM_GroundTrace`. There is no jumping
+//! (Doom has none).
+//!
+//! One tick of [`ground_move`], in this order:
+//!
+//! 1. **Ground check.** A trace [`GROUND_PROBE`] down from the start looks for
+//!    floor: a hit whose normal's z is at least
+//!    [`GroundConfig::min_floor_normal_z`]. Nothing about the ground is kept
+//!    between ticks, so [`MoveState`] keeps its v1 encoding. Its `vel.z` is
+//!    the vertical velocity.
+//! 2. **Velocity.** On the ground, the part of the velocity going into the
+//!    floor is removed, then friction applies. In the air there is no
+//!    friction, and `vel.z -= gravity * dt`. Then the hull accelerates towards
+//!    the command as in `pmove`, on the ground and in the air alike.
+//! 3. **Position, after velocity** (semi-implicit Euler). The hull slides by
+//!    the new velocity times `dt`, so a hull at rest in the air ends its first
+//!    tick `gravity * dt * dt` lower, not at the same height.
+//! 4. **Step up.** The slide runs flat from the start, and again from the
+//!    start raised by up to [`GroundConfig::step_height`] (less under a
+//!    ceiling), then pushed back down by as much. The stepped result is kept
+//!    only if its horizontal travel is strictly greater, comparing squared
+//!    distances exactly in f64. A tie keeps the flat one, so on flat ground
+//!    with nothing to step onto the result is `pmove`'s, bit for bit. As in
+//!    Quake 2, this runs in the air too: a falling hull that brushes a ledge
+//!    within the step height of its feet lands on it.
+//! 5. **Step down.** If the hull was on the ground and the kept move is not
+//!    going up (`vel.z <= 0`), the hull drops onto floor at most
+//!    [`GroundConfig::snap_distance`] below. It walks down stairs instead of
+//!    falling off each one. A deeper drop leaves the ground.
+//!
+//! [`GroundOutcome::on_ground`] is step 1's check at the end position, which
+//! is what the next tick finds.
+
+use eng_collision_api::{BoxHull, CollisionWorld};
+use eng_core::PlayerCommand;
+use eng_math::{Real, Vec3, WorldPos};
+use eng_schema_core::Schema;
+
+use crate::{
+    MAX_PLANES, MoveConfig, MoveOutcome, MoveState, accelerate, clip, friction, slide, wish,
+};
+
+/// How far below the hull the ground check looks (m), about 1 mm. Traces
+/// stop exactly at contact, so a resting hull's probe hits at fraction 0; the
+/// margin only has to be positive.
+pub const GROUND_PROBE: f64 = 1.0 / 1024.0;
+
+/// Ground-movement tuning, in meters and seconds.
+#[derive(Debug, Clone, Copy, PartialEq, Schema)]
+#[schema(name = "kit_fps.GroundConfig", version = 1)]
+pub struct GroundConfig {
+    /// Downward acceleration in the air (m/s²).
+    pub gravity: Real,
+    /// The tallest ledge the hull walks up onto (m).
+    pub step_height: Real,
+    /// The deepest drop a grounded hull follows down instead of falling (m).
+    pub snap_distance: Real,
+    /// The steepest walkable floor, as the smallest z its unit normal may
+    /// have: the cosine of its slope. 0.7 (about 45.6 degrees) is Quake's
+    /// `MIN_WALK_NORMAL`.
+    pub min_floor_normal_z: Real,
+}
+
+impl GroundConfig {
+    /// Earth's gravity, a 0.4 m step and snap, and Quake's steepest floor.
+    pub const DEFAULT: Self = Self {
+        gravity: 9.81,
+        step_height: 0.4,
+        snap_distance: 0.4,
+        min_floor_normal_z: 0.7,
+    };
+}
+
+impl Default for GroundConfig {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// The new state, whether the hull ends on the ground, and the planes the
+/// kept slide (flat or stepped) was clipped against.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GroundOutcome {
+    pub state: MoveState,
+    /// The hull stands on floor at the end of the tick.
+    pub on_ground: bool,
+    planes: [Vec3; MAX_PLANES],
+    plane_count: usize,
+}
+
+impl GroundOutcome {
+    pub fn planes(&self) -> &[Vec3] {
+        &self.planes[..self.plane_count]
+    }
+}
+
+/// Moves the hull for one tick of length `dt` seconds, under gravity and over
+/// steps. The five steps and their order are in [`crate::ground`]'s docs.
+pub fn ground_move<C: CollisionWorld + ?Sized>(
+    state: &MoveState,
+    cmd: &PlayerCommand,
+    config: &MoveConfig,
+    ground: &GroundConfig,
+    dt: Real,
+    world: &C,
+) -> GroundOutcome {
+    let hull = &config.hull;
+    let floor = floor_below(state.pos, hull, ground, world);
+    let (wish_dir, wish_speed) = wish(cmd, config);
+    let mut vel = state.vel;
+    match floor {
+        Some(normal) => vel = friction(off_floor(vel, normal), config, dt),
+        None => vel.z -= ground.gravity * dt,
+    }
+    vel = accelerate(vel, wish_dir, wish_speed, config.accel, dt);
+    let flat = slide(state.pos, vel, dt, hull, world);
+    let mut kept = flat;
+    if let Some(stepped) = step_up(state.pos, vel, dt, hull, ground, world)
+        && travel(state.pos, stepped.state.pos) > travel(state.pos, flat.state.pos)
+    {
+        kept = stepped;
+    }
+    let mut end = kept.state;
+    if floor.is_some() && end.vel.z <= 0.0 {
+        end = step_down(end, hull, ground, world);
+    }
+    GroundOutcome {
+        state: end,
+        on_ground: floor_below(end.pos, hull, ground, world).is_some(),
+        planes: kept.planes,
+        plane_count: kept.plane_count,
+    }
+}
+
+/// The normal of the floor the hull stands on, if it stands on any.
+fn floor_below<C: CollisionWorld + ?Sized>(
+    pos: WorldPos,
+    hull: &BoxHull,
+    ground: &GroundConfig,
+    world: &C,
+) -> Option<Vec3> {
+    let tr = world.trace(pos, below(pos, GROUND_PROBE), hull);
+    (!tr.start_solid && tr.hit() && is_floor(tr.normal, ground)).then_some(tr.normal)
+}
+
+fn is_floor(normal: Vec3, ground: &GroundConfig) -> bool {
+    normal.z >= ground.min_floor_normal_z
+}
+
+fn below(pos: WorldPos, depth: f64) -> WorldPos {
+    WorldPos::new(pos.x, pos.y, pos.z - depth)
+}
+
+/// Removes the velocity's component into a surface, and only that: a hull
+/// already moving along or away from it keeps its velocity bit for bit.
+fn off_floor(vel: Vec3, normal: Vec3) -> Vec3 {
+    if vel.dot(normal) < 0.0 {
+        clip(vel, normal)
+    } else {
+        vel
+    }
+}
+
+/// Squared horizontal distance, in f64.
+fn travel(from: WorldPos, to: WorldPos) -> f64 {
+    let (dx, dy) = (to.x - from.x, to.y - from.y);
+    dx * dx + dy * dy
+}
+
+/// Step 4's second try: raise, slide, push back down by the height gained.
+/// `None` when the hull cannot rise at all.
+fn step_up<C: CollisionWorld + ?Sized>(
+    start: WorldPos,
+    vel: Vec3,
+    dt: Real,
+    hull: &BoxHull,
+    ground: &GroundConfig,
+    world: &C,
+) -> Option<MoveOutcome> {
+    let top = WorldPos::new(start.x, start.y, start.z + f64::from(ground.step_height));
+    let up = world.trace(start, top, hull);
+    let rise = up.end.z - start.z;
+    if up.start_solid || rise <= 0.0 {
+        return None;
+    }
+    let mut out = slide(up.end, vel, dt, hull, world);
+    let down = world.trace(out.state.pos, below(out.state.pos, rise), hull);
+    if !down.start_solid {
+        out.state.pos = down.end;
+        if down.hit() {
+            out.state.vel = off_floor(out.state.vel, down.normal);
+        }
+    }
+    Some(out)
+}
+
+/// Step 5: drops the hull onto floor at most the snap distance below.
+fn step_down<C: CollisionWorld + ?Sized>(
+    mut state: MoveState,
+    hull: &BoxHull,
+    ground: &GroundConfig,
+    world: &C,
+) -> MoveState {
+    let snap = f64::from(ground.snap_distance);
+    let from = state.pos;
+    // A trace that ends exactly touching floor reports no hit, so look one
+    // probe further and then check the drop, which keeps the snap distance
+    // itself inclusive.
+    let tr = world.trace(from, below(from, snap + GROUND_PROBE), hull);
+    if !tr.start_solid
+        && tr.hit()
+        && tr.fraction > 0.0
+        && is_floor(tr.normal, ground)
+        && from.z - tr.end.z <= snap
+    {
+        state.pos = tr.end;
+        state.vel = off_floor(state.vel, tr.normal);
+    }
+    state
+}

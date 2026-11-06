@@ -2,10 +2,15 @@
 //! `bg_pmove`: friction, acceleration towards the commanded direction, then
 //! collide-and-slide against up to [`MAX_PLANES`] planes.
 //!
-//! Rung 1a moves on a flat floor. Gravity, step-up, step-down and ground
-//! snapping arrive with real levels at rung 2.
+//! [`pmove`] moves on a flat floor, as rung 1a's dot does. [`ground_move`]
+//! (rung 2, [`ground`]) adds gravity, step-up, step-down and ground snapping
+//! on top of it, for real levels.
 #![no_std]
 #![forbid(unsafe_code)]
+
+pub mod ground;
+
+pub use ground::{GROUND_PROBE, GroundConfig, GroundOutcome, ground_move};
 
 use eng_collision_api::{BoxHull, CollisionWorld};
 use eng_core::PlayerCommand;

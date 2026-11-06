@@ -262,7 +262,7 @@ Graph::fixed(Offscreen):
   draw ──▶ scene (Rgba16Float, linear) ──tonemap──▶ output (Rgba8UnormSrgb)
                                     output ──Targets::read_output──▶ Image (RGBA8)
 Graph::fixed(Surface) adds present: output ──▶ surface (Bgra8UnormSrgb)
-Graph::sorted(PassNodes) ──order, cull, pool──▶ Graph (passes, culled, pool)
+Graph::sorted_without(PassNodes, off) ──order, bypass, cull, pool──▶ Graph
 Graph::render ──▶ FrameCounters (draws, switches, uploaded bytes)
 ```
 
@@ -291,14 +291,20 @@ Graph::render ──▶ FrameCounters (draws, switches, uploaded bytes)
   must write. Its passes run in the order given. `Graph::fixed` is rung
   1b's list, and the one eng-render draws through.
 - **The sorted graph** (rung 2, ADR-0019, proposed): `Graph::sorted` takes
-  `PassNode`s, which add `continues`, the earlier pass whose target a pass
-  draws on top of.
+  `PassNode`s, which add `continues`, the earlier pass whose targets a pass
+  draws on top of (writing some or all of them), and `bypassable`.
+  `Graph::sorted_without` also takes the names of passes switched off.
   - Order: a pass runs after the pass it continues and after the last
     writer of each resource it reads; among passes free to run the
     smallest name goes first, as eng-sim orders systems, so any order of
-    declaration gives the same graph. A cycle, or two passes that write
-    one resource with neither continuing the other, fails with
-    `[E-GRAPH]` naming the passes.
+    declaration gives the same passes, culled and bypassed passes, and
+    pool. A cycle, or two passes that write one resource with neither
+    continuing the other, fails with `[E-GRAPH]` naming the passes.
+  - Bypass: a switched-off bypassable pass is removed and its write takes
+    its input's texture (same format and size, or `[E-GRAPH]`), so its
+    readers read the input; the rest is sorted as if it were never
+    declared, and `Graph::bypassed` names it. Switching off a pass that
+    may not be bypassed is `[E-GRAPH]`.
   - Culling: a pass whose writes reach neither the output nor the surface
     is dropped, and `Graph::culled` names it.
   - Pooling: `Resource::Transient` declares a texture that lives within a
@@ -307,11 +313,15 @@ Graph::render ──▶ FrameCounters (draws, switches, uploaded bytes)
     not overlap (`Graph::pool`): a chain of ping-pong passes needs two.
     `Targets` makes the textures on the first frame that needs them and
     keeps them (`Targets::transient_textures`); a resize makes new targets.
+    This GPU side is built ahead of the plan's T8.
+  - A pass may write several resources in the plan; `Graph::render` draws
+    only passes with one until T8.
 
-  `Graph::render` takes one `Pass` per declaration, in the order declared
-  (culled ones are checked but do not record), and records and encodes in
-  running order. Each records into a `PassRecorder`: a clear (a continuing
-  pass loads its target instead), then draws of two kinds.
+  `Graph::render` takes one `Pass` per declaration, in the order declared.
+  The passes that run are checked and record in running order; culled and
+  bypassed ones are checked and do not record. Each records into a
+  `PassRecorder`: a clear (a continuing pass loads its target instead),
+  then draws of two kinds.
   - Fullscreen: eng-gpu owns the vertex stage (`src/fullscreen.wgsl`); the
     caller writes the fragment stage, which gets `uv` and may bind the
     pass's one read as `input`, with a sampler that takes the nearest

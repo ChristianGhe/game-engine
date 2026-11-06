@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{Format, GraphError, PassDecl, Resource, Transient};
+use super::{Aliases, Format, GraphError, PassDecl, Resource, Transient};
 
 /// One texture of a graph's pool ([`crate::Graph::pool`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,18 +44,19 @@ struct Lifetime {
 }
 
 impl Plan {
-    /// Plans the transients of `passes`, in running order. Each texture is
-    /// given to the transients in the order they start, the lowest-numbered
-    /// free texture of the right kind first, which gives each kind as few
-    /// textures as its busiest moment needs.
-    pub(crate) fn new(passes: &[PassDecl]) -> Result<Self, GraphError> {
-        check_transients(passes.iter().flat_map(|p| p.reads.iter().chain(p.writes)))?;
+    /// Plans the transients of `passes`, in running order, each resource
+    /// drawn where `aliases` says (a bypassed pass's write takes its input's
+    /// texture). Each texture is given to the transients in the order they
+    /// start, the lowest-numbered free texture of the right kind first,
+    /// which gives each kind as few textures as its busiest moment needs.
+    /// The declarations have passed [`check_transients`].
+    pub(crate) fn new(passes: &[PassDecl], aliases: &Aliases) -> Self {
         let mut lifetimes: BTreeMap<&'static str, Lifetime> = BTreeMap::new();
         for (at, pass) in passes.iter().enumerate() {
             let reads = pass.reads.iter().map(|r| (r, true));
             let writes = pass.writes.iter().map(|r| (r, false));
-            for (resource, read) in reads.chain(writes) {
-                let &Resource::Transient(transient) = resource else {
+            for (&resource, read) in reads.chain(writes) {
+                let Resource::Transient(transient) = aliases.of(resource) else {
                     continue;
                 };
                 let lifetime = lifetimes.entry(transient.name).or_insert(Lifetime {
@@ -105,7 +106,7 @@ impl Plan {
             busy_until[index] = last;
             plan.assigned.insert(transient.name, index);
         }
-        Ok(plan)
+        plan
     }
 
     pub(crate) fn textures(&self) -> &[PooledTexture] {
@@ -119,7 +120,8 @@ impl Plan {
     }
 }
 
-/// Transients of one name agree, and none divides the targets' size by 0.
+/// Transients of one name agree, none is named like a built-in resource,
+/// and none divides the targets' size by 0.
 pub(super) fn check_transients<'a>(
     resources: impl Iterator<Item = &'a Resource>,
 ) -> Result<(), GraphError> {
@@ -128,6 +130,12 @@ pub(super) fn check_transients<'a>(
         let &Resource::Transient(transient) = resource else {
             continue;
         };
+        let built_in = [Resource::Scene, Resource::Output, Resource::Surface];
+        if built_in.iter().any(|r| r.name() == transient.name) {
+            return Err(GraphError::TransientName {
+                name: transient.name,
+            });
+        }
         if transient.divisor == 0 {
             return Err(GraphError::Divisor {
                 name: transient.name,

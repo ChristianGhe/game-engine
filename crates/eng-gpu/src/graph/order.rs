@@ -8,9 +8,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{GraphError, PassNode, Resource, Target, pool};
+use super::{Aliases, GraphError, PassNode, Resource, Target, bypass, pool};
 
-/// The declared passes in the order they run, before culling.
+/// Passes in the order they run, before culling.
 pub(super) struct Sorted {
     /// Indexes into the declarations, in running order.
     pub(super) order: Vec<usize>,
@@ -19,6 +19,8 @@ pub(super) struct Sorted {
     pub(super) after: Vec<BTreeSet<usize>>,
 }
 
+/// Checks the declarations and sorts all of them, as declared: no pass is
+/// switched off and no resource takes another's texture.
 pub(super) fn sort(nodes: &[PassNode], target: Target) -> Result<Sorted, GraphError> {
     let mut by_name: Vec<usize> = (0..nodes.len()).collect();
     by_name.sort_by_key(|&i| nodes[i].name);
@@ -30,36 +32,58 @@ pub(super) fn sort(nodes: &[PassNode], target: Target) -> Result<Sorted, GraphEr
             pass: nodes[pair[0]].name,
         });
     }
-    let named: BTreeMap<&'static str, usize> = nodes
-        .iter()
-        .enumerate()
-        .map(|(i, node)| (node.name, i))
-        .collect();
+    let named = names(nodes);
     for &i in &by_name {
         own_checks(&nodes[i], target)?;
     }
     for &i in &by_name {
         continued(nodes, &named, i)?;
     }
+    bypass::check_shapes(nodes, &by_name)?;
     pool::check_transients(
         by_name
             .iter()
             .flat_map(|&i| nodes[i].reads.iter().chain(nodes[i].writes)),
     )?;
-
-    // Each resource's writers, in name order.
-    let mut writers: BTreeMap<Resource, Vec<usize>> = BTreeMap::new();
+    bypass::check_formats(nodes, &by_name)?;
+    let written: BTreeSet<Resource> = nodes
+        .iter()
+        .flat_map(|node| node.writes.iter().copied())
+        .collect();
     for &i in &by_name {
-        for &resource in nodes[i].writes {
-            writers.entry(resource).or_default().push(i);
-        }
-    }
-    for &i in &by_name {
-        if let Some(&resource) = nodes[i].reads.iter().find(|r| !writers.contains_key(r)) {
+        if let Some(&resource) = nodes[i].reads.iter().find(|r| !written.contains(r)) {
             return Err(GraphError::Unwritten {
                 pass: nodes[i].name,
                 resource,
             });
+        }
+    }
+    if !written.contains(&Resource::Output) {
+        return Err(GraphError::OutputNotWritten);
+    }
+    if target == Target::Surface && !written.contains(&Resource::Surface) {
+        return Err(GraphError::SurfaceNotWritten);
+    }
+    arrange(nodes, &vec![true; nodes.len()], &Aliases::default())
+}
+
+/// Sorts the `live` passes, each resource seen as the one whose texture it
+/// takes (`aliases`). After [`sort`] has passed, the only errors left are
+/// two writers of one resource and a cycle among the declarations; with
+/// passes bypassed, neither can arise anew.
+pub(super) fn arrange(
+    nodes: &[PassNode],
+    live: &[bool],
+    aliases: &Aliases,
+) -> Result<Sorted, GraphError> {
+    let named = names(nodes);
+    let mut by_name: Vec<usize> = (0..nodes.len()).filter(|&i| live[i]).collect();
+    by_name.sort_by_key(|&i| nodes[i].name);
+    // Each resource's writers, in name order.
+    let mut writers: BTreeMap<Resource, Vec<usize>> = BTreeMap::new();
+    for &i in &by_name {
+        for &resource in nodes[i].writes {
+            writers.entry(aliases.of(resource)).or_default().push(i);
         }
     }
     let mut last: BTreeMap<Resource, usize> = BTreeMap::new();
@@ -68,31 +92,33 @@ pub(super) fn sort(nodes: &[PassNode], target: Target) -> Result<Sorted, GraphEr
             last.insert(resource, end);
         }
     }
-    if !writers.contains_key(&Resource::Output) {
-        return Err(GraphError::OutputNotWritten);
-    }
-    if target == Target::Surface && !writers.contains_key(&Resource::Surface) {
-        return Err(GraphError::SurfaceNotWritten);
-    }
-
     let mut after = vec![BTreeSet::new(); nodes.len()];
-    for (i, node) in nodes.iter().enumerate() {
+    for &i in &by_name {
+        let node = &nodes[i];
         if let Some(&continued) = node.continues.and_then(|name| named.get(name)) {
             after[i].insert(continued);
         }
-        for resource in node.reads {
-            if let Some(&writer) = last.get(resource) {
+        for &resource in node.reads {
+            if let Some(&writer) = last.get(&aliases.of(resource)) {
                 after[i].insert(writer);
             }
         }
     }
-    let order = topological(nodes, &after)?;
+    let order = topological(nodes, &after, live)?;
     Ok(Sorted { order, after })
 }
 
+fn names(nodes: &[PassNode]) -> BTreeMap<&'static str, usize> {
+    nodes
+        .iter()
+        .enumerate()
+        .map(|(i, node)| (node.name, i))
+        .collect()
+}
+
 /// The rules [`super::Graph::new`] applies to each pass that do not depend
-/// on the order: the surface offscreen, the output as the surface, and one
-/// write.
+/// on the order: the surface offscreen and the output as the surface; and
+/// at least one write, none twice.
 fn own_checks(node: &PassNode, target: Target) -> Result<(), GraphError> {
     let uses_surface = node
         .reads
@@ -105,17 +131,22 @@ fn own_checks(node: &PassNode, target: Target) -> Result<(), GraphError> {
     if node.writes.contains(&Resource::Output) && node.writes.contains(&Resource::Surface) {
         return Err(GraphError::OutputIsSurface { pass: node.name });
     }
-    if node.writes.len() != 1 {
-        return Err(GraphError::Writes {
-            pass: node.name,
-            count: node.writes.len(),
-        });
+    if node.writes.is_empty() {
+        return Err(GraphError::WritesNothing { pass: node.name });
+    }
+    for (k, resource) in node.writes.iter().enumerate() {
+        if node.writes[..k].contains(resource) {
+            return Err(GraphError::WritesTwice {
+                pass: node.name,
+                resource: *resource,
+            });
+        }
     }
     Ok(())
 }
 
-/// The pass that `nodes[i]` continues exists and writes what it writes. Each
-/// pass writes one resource by now.
+/// The pass that `nodes[i]` continues exists, writes everything `nodes[i]`
+/// writes, and may not be bypassed.
 fn continued(
     nodes: &[PassNode],
     named: &BTreeMap<&'static str, usize>,
@@ -131,12 +162,17 @@ fn continued(
             continues,
         });
     };
-    if nodes[j].writes != node.writes {
+    if let Some(&resource) = node.writes.iter().find(|r| !nodes[j].writes.contains(r)) {
         return Err(GraphError::ContinuesOther {
             pass: node.name,
-            writes: node.writes[0],
+            resource,
             continues,
-            continued_writes: nodes[j].writes[0],
+        });
+    }
+    if nodes[j].bypassable && j != i {
+        return Err(GraphError::ContinuesBypassable {
+            pass: node.name,
+            continues,
         });
     }
     Ok(())
@@ -144,8 +180,8 @@ fn continued(
 
 /// The last of the passes that write `resource` (`chain`, in name order),
 /// which its readers run after: one starts it, and each other continues
-/// another, which no third pass continues. `None` if every writer continues
-/// another, which is a cycle that the sort reports.
+/// another, which no third pass that writes it continues. `None` if every
+/// writer continues another, which is a cycle that the sort reports.
 fn chain_end(
     nodes: &[PassNode],
     named: &BTreeMap<&'static str, usize>,
@@ -165,7 +201,8 @@ fn chain_end(
     if let [first, second, ..] = starts[..] {
         return Err(two(first, second));
     }
-    // continued_by[c] = the pass that continues c.
+    // continued_by[c] = the pass that continues c, among those writing
+    // `resource`. A continued pass writes all its continuer writes.
     let mut continued_by: BTreeMap<usize, usize> = BTreeMap::new();
     for &i in chain {
         let Some(&c) = nodes[i].continues.and_then(|name| named.get(name)) else {
@@ -187,8 +224,13 @@ fn chain_end(
     }))
 }
 
-/// Kahn's sort, taking the ready pass with the smallest name each time.
-fn topological(nodes: &[PassNode], after: &[BTreeSet<usize>]) -> Result<Vec<usize>, GraphError> {
+/// Kahn's sort of the `live` passes, taking the ready pass with the
+/// smallest name each time.
+fn topological(
+    nodes: &[PassNode],
+    after: &[BTreeSet<usize>],
+    live: &[bool],
+) -> Result<Vec<usize>, GraphError> {
     let mut waiting: Vec<usize> = after.iter().map(BTreeSet::len).collect();
     let mut before: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
     for (i, earlier) in after.iter().enumerate() {
@@ -197,7 +239,7 @@ fn topological(nodes: &[PassNode], after: &[BTreeSet<usize>]) -> Result<Vec<usiz
         }
     }
     let mut ready: BTreeSet<(&'static str, usize)> = (0..nodes.len())
-        .filter(|&i| waiting[i] == 0)
+        .filter(|&i| live[i] && waiting[i] == 0)
         .map(|i| (nodes[i].name, i))
         .collect();
     let mut order = Vec::with_capacity(nodes.len());
@@ -210,7 +252,7 @@ fn topological(nodes: &[PassNode], after: &[BTreeSet<usize>]) -> Result<Vec<usiz
             }
         }
     }
-    if order.len() == nodes.len() {
+    if order.len() == live.iter().filter(|&&l| l).count() {
         Ok(order)
     } else {
         Err(GraphError::Cycle {

@@ -6,8 +6,10 @@ use std::fmt;
 use super::{PassDecl, Resource};
 
 /// A graph whose declarations do not fit together, or passes that do not
-/// match their graph.
+/// match their graph. Rung 2 added variants, and more may come, so a match
+/// outside eng-gpu needs a wildcard arm.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum GraphError {
     ReadBeforeWrite {
         pass: &'static str,
@@ -46,12 +48,47 @@ pub enum GraphError {
         pass: &'static str,
         continues: &'static str,
     },
-    /// A pass continues one that writes another resource.
+    /// A pass of [`crate::Graph::sorted`] writes nothing.
+    WritesNothing {
+        pass: &'static str,
+    },
+    /// A pass of [`crate::Graph::sorted`] lists one write twice.
+    WritesTwice {
+        pass: &'static str,
+        resource: Resource,
+    },
+    /// A pass writes `resource`, which the pass it continues does not.
     ContinuesOther {
         pass: &'static str,
-        writes: Resource,
+        resource: Resource,
         continues: &'static str,
-        continued_writes: Resource,
+    },
+    /// A pass continues one that may be bypassed.
+    ContinuesBypassable {
+        pass: &'static str,
+        continues: &'static str,
+    },
+    /// A pass marked bypassable that cannot be: `reason` says why.
+    Unbypassable {
+        pass: &'static str,
+        reason: &'static str,
+    },
+    /// A bypassable pass whose write differs from its input in format or
+    /// size, so it could not take the input's texture.
+    BypassMismatch {
+        pass: &'static str,
+        input: Resource,
+        output: Resource,
+    },
+    /// [`crate::Graph::sorted_without`] switches off a pass that is not
+    /// declared.
+    UnknownSwitchedOff {
+        pass: &'static str,
+    },
+    /// [`crate::Graph::sorted_without`] switches off a pass that may not be
+    /// bypassed.
+    NotBypassable {
+        pass: &'static str,
     },
     /// A pass of [`crate::Graph::sorted`] reads what no pass writes.
     Unwritten {
@@ -76,6 +113,10 @@ pub enum GraphError {
     },
     /// A transient whose divisor is 0.
     Divisor {
+        name: &'static str,
+    },
+    /// A transient named `scene`, `output` or `surface`.
+    TransientName {
         name: &'static str,
     },
 }
@@ -140,17 +181,53 @@ impl fmt::Display for GraphError {
                 f,
                 "pass `{pass}` continues `{continues}`, but no pass has that name"
             ),
+            Self::WritesNothing { pass } => write!(
+                f,
+                "pass `{pass}` writes nothing; a pass writes at least one resource"
+            ),
+            Self::WritesTwice { pass, resource } => write!(
+                f,
+                "pass `{pass}` lists `{}` among its writes twice",
+                resource.name()
+            ),
             Self::ContinuesOther {
                 pass,
-                writes,
+                resource,
                 continues,
-                continued_writes,
             } => write!(
                 f,
-                "pass `{pass}` writes `{}` but continues `{continues}`, which writes `{}`; \
-                 a pass continues one that writes the same resource",
-                writes.name(),
-                continued_writes.name()
+                "pass `{pass}` writes `{}` but continues `{continues}`, which does not; \
+                 a pass writes only what the pass it continues writes",
+                resource.name()
+            ),
+            Self::ContinuesBypassable { pass, continues } => write!(
+                f,
+                "pass `{pass}` continues `{continues}`, which may be bypassed; \
+                 a pass that may be bypassed is never continued"
+            ),
+            Self::Unbypassable { pass, reason } => {
+                write!(f, "pass `{pass}` may be bypassed, but {reason}")
+            }
+            Self::BypassMismatch {
+                pass,
+                input,
+                output,
+            } => write!(
+                f,
+                "pass `{pass}` may be bypassed, but `{}` differs from its input `{}` in format \
+                 or size, so it cannot take the input's texture",
+                output.name(),
+                input.name()
+            ),
+            Self::UnknownSwitchedOff { pass } => {
+                write!(
+                    f,
+                    "pass `{pass}` is switched off, but no pass has that name"
+                )
+            }
+            Self::NotBypassable { pass } => write!(
+                f,
+                "pass `{pass}` is switched off, but it may not be bypassed"
             ),
             Self::Unwritten { pass, resource } => write!(
                 f,
@@ -189,6 +266,10 @@ impl fmt::Display for GraphError {
             Self::Divisor { name } => write!(
                 f,
                 "transient `{name}` divides the targets' size by 0; 1 is full size"
+            ),
+            Self::TransientName { name } => write!(
+                f,
+                "a transient is named `{name}`, like a built-in resource; give it another name"
             ),
         }
     }

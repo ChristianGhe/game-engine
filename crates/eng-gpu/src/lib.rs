@@ -29,18 +29,19 @@
 //!     one eng-render draws through.
 //!   - Rung 2's graph (ADR-0019, proposed): [`Graph::sorted`] orders
 //!     [`PassNode`]s by what they read, write and continue (a pass that
-//!     draws on top of an earlier pass's target), names breaking ties;
+//!     draws on top of an earlier pass's targets), names breaking ties;
 //!     refuses a cycle and two writers of one resource with `[E-GRAPH]`;
-//!     drops the passes whose writes reach neither the output nor the
-//!     surface ([`Graph::culled`]); and plans the frame's
-//!     [`Resource::Transient`]s ([`Transient`]), which share a texture when
-//!     their format, size and usage match and their lifetimes do not
-//!     overlap ([`Graph::pool`]).
+//!     with [`Graph::sorted_without`], bypasses switched-off passes, whose
+//!     readers read their input ([`Graph::bypassed`]); drops the passes
+//!     whose writes reach neither the output nor the surface
+//!     ([`Graph::culled`]); and plans the frame's [`Resource::Transient`]s
+//!     ([`Transient`]), which share a texture when their format, size and
+//!     usage match and their lifetimes do not overlap ([`Graph::pool`]).
 //! - **[`Pass`]**: each frame, [`Graph::render`] takes one pass per
 //!   declaration, in the order declared, has every pass that runs record
-//!   into a [`PassRecorder`], checks each recording against its declaration,
-//!   then uploads the frame's instances, and encodes and submits the frame
-//!   in running order. A pass can clear its target (unless it continues
+//!   into a [`PassRecorder`] in running order, checks each recording against
+//!   its declaration, then uploads the frame's instances, and encodes and
+//!   submits the frame. A pass can clear its target (unless it continues
 //!   another, whose target it loads) and draw, in order:
 //!   - [`FullscreenPipeline`]s, which take the pass's one read as input;
 //!     the caller writes only their fragment stage;

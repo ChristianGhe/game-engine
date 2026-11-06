@@ -23,6 +23,7 @@ const fn node(
         reads,
         writes,
         continues: None,
+        bypassable: false,
     }
 }
 
@@ -38,18 +39,21 @@ const CHAIN: [PassNode; 4] = [
         reads: &[],
         writes: &[PING],
         continues: None,
+        bypassable: false,
     },
     PassNode {
         name: "2-step",
         reads: &[PING],
         writes: &[PONG],
         continues: None,
+        bypassable: false,
     },
     PassNode {
         name: "3-step",
         reads: &[PONG],
         writes: &[PING_AGAIN],
         continues: None,
+        bypassable: false,
     },
     node("4-out", &[PING_AGAIN], &[Resource::Output]),
 ];
@@ -102,48 +106,56 @@ fn a_longer_chain_still_needs_two() {
             reads: &[],
             writes: &[T[0]],
             continues: None,
+            bypassable: false,
         },
         PassNode {
             name: "p1",
             reads: &[T[0]],
             writes: &[T[1]],
             continues: None,
+            bypassable: false,
         },
         PassNode {
             name: "p2",
             reads: &[T[1]],
             writes: &[T[2]],
             continues: None,
+            bypassable: false,
         },
         PassNode {
             name: "p3",
             reads: &[T[2]],
             writes: &[T[3]],
             continues: None,
+            bypassable: false,
         },
         PassNode {
             name: "p4",
             reads: &[T[3]],
             writes: &[T[4]],
             continues: None,
+            bypassable: false,
         },
         PassNode {
             name: "p5",
             reads: &[T[4]],
             writes: &[T[5]],
             continues: None,
+            bypassable: false,
         },
         PassNode {
             name: "p6",
             reads: &[T[5]],
             writes: &[T[6]],
             continues: None,
+            bypassable: false,
         },
         PassNode {
             name: "p7",
             reads: &[T[6]],
             writes: &[T[7]],
             continues: None,
+            bypassable: false,
         },
         node("p8", &[T[7]], &[Resource::Output]),
     ];
@@ -252,6 +264,7 @@ fn culled_passes_take_no_texture() {
         reads: &[Resource::Scene],
         writes: &[transient("unread")],
         continues: None,
+        bypassable: false,
     };
     let graph = Graph::sorted(&[DRAW.node(), UNREAD, TONEMAP.node()], Target::Offscreen)
         .unwrap_or_else(|e| panic!("{e}"));
@@ -268,6 +281,7 @@ fn a_continued_transient_keeps_one_texture_through_its_chain() {
             reads: &[],
             writes: &[PING],
             continues: Some("1-start"),
+            bypassable: false,
         },
         CHAIN[1],
         CHAIN[2],
@@ -298,12 +312,14 @@ fn transients_of_one_name_must_agree() {
             reads: &[PING],
             writes: &[Resource::Scene],
             continues: None,
+            bypassable: false,
         },
         PassNode {
             name: "3-odd",
             reads: &[OTHER],
             writes: &[Resource::Output],
             continues: None,
+            bypassable: false,
         },
     ];
     let e = Graph::sorted(&nodes, Target::Offscreen).unwrap_err();

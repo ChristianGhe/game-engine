@@ -122,24 +122,28 @@ const START: PassNode = PassNode {
     reads: &[],
     writes: &[Resource::Transient(PING)],
     continues: None,
+    bypassable: false,
 };
 const STEP_1: PassNode = PassNode {
     name: "step-1",
     reads: &[Resource::Transient(PING)],
     writes: &[Resource::Transient(PONG)],
     continues: None,
+    bypassable: false,
 };
 const STEP_2: PassNode = PassNode {
     name: "step-2",
     reads: &[Resource::Transient(PONG)],
     writes: &[Resource::Transient(PING_AGAIN)],
     continues: None,
+    bypassable: false,
 };
 const OUT: PassNode = PassNode {
     name: "out",
     reads: &[Resource::Transient(PING_AGAIN)],
     writes: &[Resource::Output],
     continues: None,
+    bypassable: false,
 };
 
 /// The chain's passes, declared out of order.
@@ -256,6 +260,7 @@ const BASE: PassNode = PassNode {
     reads: &[],
     writes: &[Resource::Transient(LAYER)],
     continues: None,
+    bypassable: false,
 };
 // "a-over" sorts before "base" by name, but runs after it.
 const OVER: PassNode = PassNode {
@@ -263,12 +268,14 @@ const OVER: PassNode = PassNode {
     reads: &[],
     writes: &[Resource::Transient(LAYER)],
     continues: Some("base"),
+    bypassable: false,
 };
 const SHOW: PassNode = PassNode {
     name: "show",
     reads: &[Resource::Transient(LAYER)],
     writes: &[Resource::Output],
     continues: None,
+    bypassable: false,
 };
 
 /// A quad over the left half, in green.

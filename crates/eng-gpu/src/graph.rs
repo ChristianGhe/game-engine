@@ -4,23 +4,30 @@
 //!
 //! - [`Graph::new`] and [`Graph::fixed`] are rung 1b's: the passes run in
 //!   the order given, each read after an earlier write.
-//! - [`Graph::sorted`] is rung 2's: it orders [`PassNode`]s itself
-//!   (`order.rs`), drops the passes whose writes reach neither the output nor
-//!   the surface (`cull.rs`), and plans the transient textures (`pool.rs`).
+//! - [`Graph::sorted`] and [`Graph::sorted_without`] are rung 2's: they
+//!   order [`PassNode`]s themselves (`order.rs`), bypass the passes switched
+//!   off (`bypass.rs`), drop the passes whose writes reach neither the output
+//!   nor the surface (`cull.rs`), and plan the transient textures
+//!   (`pool.rs`).
 //!
 //! Both kinds of graph render the same way ([`Graph::render`]).
 
+mod bypass;
 mod cull;
 mod error;
 mod order;
 mod pool;
 
+pub(crate) use bypass::Aliases;
 pub use error::GraphError;
 pub(crate) use pool::Plan;
 pub use pool::PooledTexture;
 
-/// A virtual resource that passes read and write.
+/// A virtual resource that passes read and write. Rung 2 added
+/// [`Resource::Transient`], and more may come, so a match outside eng-gpu
+/// needs a wildcard arm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum Resource {
     /// The scene: linear, scene-referred HDR colour (`Rgba16Float`).
     Scene,
@@ -62,7 +69,8 @@ pub enum Format {
 
 /// A transient texture, declared where passes read and write it as
 /// [`Resource::Transient`]. Its name identifies it: a graph refuses two
-/// transients of one name that differ in format or size.
+/// transients of one name that differ in format or size, and one named
+/// `scene`, `output` or `surface`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Transient {
     pub name: &'static str,
@@ -104,20 +112,23 @@ pub struct PassDecl {
 }
 
 impl PassDecl {
-    /// The same pass for [`Graph::sorted`], continuing no other.
+    /// The same pass for [`Graph::sorted`], continuing no other and never
+    /// bypassed.
     pub const fn node(self) -> PassNode {
         PassNode {
             name: self.name,
             reads: self.reads,
             writes: self.writes,
             continues: None,
+            bypassable: false,
         }
     }
 }
 
-/// A pass as [`Graph::sorted`] takes it: what it reads and writes, and the
-/// earlier pass whose target it draws on top of, if any. Its order comes
-/// from these, not from where it is declared.
+/// A pass as [`Graph::sorted`] takes it: what it reads and writes, the
+/// earlier pass whose targets it draws on top of, if any, and whether it may
+/// be switched off. Its order comes from these, not from where it is
+/// declared.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PassNode {
     /// Unique within a graph; it breaks ties in the order.
@@ -125,15 +136,23 @@ pub struct PassNode {
     /// Each is read after every pass that writes it. A fullscreen pass draws
     /// from its one read ([`crate::PassRecorder::fullscreen`]).
     pub reads: &'static [Resource],
-    /// Exactly one: the pass's colour target. Only one pass may start a
-    /// resource; any other pass that writes it continues the one before.
+    /// At least one, each once. Only one pass may start a resource; any
+    /// other pass that writes it continues one that does. The plan takes
+    /// several; [`Graph::render`] draws only passes with one, for now.
     pub writes: &'static [Resource],
-    /// The pass whose target this one draws on top of. It must write the
-    /// same resource; this pass runs after it, loads the target instead of
-    /// clearing it, and the resource's readers run after both. A pass can be
-    /// continued by one pass only, so the passes that write a resource form
-    /// one chain. With `None` the pass clears its target.
+    /// The pass whose targets this one draws on top of. It writes some or
+    /// all of what that pass writes, and nothing else; it runs after it,
+    /// loads its targets instead of clearing them, and their readers run
+    /// after both. Of the passes that write one resource, only one continues
+    /// a given pass, so they form one chain. With `None` the pass clears its
+    /// targets.
     pub continues: Option<&'static str>,
+    /// Whether the pass may be switched off ([`Graph::sorted_without`]).
+    /// A bypassed pass is removed and its one write takes the texture of its
+    /// input, its first read: they must have the same format and size. Such a
+    /// pass reads at least one resource, writes one, and neither continues
+    /// nor is continued.
+    pub bypassable: bool,
 }
 
 impl PassNode {
@@ -194,6 +213,9 @@ pub struct Graph {
     /// loads its target rather than clearing it.
     pub(crate) loads: Vec<bool>,
     culled: Vec<&'static str>,
+    bypassed: Vec<&'static str>,
+    /// The resource whose texture each bypassed resource takes.
+    pub(crate) aliases: Aliases,
     pub(crate) plan: Plan,
 }
 
@@ -204,11 +226,14 @@ impl Graph {
     /// - the output is written, never by the pass that writes the surface;
     /// - an offscreen graph never uses the surface, and a surface graph
     ///   writes it;
-    /// - transients of one name agree, and none is divided by 0.
+    /// - transients of one name agree, none is named like a built-in
+    ///   resource, and none is divided by 0. These come first, so that a
+    ///   read of a transient whose format differs is reported as that.
     ///
-    /// Each pass clears its target, and none is culled. Transients are
-    /// pooled as in [`Graph::sorted`].
+    /// Each pass clears its target, and none is culled or bypassed.
+    /// Transients are pooled as in [`Graph::sorted`].
     pub fn new(passes: &[PassDecl], target: Target) -> Result<Self, GraphError> {
+        pool::check_transients(passes.iter().flat_map(|p| p.reads.iter().chain(p.writes)))?;
         let mut written: Vec<Resource> = Vec::new();
         for pass in passes {
             let uses_surface = pass
@@ -251,7 +276,9 @@ impl Graph {
             slots: (0..passes.len()).collect(),
             loads: vec![false; passes.len()],
             culled: Vec::new(),
-            plan: Plan::new(passes)?,
+            bypassed: Vec::new(),
+            plan: Plan::new(passes, &Aliases::default()),
+            aliases: Aliases::default(),
         })
     }
 
@@ -265,16 +292,20 @@ impl Graph {
     }
 
     /// Orders `nodes` by what they read, write and continue, whatever order
-    /// they are declared in, then culls and pools (ADR-0019, proposed):
-    /// - **Order:** a pass runs after the pass it continues, and after every
-    ///   pass that writes what it reads. Among passes free to run, the
-    ///   smallest name goes first, as eng-sim orders systems, so any
-    ///   permutation of the same nodes gives the same order.
+    /// they are declared in, then culls and pools (ADR-0019, proposed). It is
+    /// [`Graph::sorted_without`] with every pass switched on.
+    /// - **Order:** a pass runs after the pass it continues, and after the
+    ///   last pass that writes each resource it reads. Among passes free to
+    ///   run, the smallest name goes first, as eng-sim orders systems. The
+    ///   checks also go in name order, so any permutation of the same nodes
+    ///   gives the same [`Graph::passes`], [`Graph::culled`],
+    ///   [`Graph::bypassed`] and [`Graph::pool`], or the same error.
     /// - **Checks**, each failing with `[E-GRAPH]` and naming the passes:
-    ///   unique names; one write each; a continued pass that exists and
-    ///   writes the same resource; every read written by some pass; one
-    ///   chain of writers per resource (two passes that write it with
-    ///   neither continuing the other fail); no cycle; and [`Graph::new`]'s
+    ///   unique names; at least one write each, none twice; a continued pass
+    ///   that exists and writes all that its continuer writes; every read
+    ///   written by some pass; one chain of writers per resource (two passes
+    ///   that write it with neither continuing the other fail); no cycle;
+    ///   the bypass rules ([`PassNode::bypassable`]); and [`Graph::new`]'s
     ///   rules on the output and the surface.
     /// - **Culling:** a pass whose writes reach neither the output nor the
     ///   surface is dropped, and [`Graph::culled`] names it.
@@ -282,13 +313,31 @@ impl Graph {
     ///   and usage match and their lifetimes within the frame do not overlap
     ///   ([`Graph::pool`]).
     pub fn sorted(nodes: &[PassNode], target: Target) -> Result<Self, GraphError> {
-        let sorted = order::sort(nodes, target)?;
-        let keep = cull::kept(nodes, &sorted.after);
+        Self::sorted_without(nodes, &[], target)
+    }
+
+    /// [`Graph::sorted`] with the passes named in `off` switched off. Each
+    /// must be [`PassNode::bypassable`]: it is removed, and its readers read
+    /// its input, whose texture its write takes (the palette pass switched
+    /// off: the tone map draws into the output). The rest is ordered and
+    /// culled as if the bypassed passes had never been declared, and
+    /// [`Graph::bypassed`] names them. A name in `off` that no pass has, or
+    /// a pass that may not be bypassed, fails with `[E-GRAPH]`.
+    pub fn sorted_without(
+        nodes: &[PassNode],
+        off: &[&'static str],
+        target: Target,
+    ) -> Result<Self, GraphError> {
+        let declared = order::sort(nodes, target)?;
+        let bypass = bypass::plan(nodes, off)?;
+        let live: Vec<bool> = (0..nodes.len()).map(|i| !bypass.off[i]).collect();
+        let sorted = order::arrange(nodes, &live, &bypass.aliases)?;
+        let keep = cull::kept(nodes, &sorted.after, &live, &bypass.aliases);
         let (run, culled): (Vec<usize>, Vec<usize>) =
             sorted.order.iter().partition(|&&index| keep[index]);
         let passes: Vec<PassDecl> = run.iter().map(|&index| nodes[index].decl()).collect();
-        let plan = Plan::new(&passes)?;
         Ok(Self {
+            plan: Plan::new(&passes, &bypass.aliases),
             passes,
             target,
             declared: nodes.iter().map(PassNode::decl).collect(),
@@ -298,7 +347,13 @@ impl Graph {
                 .collect(),
             slots: run,
             culled: culled.iter().map(|&index| nodes[index].name).collect(),
-            plan,
+            bypassed: declared
+                .order
+                .iter()
+                .filter(|&&index| bypass.off[index])
+                .map(|&index| nodes[index].name)
+                .collect(),
+            aliases: bypass.aliases,
         })
     }
 
@@ -316,6 +371,12 @@ impl Graph {
     /// Empty for a [`Graph::new`] graph.
     pub fn culled(&self) -> &[&'static str] {
         &self.culled
+    }
+
+    /// The passes switched off and bypassed ([`Graph::sorted_without`]), in
+    /// the order they would have run.
+    pub fn bypassed(&self) -> &[&'static str] {
+        &self.bypassed
     }
 
     /// The transient textures a frame needs, in the order it first uses

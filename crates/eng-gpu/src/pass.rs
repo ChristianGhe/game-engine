@@ -151,11 +151,13 @@ impl PassRecorder {
 
 impl Graph {
     /// Records `passes`, one for each of the graph's declarations and in the
-    /// order they were declared, culled ones included, then submits the
-    /// frame and returns what it counted. The passes record in running
-    /// order; a culled pass is checked against its declaration but does not
-    /// record. Each pass draws into the target it writes, transients into
-    /// the targets' pool; a later [`Targets::read_output`] sees the frame.
+    /// order they were declared, culled and bypassed ones included, then
+    /// submits the frame and returns what it counted. The passes that run
+    /// are checked against their declarations and record in running order;
+    /// then the others are checked, and do not record. Each pass draws into
+    /// the target it writes, transients into the targets' pool; a later
+    /// [`Targets::read_output`] sees the frame. A pass that runs must write
+    /// one resource: drawing into several comes later (rung 2, T8).
     pub fn render(
         &self,
         gpu: &Gpu,
@@ -163,6 +165,7 @@ impl Graph {
         passes: &mut [&mut dyn Pass],
     ) -> Result<FrameCounters, GpuError> {
         self.encode(gpu, targets, None, passes)
+            .map(|(counters, _)| counters)
     }
 
     /// Like [`Graph::render`], with a window's image as the
@@ -188,15 +191,18 @@ impl Graph {
             )));
         }
         self.encode(gpu, targets, Some(&frame.view), passes)
+            .map(|(counters, _)| counters)
     }
 
+    /// Encodes and submits a frame, and returns its counters and how many
+    /// debug groups it opened.
     fn encode(
         &self,
         gpu: &Gpu,
         targets: &Targets,
         surface: Option<&wgpu::TextureView>,
         passes: &mut [&mut dyn Pass],
-    ) -> Result<FrameCounters, GpuError> {
+    ) -> Result<(FrameCounters, u32), GpuError> {
         if passes.len() != self.declared.len() {
             return Err(GraphError::PassCount {
                 expected: self.declared.len(),
@@ -204,42 +210,57 @@ impl Graph {
             }
             .into());
         }
-        // Where each declared pass runs, if it does.
-        let mut runs_at = vec![None; self.declared.len()];
-        for (at, &slot) in self.slots.iter().enumerate() {
-            runs_at[slot] = Some(at);
-        }
-        let mut recorded: Vec<Option<PassRecorder>> = std::iter::repeat_with(|| None)
-            .take(self.passes.len())
-            .collect();
-        for (index, (decl, pass)) in self.declared.iter().zip(passes.iter_mut()).enumerate() {
-            let found = pass.decl();
-            if found != *decl {
-                return Err(GraphError::PassMismatch {
+        let matches = |index: usize, pass: &dyn Pass| {
+            let (expected, found) = (self.declared[index], pass.decl());
+            if found == expected {
+                Ok(())
+            } else {
+                Err(GraphError::PassMismatch {
                     index,
-                    expected: *decl,
+                    expected,
                     found,
-                }
-                .into());
+                })
             }
-            let Some(at) = runs_at[index] else { continue };
+        };
+        // The passes that run, in running order: for a Graph::new graph,
+        // the order given, as in rung 1b.
+        let mut recorded = Vec::with_capacity(self.slots.len());
+        for (at, &index) in self.slots.iter().enumerate() {
+            matches(index, &*passes[index])?;
+            let decl = &self.declared[index];
+            if decl.writes.len() != 1 {
+                return Err(GpuError::Pass {
+                    pass: decl.name,
+                    message: format!(
+                        "it writes {} resources, and drawing into more than one target is not \
+                         built yet (rung 2, T8)",
+                        decl.writes.len()
+                    ),
+                });
+            }
             let mut rec = PassRecorder::new();
-            pass.record(&mut rec);
+            passes[index].record(&mut rec);
             rec.check(decl, self.loads[at])?;
-            recorded[at] = Some(rec);
+            recorded.push(rec);
         }
-        // Every pass that runs recorded, in running order.
-        let recorded: Vec<PassRecorder> = recorded.into_iter().flatten().collect();
+        // Then the culled and bypassed passes, which do not record.
+        for (index, pass) in passes.iter().enumerate() {
+            if !self.slots.contains(&index) {
+                matches(index, &**pass)?;
+            }
+        }
         let pooled = if self.plan.textures().is_empty() {
             Vec::new()
         } else {
             targets.pooled(gpu, &self.plan)?
         };
         // Only a surface graph uses the surface, which the targets may lack.
-        // Each pass writes exactly one resource (Graph::new, Graph::sorted).
+        // Each pass that runs writes one resource (checked above), drawn into
+        // the texture of the resource it takes, if bypassing made it take
+        // another's.
         let mut views = Vec::with_capacity(recorded.len());
         for decl in &self.passes {
-            let view = |r: Resource| match (r, surface) {
+            let view = |r: Resource| match (self.aliases.of(r), surface) {
                 (Resource::Surface, Some(window)) => Ok(window),
                 (Resource::Transient(transient), _) => self
                     .plan
@@ -251,7 +272,7 @@ impl Graph {
                             transient.name
                         ))
                     }),
-                _ => targets.view(r).ok_or(GpuError::NoSurface),
+                (r, _) => targets.view(r).ok_or(GpuError::NoSurface),
             };
             let input = decl.reads.first().map(|&r| view(r)).transpose()?;
             views.push((view(decl.writes[0])?, input));
@@ -282,10 +303,12 @@ impl Graph {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("frame"),
                 });
+            let mut groups = 0;
             let steps = self.passes.iter().zip(&self.loads).zip(&recorded);
             for (((decl, &loads), rec), (target, input)) in steps.zip(&views) {
                 if gpu.debug {
                     encoder.push_debug_group(decl.name);
+                    groups += 1;
                 }
                 frame.encode(&mut encoder, decl, rec, loads, target, *input);
                 if gpu.debug {
@@ -293,7 +316,7 @@ impl Graph {
                 }
             }
             gpu.queue.submit([encoder.finish()]);
-            frame.counters
+            (frame.counters, groups)
         })
         .map_err(GpuError::Wgpu)
     }
@@ -439,9 +462,10 @@ mod tests {
         }
     }
 
-    /// `WGPU_DEBUG=1` wraps each pass in a debug group; wgpu fails the
-    /// frame if a group is left open or closed twice. Set here directly, so
-    /// that the path runs without the variable.
+    /// `WGPU_DEBUG=1` wraps each pass in a debug group: one opened per pass,
+    /// none without it, and wgpu fails the frame if a group is left open or
+    /// closed twice. Set here directly, so that the path runs without the
+    /// variable.
     #[test]
     fn debug_groups_open_and_close_around_each_pass() {
         let mut gpu = match Gpu::new(&GpuOptions::from_env()) {
@@ -452,10 +476,21 @@ mod tests {
             }
             Err(e) => panic!("{e}"),
         };
-        gpu.debug = true;
         let targets = Targets::new(&gpu, 4, 4).unwrap_or_else(|e| panic!("{e}"));
-        Graph::fixed(Target::Offscreen)
-            .render(&gpu, &targets, &mut [&mut Clear(DRAW), &mut Clear(TONEMAP)])
-            .unwrap_or_else(|e| panic!("{e}"));
+        let groups = |gpu: &Gpu| {
+            let (_, groups) = Graph::fixed(Target::Offscreen)
+                .encode(
+                    gpu,
+                    &targets,
+                    None,
+                    &mut [&mut Clear(DRAW), &mut Clear(TONEMAP)],
+                )
+                .unwrap_or_else(|e| panic!("{e}"));
+            groups
+        };
+        gpu.debug = true;
+        assert_eq!(groups(&gpu), 2);
+        gpu.debug = false;
+        assert_eq!(groups(&gpu), 0);
     }
 }

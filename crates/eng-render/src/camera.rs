@@ -6,9 +6,12 @@
 //!   looks along +X and positive yaw turns toward +Y, counter-clockwise
 //!   seen from above. Positive pitch looks up, toward +Z.
 //! - **Camera-relative.** A position is subtracted from the eye in f64
-//!   ([`WorldPos::relative_to`]) and only then rounded to f32, so a camera
-//!   10^9 m from the origin sees a nearby point exactly as a camera at the
-//!   origin sees the same offset. The matrix never holds a translation.
+//!   ([`WorldPos::relative_to`]), and only that difference is rounded to
+//!   f32 and projected; the matrix never holds a translation. So the
+//!   projection depends on the f64 difference (point minus eye) alone:
+//!   a camera 10^9 m from the origin projects a point bit for bit as a
+//!   camera at the origin projects the same offset, for any offset the
+//!   f64 grid can represent at that distance (steps of 2^-23 m there).
 //! - **Reversed-Z, infinite far.** A point `d` meters ahead of the eye has
 //!   clip `w = d` and `z = near`, so its depth `z / w` is `near / d`: 1 on
 //!   the near plane, falling toward 0 with distance and never reaching it.
@@ -18,8 +21,9 @@
 //!   target cleared to 0 and tested with "greater".
 //! - **Clip space** is wgpu's: x from -1 at the image's left edge to 1 at
 //!   its right, y from -1 at the bottom to 1 at the top, depth in [0, 1].
-//! - All trigonometry is f64 through eng-math, rounded to f32 once, so the
-//!   matrices are the same on every target.
+//! - All trigonometry is f64 through eng-math (the pinned, plain-Rust
+//!   libm), rounded to f32 once, so the matrices do not depend on the
+//!   target's own maths library.
 
 use eng_math::{BAngle, Real, Vec3, WorldPos, sin_cos_f64};
 
@@ -173,7 +177,8 @@ impl FirstPersonCamera {
     /// The matrix's rows are the camera's right axis times `f / aspect`,
     /// its up axis times `f`, `(0, 0, 0, near)` and its forward axis, where
     /// `f` is the cotangent of half the field of view. Each is computed in
-    /// f64 and rounded to f32 once.
+    /// f64 and rounded to f32 once; an entry too large for f32 (an aspect
+    /// near 0, say 1e-39 at 90°) is an `[E-SCENE]` error too.
     pub fn view_proj(&self, aspect: Real) -> Result<ViewProj, RenderError> {
         self.check()?;
         if !(aspect.is_finite() && aspect > 0.0) {
@@ -200,6 +205,15 @@ impl FirstPersonCamera {
             [0.0, 0.0, 0.0, self.near],
             row(forward, 1.0),
         ]);
+        if !matrix.cols.iter().flatten().all(|v| v.is_finite()) {
+            return Err(RenderError::Scene {
+                shape: None,
+                problem: format!(
+                    "an aspect ratio of {aspect} with this field of view makes the projection \
+                     too large for f32"
+                ),
+            });
+        }
         Ok(ViewProj {
             eye: self.eye,
             matrix,

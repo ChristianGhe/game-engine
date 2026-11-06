@@ -56,7 +56,7 @@
 //!   sRGB colours by OKLab distance, and the [`BAYER_4X4`] dither matrix.
 //!
 //! Their floats go through eng-math only, as the simulation's do, so the
-//! CPU gives the same numbers on every target.
+//! numbers do not depend on the target's own maths library.
 #![forbid(unsafe_code)]
 
 mod camera;

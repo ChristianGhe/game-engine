@@ -47,8 +47,9 @@ pub fn direction_to(from: WorldPos, to: WorldPos) -> Option<BAngle> {
     if dx == 0.0 && dy == 0.0 {
         return None;
     }
-    // atan2 gives (-pi, pi]; as a signed count of 2^-32 turns that is
-    // (-2^31, 2^31], which wraps into the u32 circle.
+    // atan2 gives [-pi, pi] (-pi when dy is -0.0 and dx is negative); as a
+    // signed count of 2^-32 turns that is [-2^31, 2^31], which wraps into
+    // the u32 circle, both ends to a half turn.
     let turns = atan2_f64(dy, dx) / TAU_F64;
     let units = round_f64(turns * 4_294_967_296.0) as i64;
     Some(BAngle(units as u32))

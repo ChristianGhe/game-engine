@@ -22,8 +22,8 @@
 //!   the cell takes the colour at the smallest squared OKLab distance, and
 //!   among equal distances the lowest palette index.
 //! - **Determinism.** f32 arithmetic with eng-math's `pow` and `cbrt` (the
-//!   pinned libm) only, in a fixed order, so every target bakes the same
-//!   bytes.
+//!   pinned, plain-Rust libm) only, in a fixed order, so the bytes should
+//!   not depend on the target; `tests/palette.rs` pins a hash of them.
 //! - **Dither.** [`bayer`] builds the ordered-dither matrix of any power of
 //!   two up to 16; the look uses [`BAYER_4X4`] through [`bayer4_offset`].
 

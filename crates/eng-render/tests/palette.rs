@@ -224,11 +224,14 @@ fn two_bakes_give_the_same_bytes() {
     assert_eq!(a.indices().len(), LUT_CELLS);
     assert_eq!(a.indices(), b.indices());
     assert_eq!(a.to_rgba8(), b.to_rgba8());
-    // A change detector that must hold on every target, as the bake uses
-    // only IEEE operations and the pinned libm: the table's FNV-1a-64,
-    // first taken on aarch64-apple-darwin. A difference on another target
-    // is a determinism bug; a deliberate change to the bake moves it, and
-    // its commit says why.
+    // A change detector: the table's FNV-1a-64, taken on
+    // aarch64-apple-darwin. CI runs it in the test job (Linux x86-64 and
+    // arm64) and the native job (Linux and Windows on x86-64 and arm64,
+    // macOS on arm64); the riscv job tests core crates only, so not there.
+    // x86-64 should match, as the bake uses IEEE operations and libm's
+    // plain-Rust powf and cbrtf, but that was not measured when this was
+    // pinned. A difference on any of them is a determinism bug; a
+    // deliberate change to the bake moves it, and its commit says why.
     let hash = Fnv1a64::hash(a.indices());
     assert_eq!(hash, 0xb41e_b64d_bbf0_d3f4, "{hash:#018x}");
 }

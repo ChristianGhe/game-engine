@@ -339,3 +339,27 @@ fn cameras_that_cannot_make_an_image_are_scene_errors() {
         assert!(good.view_proj(aspect).is_err(), "aspect {aspect}");
     }
 }
+
+#[test]
+fn an_aspect_too_small_for_f32_is_a_scene_error() {
+    let good = camera(WorldPos::ORIGIN, BAngle::ZERO, BAngle::ZERO);
+    // At 90° the focal length is 1, so f / aspect is 1e39 or more: past
+    // f32's largest value, about 3.4e38, though the aspect is finite and
+    // above 0.
+    for aspect in [1e-39, f32::from_bits(1)] {
+        let error = good.view_proj(aspect).unwrap_err();
+        assert!(matches!(error, RenderError::Scene { shape: None, .. }));
+        assert!(error.to_string().starts_with("[E-SCENE] "), "{error}");
+    }
+    // 1e-38 gives about 1e38, which fits.
+    let fits = good.view_proj(1e-38).unwrap();
+    assert!(fits.matrix().cols.iter().flatten().all(|v| v.is_finite()));
+    // The narrowest view, 2^-32 of a turn, has a focal length near 1.4e9,
+    // so an aspect of 1e-30 overflows too, and an aspect of 1 does not.
+    let narrow = FirstPersonCamera {
+        fov_y: BAngle(1),
+        ..good
+    };
+    assert!(narrow.view_proj(1e-30).is_err());
+    assert!(narrow.view_proj(1.0).is_ok());
+}

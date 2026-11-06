@@ -149,9 +149,11 @@ fn pushing_uphill_on_a_steep_slope_gains_no_height() {
         let mut s = start;
         for i in 0..60 {
             let out = tick(&steep, &s, &east());
-            // Off the floor only gravity acts. Clipped along a plane whose
-            // normal has z > 0, a downward velocity stays downward, so the
-            // bound is exact: z never rises, on any tick.
+            // Off the floor only gravity acts. For a normal (-a, 0, b) the
+            // clipped vertical velocity is a(a*vz + b*vx), which stays <= 0
+            // here only because the hull starts at rest and, with no air
+            // control, vx never turns positive. So in this setup z never
+            // rises, on any tick; it is not true of every downhill slide.
             assert!(
                 out.state.pos.z <= s.pos.z,
                 "nz {nz}, tick {i}: rose from {s:?} to {out:?}"

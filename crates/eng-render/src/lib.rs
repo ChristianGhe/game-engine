@@ -42,13 +42,40 @@
 //!   and `play` reports carry them; a budgets file's `[gpu]` table, when it
 //!   has one, limits `shot` and `video` frames (`budgets.toml` has one;
 //!   acceptance feature `gpu-report-budgets`).
+//!
+//! Rung 2's first-person pipeline (`render-retro`) starts with its CPU
+//! parts, which no pass uses yet (plan queue item Q4):
+//! - **[`FirstPersonCamera`]**: an f64 eye, [`BAngle`](eng_math::BAngle)
+//!   yaw and pitch and a vertical field of view, made ready for an aspect
+//!   ratio as a [`ViewProj`]: positions subtracted from the eye in f64,
+//!   then a reversed-Z perspective with an infinite far plane.
+//! - **[`sprite_rotation`]**: which of a thing's 8 rotations the viewer
+//!   sees, by plan decision 4's integer rule, and [`RotationSheet`]'s
+//!   mirror flags for sheets that draw only 5.
+//! - **[`PaletteLut`]**: the palette look's 32x32x32 table, baked from
+//!   sRGB colours by OKLab distance, and the [`BAYER_4X4`] dither matrix.
+//!
+//! Their floats go through eng-math only, as the simulation's do, so the
+//! CPU gives the same numbers on every target.
 #![forbid(unsafe_code)]
 
+mod camera;
 mod error;
+mod palette;
 mod renderer;
 mod scene;
+mod sprite_rot;
 
+pub use camera::{Clip, FirstPersonCamera, Mat4, ViewBasis, ViewProj};
 pub use eng_gpu::FrameCounters;
 pub use error::RenderError;
+pub use palette::{
+    BAYER_4X4, LUT_CELLS, LUT_SIDE, MAX_PALETTE_COLOURS, Oklab, PaletteError, PaletteLut, Srgb8,
+    bayer, bayer4_offset, lut_cell_centre, srgb_to_linear,
+};
 pub use renderer::Renderer;
 pub use scene::{LinearRgb, Quad, Shape, TopDownCamera, TopDownScene};
+pub use sprite_rot::{
+    RotationSheet, SPRITE_ROTATIONS, SheetFrame, direction_to, sprite_rotation,
+    sprite_rotation_toward,
+};

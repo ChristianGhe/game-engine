@@ -8,9 +8,22 @@
 //!   axis (X, Y, Z). The hit axis ends exactly on the face.
 //! - If rounding would still leave the end inside a box, the trace reports a
 //!   hit at its start instead (fraction 0), so it never ends inside solid.
+//!   [`fallbacks`] counts these. The tests assert it stays put, so the
+//!   sweeps they rely on were exact and the fallback hid nothing.
+
+use std::cell::Cell;
 
 use eng_collision_api::{BoxHull, CollisionWorld, Trace};
 use eng_math::{Vec3, WorldPos, max_f64};
+
+thread_local! {
+    static FALLBACKS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// How many traces on this thread have fallen back to a hit at their start.
+pub fn fallbacks() -> usize {
+    FALLBACKS.with(Cell::get)
+}
 
 /// One solid box.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -125,6 +138,7 @@ impl Boxes {
     /// A hit at `start`: the face of the first box holding `bad` that
     /// `start` is outside of.
     fn blocked(&self, start: WorldPos, bad: WorldPos, hull: &BoxHull) -> Trace {
+        FALLBACKS.with(|n| n.set(n.get() + 1));
         let (s, b) = (axes(start), axes(bad));
         let normal = self
             .0

@@ -4,7 +4,7 @@
 #[path = "support/boxes.rs"]
 mod boxes;
 
-use boxes::{Boxes, course, solid};
+use boxes::{Boxes, course, fallbacks, solid};
 use eng_collision_api::{BoxHull, CollisionWorld, conformance};
 use eng_math::{Vec3, WorldPos};
 use proptest::prelude::*;
@@ -87,6 +87,8 @@ proptest! {
         let world = course();
         let start = at(x, y, z);
         prop_assume!(!world.overlaps(start, &HULL));
+        let before = fallbacks();
         conformance::check(&world, start, at(x + dx, y + dy, z + dz), &HULL);
+        prop_assert_eq!(fallbacks(), before, "an inexact sweep fell back");
     }
 }

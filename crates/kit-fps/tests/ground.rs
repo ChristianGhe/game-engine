@@ -1,13 +1,14 @@
 //! `ground_move` (spec 6.11, rung 2): gravity, step-up, step-down and ground
-//! snapping, checked exactly in worlds of solid boxes.
+//! snapping, checked exactly in worlds of solid boxes. Slopes are in
+//! `slopes.rs`.
 
 #[path = "support/boxes.rs"]
 mod boxes;
 
-use boxes::{Boxes, course, solid};
-use eng_collision_api::{BoxHull, BoxRoom, CollisionWorld, Trace};
+use boxes::{Boxes, course, fallbacks, solid};
+use eng_collision_api::{BoxHull, BoxRoom, CollisionWorld};
 use eng_core::{PlayerCommand, Tick};
-use eng_math::{Vec3, WorldPos, clamp_f64};
+use eng_math::{Vec3, WorldPos};
 use eng_schema_core::{Schema, from_bytes, to_bytes};
 use kit_fps::{GroundConfig, GroundOutcome, MoveConfig, MoveState, ground_move, pmove};
 use proptest::prelude::*;
@@ -136,7 +137,9 @@ proptest! {
     ) {
         let start = state([x, y, H], [vx, vy, 0.0]);
         same_as_pmove(&ROOM, start, &commands)?;
+        let before = fallbacks();
         same_as_pmove(&walled_room(), start, &commands)?;
+        prop_assert_eq!(fallbacks(), before, "an inexact sweep fell back");
     }
 }
 
@@ -146,7 +149,8 @@ fn in_the_air_velocity_changes_first_then_position() {
     let mut s = state([4.0, 3.0, 2.0], [1.5, 0.0, 0.0]);
     let mut air_ticks = 0;
     loop {
-        let out = tick(&world, &s, &cmd(0, 0, 0));
+        // Full stick north-east: in the air it changes nothing.
+        let out = tick(&world, &s, &cmd(127, 127, 0x2000));
         if out.on_ground {
             assert_eq!((out.state.pos.z, out.state.vel.z), (H, 0.0), "landed");
             break;
@@ -156,8 +160,8 @@ fn in_the_air_velocity_changes_first_then_position() {
         let z = s.pos.z + f64::from(vz) * f64::from(DT);
         assert_eq!(out.state.vel.z.to_bits(), vz.to_bits(), "tick {air_ticks}");
         assert_eq!(out.state.pos.z.to_bits(), z.to_bits(), "tick {air_ticks}");
-        // No friction in the air.
-        assert_eq!(out.state.vel.x, 1.5);
+        // No friction and no air control.
+        assert_eq!((out.state.vel.x, out.state.vel.y), (1.5, 0.0));
         assert_eq!(out.state.pos.x, s.pos.x + 1.5 * f64::from(DT));
         s = out.state;
         air_ticks += 1;
@@ -201,6 +205,21 @@ fn a_taller_step_blocks() {
         assert!(out.on_ground);
         s = out.state;
     }
+}
+
+#[test]
+fn a_fast_hull_steps_over_a_low_rail_onto_floor_at_its_own_height() {
+    // The stepped move clears the 5 cm rail in one tick, so its push-down
+    // lands on the floor at exactly the start's height, which the push finds
+    // only by looking one probe past the rise.
+    let world = Boxes(vec![
+        solid([-1.0, -1.0, -1.0], [8.0, 3.0, 0.0]),
+        solid([2.0, -1.0, 0.0], [2.05, 3.0, 0.3]),
+    ]);
+    let out = tick(&world, &state([1.73, 1.0, H], [40.0, 0.0, 0.0]), &east());
+    assert!(out.state.pos.x > 2.05 + 0.25, "{out:?}");
+    assert_eq!(out.state.pos.z, H);
+    assert!(out.on_ground);
 }
 
 /// A floor at z = 0, and for x < 4 a ledge `depth` above it.
@@ -262,127 +281,27 @@ fn a_deeper_drop_leaves_the_ground_then_falls_under_gravity() {
 }
 
 #[test]
-fn a_falling_hull_that_brushes_a_ledge_lands_on_it() {
-    // Feet 0.2 m below the ledge's top, falling and moving west towards it.
+fn a_falling_hull_does_not_step_onto_a_ledge() {
+    // Feet 0.2 m below the ledge's top, falling and moving west into its side:
+    // only a hull on the ground steps up, so this one slides down the side.
     let s = state([4.3, 1.0, 0.8 + H], [-4.0, 0.0, -1.0]);
     let out = tick(&ledge(1.0), &s, &cmd(127, 0, 0x8000));
-    assert_eq!(out.state.pos.z, 1.0 + H, "{out:?}");
-    assert!(out.state.pos.x < 4.25 && out.on_ground, "{out:?}");
-    assert_eq!(out.state.vel.z, 0.0);
+    assert_eq!(out.state.pos.x, 4.25, "{out:?}");
+    assert!(out.state.pos.z < s.pos.z && !out.on_ground, "{out:?}");
+    assert_eq!(out.planes(), [Vec3::new(1.0, 0.0, 0.0)]);
 }
 
 #[test]
-fn a_hull_on_the_ground_keeps_no_velocity_into_the_floor() {
+fn a_hull_on_the_ground_has_no_vertical_velocity() {
+    // Nothing lifts a hull off the floor (no jumping), and nothing pushes it in.
     let world = walled_room();
-    let sinking = tick(&world, &state([4.0, 3.0, H], [2.0, 1.0, -3.0]), &east());
     let level = tick(&world, &state([4.0, 3.0, H], [2.0, 1.0, 0.0]), &east());
-    assert_eq!(sinking, level);
-    assert!(sinking.planes().is_empty(), "the floor is not a plane hit");
-}
-
-#[test]
-fn a_hull_on_the_ground_moving_up_is_not_snapped_down() {
-    let out = tick(
-        &walled_room(),
-        &state([4.0, 3.0, H], [0.0, 0.0, 1.0]),
-        &cmd(0, 0, 0),
-    );
-    assert_eq!(out.state.pos.z, H + f64::from(DT));
-    assert!(!out.on_ground);
-}
-
-/// Solid below a plane through the origin with unit normal `n`, since boxes
-/// have no slopes. A hit stops at contact, and only a hull more than
-/// [`SKIN`] inside counts as overlapping.
-struct Slope(Vec3);
-
-/// The f32 velocity `pmove` clips against a tilted plane is still a little
-/// into it, and its slide zeroes the velocity when it hits the same plane
-/// twice. A 1 µm skin keeps that rounding from stopping the hull, so this
-/// test sees only the floor rule.
-const SKIN: f64 = 1e-6;
-
-impl Slope {
-    /// The hull's distance from the plane; negative inside.
-    fn gap(&self, at: WorldPos, hull: &BoxHull) -> f64 {
-        let (n, h) = (self.0, hull.half_extents);
-        let reach = f64::from(n.x.abs() * h.x + n.y.abs() * h.y + n.z.abs() * h.z);
-        f64::from(n.x) * at.x + f64::from(n.y) * at.y + f64::from(n.z) * at.z - reach
+    for vz in [-3.0, 1.0] {
+        let out = tick(&world, &state([4.0, 3.0, H], [2.0, 1.0, vz]), &east());
+        assert_eq!(out, level, "vel.z {vz}");
     }
-
-    /// A hull resting on the plane at (x, 0).
-    fn resting(&self, x: f64) -> MoveState {
-        let base = state([x, 0.0, 0.0], [0.0; 3]);
-        let lift = -self.gap(base.pos, &MOVE.hull) / f64::from(self.0.z);
-        state([x, 0.0, lift], [0.0; 3])
-    }
-}
-
-impl CollisionWorld for Slope {
-    fn trace(&self, start: WorldPos, end: WorldPos, hull: &BoxHull) -> Trace {
-        let (g0, g1) = (self.gap(start, hull), self.gap(end, hull));
-        if g0 < -SKIN || g1 >= -SKIN {
-            let solid = g0 < -SKIN;
-            return Trace {
-                fraction: if solid { 0.0 } else { 1.0 },
-                end: if solid { start } else { end },
-                normal: Vec3::ZERO,
-                start_solid: solid,
-            };
-        }
-        let d = WorldPos::new(end.x - start.x, end.y - start.y, end.z - start.z);
-        let mut t = clamp_f64(g0 / (g0 - g1), 0.0, 1.0f64.next_down());
-        loop {
-            let p = WorldPos::new(start.x + d.x * t, start.y + d.y * t, start.z + d.z * t);
-            if !self.overlaps(p, hull) {
-                return Trace {
-                    fraction: t,
-                    end: p,
-                    normal: self.0,
-                    start_solid: false,
-                };
-            }
-            t *= 0.5;
-        }
-    }
-
-    fn overlaps(&self, at: WorldPos, hull: &BoxHull) -> bool {
-        self.gap(at, hull) < -SKIN
-    }
-}
-
-#[test]
-fn a_walkable_slope_holds_the_hull_and_a_steeper_one_does_not() {
-    // Normal z 0.8 (about 37 degrees) is floor; 0.6 (about 53) is not.
-    let gentle = Slope(Vec3::new(-0.6, 0.0, 0.8));
-    let start = gentle.resting(1.0);
-    let mut s = start;
-    for _ in 0..60 {
-        let out = tick(&gentle, &s, &cmd(0, 0, 0));
-        assert!(out.on_ground && out.state.vel == Vec3::ZERO, "{out:?}");
-        s = out.state;
-    }
-    assert!(
-        s.pos.distance(start.pos) < 1e-6,
-        "crept from {start:?} to {s:?}"
-    );
-
-    let steep = Slope(Vec3::new(-0.8, 0.0, 0.6));
-    let start = steep.resting(1.0);
-    let mut s = start;
-    for _ in 0..60 {
-        let out = tick(&steep, &s, &cmd(0, 0, 0));
-        assert!(
-            !out.on_ground && !steep.overlaps(out.state.pos, &MOVE.hull),
-            "{out:?}"
-        );
-        s = out.state;
-    }
-    // It slides down the slope, towards -x.
-    assert!(
-        s.pos.x < start.pos.x - 1.0 && s.pos.z < start.pos.z - 1.0,
-        "{s:?}"
-    );
+    assert!(level.on_ground && level.planes().is_empty(), "{level:?}");
+    assert_eq!((level.state.pos.z, level.state.vel.z), (H, 0.0));
 }
 
 proptest! {
@@ -419,6 +338,7 @@ proptest! {
         added.0.retain(|b| !Boxes(vec![*b]).overlaps(start.pos, &MOVE.hull));
         world.0.extend(added.0);
         let mut s = start;
+        let before = fallbacks();
         for (f, side, yaw, ticks) in moves {
             for _ in 0..ticks {
                 let out = tick(&world, &s, &cmd(f, side, yaw));
@@ -432,5 +352,8 @@ proptest! {
                 s = out.state;
             }
         }
+        // The box world's fallback guarantees "never inside" by itself; it
+        // must not have been needed, or this test proves nothing.
+        prop_assert_eq!(fallbacks(), before, "an inexact sweep fell back");
     }
 }

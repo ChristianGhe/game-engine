@@ -1,11 +1,15 @@
 //! Offscreen targets and readback: the engine-owned textures a graph renders
 //! into, and the output's pixels read back for `shot`, `video` and goldens.
 //! An offscreen texture can stand in for a window's surface, so that a
-//! surface graph renders whole without a window.
+//! surface graph renders whole without a window. The targets also keep the
+//! textures that graphs' transients are drawn into (their pool).
 
-use crate::Resource;
+use std::sync::{Mutex, PoisonError};
+
 use crate::error::GpuError;
 use crate::gpu::Gpu;
+use crate::graph::{Format, Plan, PooledTexture};
+use crate::{Resource, Transient};
 
 /// The scene's format: linear, scene-referred HDR (spec 6.7).
 const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -34,13 +38,23 @@ pub(crate) fn format(resource: Resource) -> wgpu::TextureFormat {
         Resource::Scene => SCENE_FORMAT,
         Resource::Output => OUTPUT_FORMAT,
         Resource::Surface => SURFACE_FORMAT,
+        Resource::Transient(Transient { format, .. }) => transient_format(format),
+    }
+}
+
+fn transient_format(format: Format) -> wgpu::TextureFormat {
+    match format {
+        Format::Rgba16Float => SCENE_FORMAT,
+        Format::Rgba8UnormSrgb => OUTPUT_FORMAT,
     }
 }
 
 /// The engine-owned textures of one size that a graph renders into: the
 /// [`Resource::Scene`] and the [`Resource::Output`], and with
 /// [`Targets::with_offscreen_surface`] a stand-in for the
-/// [`Resource::Surface`].
+/// [`Resource::Surface`]. They also keep the textures of graphs'
+/// [`Resource::Transient`]s ([`Targets::transient_textures`]). A resize
+/// makes new targets, so those are made again at the new size.
 pub struct Targets {
     width: u32,
     height: u32,
@@ -48,6 +62,23 @@ pub struct Targets {
     output_texture: wgpu::Texture,
     output: wgpu::TextureView,
     surface: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// Transient textures, in the order they were made. A render takes the
+    /// pool by reference ([`crate::Graph::render`]), so it sits in a mutex.
+    pool: Mutex<Vec<Pooled>>,
+}
+
+/// One texture of the targets' pool, for transients of one kind.
+struct Pooled {
+    kind: Kind,
+    view: wgpu::TextureView,
+}
+
+/// What a pooled texture is made as: format, divisor and whether passes
+/// read it.
+type Kind = (Format, u32, bool);
+
+fn kind(texture: &PooledTexture) -> Kind {
+    (texture.format, texture.divisor, texture.sampled)
 }
 
 impl Targets {
@@ -108,17 +139,17 @@ impl Targets {
                 )
             })
             .map_err(GpuError::Wgpu)?;
-        let view = |texture: &wgpu::Texture| texture.create_view(&Default::default());
         Ok(Self {
             width,
             height,
-            scene: view(&scene),
-            output: view(&output_texture),
+            scene: labelled_view(&scene, "scene"),
+            output: labelled_view(&output_texture, "output"),
             output_texture,
             surface: surface.map(|texture| {
-                let surface_view = view(&texture);
+                let surface_view = labelled_view(&texture, "surface");
                 (texture, surface_view)
             }),
+            pool: Mutex::new(Vec::new()),
         })
     }
 
@@ -133,13 +164,91 @@ impl Targets {
         self.surface.is_some()
     }
 
-    /// The view a pass draws into or reads; `None` for a missing surface.
+    /// The view a pass draws into or reads; `None` for a missing surface,
+    /// and for a transient, whose view comes from [`Targets::pooled`].
     pub(crate) fn view(&self, resource: Resource) -> Option<&wgpu::TextureView> {
         match resource {
             Resource::Scene => Some(&self.scene),
             Resource::Output => Some(&self.output),
             Resource::Surface => self.surface.as_ref().map(|(_, view)| view),
+            Resource::Transient(_) => None,
         }
+    }
+
+    /// How many transient textures the targets keep. A graph's first frame
+    /// makes those its [`crate::Graph::pool`] needs beyond the ones already
+    /// here, and every later frame, of that graph or another, draws into
+    /// the same ones: the n-th texture of a kind (format, size and usage)
+    /// in a graph's pool is the n-th of that kind here.
+    pub fn transient_textures(&self) -> usize {
+        self.pool
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+
+    /// A view of each texture in `plan`, in its order, making those the pool
+    /// lacks.
+    pub(crate) fn pooled(
+        &self,
+        gpu: &Gpu,
+        plan: &Plan,
+    ) -> Result<Vec<wgpu::TextureView>, GpuError> {
+        let mut pool = self.pool.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut views = Vec::with_capacity(plan.textures().len());
+        for (index, texture) in plan.textures().iter().enumerate() {
+            let kind = kind(texture);
+            let nth = plan.textures()[..index]
+                .iter()
+                .filter(|t| self::kind(t) == kind)
+                .count();
+            let found = pool.iter().filter(|p| p.kind == kind).nth(nth);
+            let view = match found {
+                Some(pooled) => pooled.view.clone(),
+                None => {
+                    let label = format!(
+                        "transient {:?} 1/{} #{nth}",
+                        texture.format, texture.divisor
+                    );
+                    let view = gpu
+                        .scoped(|| self.transient(gpu, texture, &label))
+                        .map_err(GpuError::Wgpu)?;
+                    pool.push(Pooled {
+                        kind,
+                        view: view.clone(),
+                    });
+                    view
+                }
+            };
+            views.push(view);
+        }
+        Ok(views)
+    }
+
+    /// A new texture for `texture`'s transients: their format, the targets'
+    /// size divided by the divisor and rounded up, drawn into, and read if
+    /// they are.
+    fn transient(&self, gpu: &Gpu, texture: &PooledTexture, label: &str) -> wgpu::TextureView {
+        let side = |pixels: u32| pixels.div_ceil(texture.divisor);
+        let mut usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
+        if texture.sampled {
+            usage |= wgpu::TextureUsages::TEXTURE_BINDING;
+        }
+        let made = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: side(self.width),
+                height: side(self.height),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: transient_format(texture.format),
+            usage,
+            view_formats: &[],
+        });
+        labelled_view(&made, label)
     }
 
     /// Copies the output back to the CPU, waiting for the GPU to finish the
@@ -236,6 +345,14 @@ impl Targets {
             rgba8,
         })
     }
+}
+
+/// A view of all of `texture`, named `label` in GPU debuggers.
+fn labelled_view(texture: &wgpu::Texture, label: &str) -> wgpu::TextureView {
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        label: Some(label),
+        ..wgpu::TextureViewDescriptor::default()
+    })
 }
 
 /// The output's pixels: RGBA8, sRGB-encoded as the output stores them, rows

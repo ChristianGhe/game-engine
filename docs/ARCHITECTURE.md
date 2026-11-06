@@ -262,6 +262,7 @@ Graph::fixed(Offscreen):
   draw ──▶ scene (Rgba16Float, linear) ──tonemap──▶ output (Rgba8UnormSrgb)
                                     output ──Targets::read_output──▶ Image (RGBA8)
 Graph::fixed(Surface) adds present: output ──▶ surface (Bgra8UnormSrgb)
+Graph::sorted(PassNodes) ──order, cull, pool──▶ Graph (passes, culled, pool)
 Graph::render ──▶ FrameCounters (draws, switches, uploaded bytes)
 ```
 
@@ -279,21 +280,44 @@ Graph::render ──▶ FrameCounters (draws, switches, uploaded bytes)
   Windows.
 - **Flags.** Debug builds use wgpu's release flags, as the game does;
   `WGPU_DEBUG=1` and `WGPU_VALIDATION=1` add debug labels and the
-  backend's validation layer when debugging.
-- **The graph** has three passes, not the spec's two (ADR-0017,
+  backend's validation layer when debugging. Every pass, target, pooled
+  texture and pipeline has a wgpu label; with `WGPU_DEBUG=1` each pass is
+  also wrapped in a debug group of its name.
+- **The fixed graph** has three passes, not the spec's two (ADR-0017,
   proposed). Passes declare what they read and write (`PassDecl`).
   `Graph::new` checks that each read was written by an earlier pass, that a
   pass writes exactly one resource, that the output is written but never as
   the surface, and that only a surface graph uses the surface, which it
-  must write.
-  `Graph::render` takes one `Pass` per declaration, in order. Each records
-  into a `PassRecorder`: a clear, then draws of two kinds.
+  must write. Its passes run in the order given. `Graph::fixed` is rung
+  1b's list, and the one eng-render draws through.
+- **The sorted graph** (rung 2, ADR-0019, proposed): `Graph::sorted` takes
+  `PassNode`s, which add `continues`, the earlier pass whose target a pass
+  draws on top of.
+  - Order: a pass runs after the pass it continues and after the last
+    writer of each resource it reads; among passes free to run the
+    smallest name goes first, as eng-sim orders systems, so any order of
+    declaration gives the same graph. A cycle, or two passes that write
+    one resource with neither continuing the other, fails with
+    `[E-GRAPH]` naming the passes.
+  - Culling: a pass whose writes reach neither the output nor the surface
+    is dropped, and `Graph::culled` names it.
+  - Pooling: `Resource::Transient` declares a texture that lives within a
+    frame (name, `Format`, and a divisor of the targets' size). Transients
+    of one format, size and usage share a texture when their lifetimes do
+    not overlap (`Graph::pool`): a chain of ping-pong passes needs two.
+    `Targets` makes the textures on the first frame that needs them and
+    keeps them (`Targets::transient_textures`); a resize makes new targets.
+
+  `Graph::render` takes one `Pass` per declaration, in the order declared
+  (culled ones are checked but do not record), and records and encodes in
+  running order. Each records into a `PassRecorder`: a clear (a continuing
+  pass loads its target instead), then draws of two kinds.
   - Fullscreen: eng-gpu owns the vertex stage (`src/fullscreen.wgsl`); the
     caller writes the fragment stage, which gets `uv` and may bind the
     pass's one read as `input`, with a sampler that takes the nearest
     texel.
   - Instanced: an `InstancedPipeline` draws a triangle strip per instance
-    into the scene or the output, reading each instance's `Attribute`s
+    into any target but the surface, reading each instance's `Attribute`s
     (`f32x2`, `f32x3`, `u32`, packed, little-endian) from bytes the pass
     records.
 

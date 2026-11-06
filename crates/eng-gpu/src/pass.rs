@@ -1,7 +1,9 @@
 //! Passes and how a graph runs them. A pass records commands into a
 //! [`PassRecorder`]; once every pass has recorded and each recording fits
 //! its declaration, the frame's instances are uploaded, and the frame is
-//! encoded, counted and submitted at once.
+//! encoded, counted and submitted at once. Each render pass is labelled with
+//! its pass's name and, with `WGPU_DEBUG=1`, wrapped in a debug group of
+//! that name.
 
 use crate::counters::FrameCounters;
 use crate::error::GpuError;
@@ -23,7 +25,8 @@ pub struct LinearRgba {
 }
 
 impl LinearRgba {
-    /// What a pass's target starts as unless the pass clears it.
+    /// What a pass's target starts as unless the pass clears it or continues
+    /// an earlier pass.
     pub const TRANSPARENT: Self = Self {
         r: 0.0,
         g: 0.0,
@@ -35,7 +38,8 @@ impl LinearRgba {
 /// One pass of a graph. [`Graph::render`] runs it where the graph declares
 /// the same [`PassDecl`].
 pub trait Pass {
-    /// What the pass reads and writes.
+    /// What the pass reads and writes. For a [`Graph::sorted`] graph, its
+    /// [`crate::PassNode::decl`].
     fn decl(&self) -> PassDecl;
     /// Records this frame's work. It reaches the GPU after every pass has
     /// recorded.
@@ -45,7 +49,7 @@ pub trait Pass {
 /// The commands a pass records for one frame, drawn in order.
 #[derive(Debug)]
 pub struct PassRecorder {
-    clear: LinearRgba,
+    clear: Option<LinearRgba>,
     commands: Vec<Command>,
 }
 
@@ -61,15 +65,16 @@ enum Command {
 impl PassRecorder {
     fn new() -> Self {
         Self {
-            clear: LinearRgba::TRANSPARENT,
+            clear: None,
             commands: Vec::new(),
         }
     }
 
     /// Starts the pass's target as `colour` rather than
-    /// [`LinearRgba::TRANSPARENT`].
+    /// [`LinearRgba::TRANSPARENT`]. A pass that continues another draws on
+    /// top of its target, so it cannot clear.
     pub fn clear(&mut self, colour: LinearRgba) {
-        self.clear = colour;
+        self.clear = Some(colour);
     }
 
     /// Draws `pipeline` over the whole target, with the pass's one read as
@@ -93,12 +98,19 @@ impl PassRecorder {
         });
     }
 
-    /// Whether the recording fits the pass's declaration.
-    fn check(&self, decl: &PassDecl) -> Result<(), GpuError> {
+    /// Whether the recording fits the pass's declaration, and whether it
+    /// `loads` its target, continuing an earlier pass.
+    fn check(&self, decl: &PassDecl, loads: bool) -> Result<(), GpuError> {
         let fail = |message: String| GpuError::Pass {
             pass: decl.name,
             message,
         };
+        if loads && self.clear.is_some() {
+            return Err(fail(
+                "the pass continues an earlier pass's target, so it draws on top of it and cannot clear it"
+                    .into(),
+            ));
+        }
         let target = |target: Resource| {
             if decl.writes == [target] {
                 Ok(())
@@ -139,9 +151,11 @@ impl PassRecorder {
 
 impl Graph {
     /// Records `passes`, one for each of the graph's declarations and in the
-    /// same order, then submits the frame and returns what it counted. Each
-    /// pass draws into the target it writes; a later
-    /// [`Targets::read_output`] sees the frame.
+    /// order they were declared, culled ones included, then submits the
+    /// frame and returns what it counted. The passes record in running
+    /// order; a culled pass is checked against its declaration but does not
+    /// record. Each pass draws into the target it writes, transients into
+    /// the targets' pool; a later [`Targets::read_output`] sees the frame.
     pub fn render(
         &self,
         gpu: &Gpu,
@@ -183,15 +197,22 @@ impl Graph {
         surface: Option<&wgpu::TextureView>,
         passes: &mut [&mut dyn Pass],
     ) -> Result<FrameCounters, GpuError> {
-        if passes.len() != self.passes.len() {
+        if passes.len() != self.declared.len() {
             return Err(GraphError::PassCount {
-                expected: self.passes.len(),
+                expected: self.declared.len(),
                 found: passes.len(),
             }
             .into());
         }
-        let mut recorded = Vec::with_capacity(passes.len());
-        for (index, (decl, pass)) in self.passes.iter().zip(passes.iter_mut()).enumerate() {
+        // Where each declared pass runs, if it does.
+        let mut runs_at = vec![None; self.declared.len()];
+        for (at, &slot) in self.slots.iter().enumerate() {
+            runs_at[slot] = Some(at);
+        }
+        let mut recorded: Vec<Option<PassRecorder>> = std::iter::repeat_with(|| None)
+            .take(self.passes.len())
+            .collect();
+        for (index, (decl, pass)) in self.declared.iter().zip(passes.iter_mut()).enumerate() {
             let found = pass.decl();
             if found != *decl {
                 return Err(GraphError::PassMismatch {
@@ -201,17 +222,35 @@ impl Graph {
                 }
                 .into());
             }
+            let Some(at) = runs_at[index] else { continue };
             let mut rec = PassRecorder::new();
             pass.record(&mut rec);
-            rec.check(decl)?;
-            recorded.push(rec);
+            rec.check(decl, self.loads[at])?;
+            recorded[at] = Some(rec);
         }
+        // Every pass that runs recorded, in running order.
+        let recorded: Vec<PassRecorder> = recorded.into_iter().flatten().collect();
+        let pooled = if self.plan.textures().is_empty() {
+            Vec::new()
+        } else {
+            targets.pooled(gpu, &self.plan)?
+        };
         // Only a surface graph uses the surface, which the targets may lack.
-        // Each pass writes exactly one resource (Graph::new).
+        // Each pass writes exactly one resource (Graph::new, Graph::sorted).
         let mut views = Vec::with_capacity(recorded.len());
         for decl in &self.passes {
             let view = |r: Resource| match (r, surface) {
                 (Resource::Surface, Some(window)) => Ok(window),
+                (Resource::Transient(transient), _) => self
+                    .plan
+                    .texture(&transient)
+                    .and_then(|index| pooled.get(index))
+                    .ok_or_else(|| {
+                        GpuError::Wgpu(format!(
+                            "transient `{}` has no texture in the graph's pool",
+                            transient.name
+                        ))
+                    }),
                 _ => targets.view(r).ok_or(GpuError::NoSurface),
             };
             let input = decl.reads.first().map(|&r| view(r)).transpose()?;
@@ -243,8 +282,15 @@ impl Graph {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("frame"),
                 });
-            for ((decl, rec), (target, input)) in self.passes.iter().zip(&recorded).zip(&views) {
-                frame.encode(&mut encoder, decl, rec, target, *input);
+            let steps = self.passes.iter().zip(&self.loads).zip(&recorded);
+            for (((decl, &loads), rec), (target, input)) in steps.zip(&views) {
+                if gpu.debug {
+                    encoder.push_debug_group(decl.name);
+                }
+                frame.encode(&mut encoder, decl, rec, loads, target, *input);
+                if gpu.debug {
+                    encoder.pop_debug_group();
+                }
             }
             gpu.queue.submit([encoder.finish()]);
             frame.counters
@@ -278,19 +324,27 @@ struct Frame<'a> {
 }
 
 impl Frame<'_> {
+    /// Encodes one pass, which `loads` its target if it continues an
+    /// earlier pass, and clears it otherwise.
     fn encode(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         decl: &PassDecl,
         rec: &PassRecorder,
+        loads: bool,
         target: &wgpu::TextureView,
         input: Option<&wgpu::TextureView>,
     ) {
-        let clear = wgpu::Color {
-            r: f64::from(rec.clear.r),
-            g: f64::from(rec.clear.g),
-            b: f64::from(rec.clear.b),
-            a: f64::from(rec.clear.a),
+        let colour = rec.clear.unwrap_or(LinearRgba::TRANSPARENT);
+        let load = if loads {
+            wgpu::LoadOp::Load
+        } else {
+            wgpu::LoadOp::Clear(wgpu::Color {
+                r: f64::from(colour.r),
+                g: f64::from(colour.g),
+                b: f64::from(colour.b),
+                a: f64::from(colour.a),
+            })
         };
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some(decl.name),
@@ -299,7 +353,7 @@ impl Frame<'_> {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(clear),
+                    load,
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -323,7 +377,7 @@ impl Frame<'_> {
                         &mut self.counters,
                     );
                     if !input_bound {
-                        let bind_group = self.gpu.shared.bind(&self.gpu.device, input);
+                        let bind_group = self.gpu.shared.bind(&self.gpu.device, input, decl.name);
                         pass.set_bind_group(0, &bind_group, &[]);
                         self.counters.bind_group_switches += 1;
                         input_bound = true;
@@ -366,5 +420,42 @@ fn set_pipeline<'p>(
         pass.set_pipeline(pipeline);
         counters.pipeline_switches += 1;
         *bound = Some(pipeline);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LinearRgba, Pass, PassRecorder};
+    use crate::{DRAW, Gpu, GpuError, GpuOptions, Graph, PassDecl, TONEMAP, Target, Targets};
+
+    struct Clear(PassDecl);
+
+    impl Pass for Clear {
+        fn decl(&self) -> PassDecl {
+            self.0
+        }
+        fn record(&mut self, rec: &mut PassRecorder) {
+            rec.clear(LinearRgba::TRANSPARENT);
+        }
+    }
+
+    /// `WGPU_DEBUG=1` wraps each pass in a debug group; wgpu fails the
+    /// frame if a group is left open or closed twice. Set here directly, so
+    /// that the path runs without the variable.
+    #[test]
+    fn debug_groups_open_and_close_around_each_pass() {
+        let mut gpu = match Gpu::new(&GpuOptions::from_env()) {
+            Ok(gpu) => gpu,
+            Err(e @ GpuError::NoAdapter { .. }) if !crate::gpu_required() => {
+                eprintln!("skipped: {e}");
+                return;
+            }
+            Err(e) => panic!("{e}"),
+        };
+        gpu.debug = true;
+        let targets = Targets::new(&gpu, 4, 4).unwrap_or_else(|e| panic!("{e}"));
+        Graph::fixed(Target::Offscreen)
+            .render(&gpu, &targets, &mut [&mut Clear(DRAW), &mut Clear(TONEMAP)])
+            .unwrap_or_else(|e| panic!("{e}"));
     }
 }

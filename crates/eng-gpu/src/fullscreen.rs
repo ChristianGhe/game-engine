@@ -129,10 +129,15 @@ impl Shared {
         }
     }
 
-    /// The bind group of a pass's input.
-    pub(crate) fn bind(&self, device: &wgpu::Device, input: &wgpu::TextureView) -> wgpu::BindGroup {
+    /// The bind group of a pass's input, named after the pass.
+    pub(crate) fn bind(
+        &self,
+        device: &wgpu::Device,
+        input: &wgpu::TextureView,
+        pass: &str,
+    ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("fullscreen input"),
+            label: Some(&format!("{pass} input")),
             layout: &self.inputs,
             entries: &[
                 wgpu::BindGroupEntry {

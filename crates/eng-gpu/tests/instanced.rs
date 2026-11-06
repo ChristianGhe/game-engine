@@ -263,6 +263,6 @@ fn a_bad_instanced_pipeline_is_an_error_not_a_panic() {
     });
     assert_eq!(
         surface,
-        "[E-SHADER] surface: instanced pipelines draw into the scene or the output, not `surface`"
+        "[E-SHADER] surface: instanced pipelines draw into the scene, the output or a transient, not `surface`"
     );
 }

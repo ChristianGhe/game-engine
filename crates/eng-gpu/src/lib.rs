@@ -1,6 +1,6 @@
 //! The GPU layer (spec 6.7): adapter choice, the capability report, the
-//! fixed render graph, its passes' draws and per-frame counters, offscreen
-//! targets and readback. It is the only crate that may import wgpu
+//! render graph, its passes' draws and per-frame counters, offscreen
+//! targets, the transient pool and readback. It is the only crate that may import wgpu
 //! (`[floor]` in `architecture.toml`), and no wgpu type appears in its
 //! public API. GPU work never feeds back into the simulation. eng-render
 //! builds rung 1b's passes on it.
@@ -18,30 +18,47 @@
 //! - **[`GpuReport`]**, the capability report: the adapter, its backend,
 //!   device type and driver, the tier, and what it supports beyond Tier 0
 //!   ([`Capabilities`]: timestamp queries and the later tiers' features).
-//! - **[`Graph`]**, the fixed render graph (decision 1): three passes, not
-//!   the spec's two (ADR-0017, proposed). Passes declare what they read and
-//!   write ([`PassDecl`]): [`DRAW`] writes the [`Resource::Scene`],
-//!   [`TONEMAP`] reads it and writes the [`Resource::Output`], and
-//!   [`PRESENT`] reads the output and writes the [`Resource::Surface`], in a
-//!   [`Target::Surface`] graph only.
-//!   [`Graph::new`] checks the declarations; [`Graph::fixed`] is rung 1b's
-//!   list. Ordering, culling and pooling come in rung 2.
-//! - **[`Pass`]**: each frame, [`Graph::render`] has every pass record into a
-//!   [`PassRecorder`], checks each recording against its declaration, then
-//!   uploads the frame's instances, and encodes and submits the frame. A
-//!   pass can clear its target and draw, in order:
-//!   - [`FullscreenPipeline`]s, which take the pass's one read as input; the
-//!     caller writes only their fragment stage;
+//! - **[`Graph`]**, the render graph. Passes declare what they read and
+//!   write ([`PassDecl`]).
+//!   - Rung 1b's fixed graph (decision 1) has three passes, not the spec's
+//!     two (ADR-0017, proposed): [`DRAW`] writes the [`Resource::Scene`],
+//!     [`TONEMAP`] reads it and writes the [`Resource::Output`], and
+//!     [`PRESENT`] reads the output and writes the [`Resource::Surface`], in
+//!     a [`Target::Surface`] graph only. [`Graph::new`] checks a list that
+//!     runs in the order given; [`Graph::fixed`] is rung 1b's list, and the
+//!     one eng-render draws through.
+//!   - Rung 2's graph (ADR-0019, proposed): [`Graph::sorted`] orders
+//!     [`PassNode`]s by what they read, write and continue (a pass that
+//!     draws on top of an earlier pass's target), names breaking ties;
+//!     refuses a cycle and two writers of one resource with `[E-GRAPH]`;
+//!     drops the passes whose writes reach neither the output nor the
+//!     surface ([`Graph::culled`]); and plans the frame's
+//!     [`Resource::Transient`]s ([`Transient`]), which share a texture when
+//!     their format, size and usage match and their lifetimes do not
+//!     overlap ([`Graph::pool`]).
+//! - **[`Pass`]**: each frame, [`Graph::render`] takes one pass per
+//!   declaration, in the order declared, has every pass that runs record
+//!   into a [`PassRecorder`], checks each recording against its declaration,
+//!   then uploads the frame's instances, and encodes and submits the frame
+//!   in running order. A pass can clear its target (unless it continues
+//!   another, whose target it loads) and draw, in order:
+//!   - [`FullscreenPipeline`]s, which take the pass's one read as input;
+//!     the caller writes only their fragment stage;
 //!   - [`InstancedPipeline`]s: a triangle strip per instance, each instance
-//!     reading its [`Attribute`]s from bytes the pass records, into the
-//!     scene or the output.
+//!     reading its [`Attribute`]s from bytes the pass records, into any
+//!     target but the surface.
 //! - **[`FrameCounters`]**: [`Graph::render`] returns what the frame asked
 //!   of the GPU (spec 6.13): draws, pipeline switches, bind-group switches
 //!   and uploaded bytes. They are counted from the commands it encodes, so
 //!   they are exact and the same on every adapter. A pass binds a pipeline
 //!   only when a draw needs another, and its input once.
+//! - **Labels**: every pass, target, pooled texture and pipeline is named
+//!   in wgpu's labels, and with `WGPU_DEBUG=1` each pass is also wrapped in
+//!   a debug group of its name.
 //! - **[`Targets`]**: the engine-owned scene (`Rgba16Float`, linear HDR) and
-//!   output (`Rgba8UnormSrgb`) of one size. [`Targets::read_output`] reads
+//!   output (`Rgba8UnormSrgb`) of one size, and the transient textures that
+//!   graphs' pools draw into, made on the first frame that needs them and
+//!   reused by every later one ([`Targets::transient_textures`]). [`Targets::read_output`] reads
 //!   the output back as an [`Image`], RGBA8 as stored, rows top first.
 //!   [`Targets::with_offscreen_surface`] adds a texture in the surface's
 //!   format, `Bgra8UnormSrgb`, standing in for a window's: a
@@ -84,7 +101,10 @@ pub use counters::FrameCounters;
 pub use error::GpuError;
 pub use fullscreen::{FullscreenDesc, FullscreenPipeline};
 pub use gpu::{Gpu, GpuOptions, gpu_required};
-pub use graph::{DRAW, Graph, GraphError, PRESENT, PassDecl, Resource, TONEMAP, Target};
+pub use graph::{
+    DRAW, Format, Graph, GraphError, PRESENT, PassDecl, PassNode, PooledTexture, Resource, TONEMAP,
+    Target, Transient,
+};
 pub use instanced::{Attribute, InstancedDesc, InstancedPipeline};
 pub use pass::{LinearRgba, Pass, PassRecorder};
 pub use report::{Backend, Capabilities, DeviceType, GpuReport};

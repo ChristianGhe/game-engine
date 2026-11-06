@@ -53,8 +53,9 @@ pub struct InstancedDesc<'a> {
     /// The vertices of each instance's primitive, a triangle strip: 4 make a
     /// quad.
     pub vertices: u32,
-    /// What the pipeline draws into: the scene or the output. It sets the
-    /// colour format; draws replace what is there, without blending.
+    /// What the pipeline draws into: the scene, the output or a transient.
+    /// It sets the colour format; draws replace what is there, without
+    /// blending.
     pub target: Resource,
 }
 

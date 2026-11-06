@@ -63,6 +63,8 @@ pub struct Gpu {
     /// Kept for a window's surface ([`Gpu::with_window`]), whose
     /// capabilities are the adapter's.
     pub(crate) adapter: wgpu::Adapter,
+    /// `WGPU_DEBUG=1`: each pass is also wrapped in a debug group.
+    pub(crate) debug: bool,
     report: GpuReport,
 }
 
@@ -126,6 +128,7 @@ impl Gpu {
             queue,
             shared,
             adapter,
+            debug: flags().contains(wgpu::InstanceFlags::DEBUG),
             report,
         })
     }
@@ -150,7 +153,7 @@ impl Gpu {
     }
 
     /// Compiles an instanced pipeline (`desc.wgsl`, both stages) for drawing
-    /// into `desc.target`, the scene or the output.
+    /// into `desc.target`: the scene, the output or a transient.
     pub fn instanced_pipeline(
         &self,
         desc: &InstancedDesc<'_>,
@@ -163,7 +166,7 @@ impl Gpu {
         // read the output, see everything a window shows.
         if desc.target == Resource::Surface {
             return Err(shader_error(format!(
-                "instanced pipelines draw into the scene or the output, not `{}`",
+                "instanced pipelines draw into the scene, the output or a transient, not `{}`",
                 desc.target.name()
             )));
         }
@@ -207,7 +210,7 @@ pub(crate) fn instance() -> wgpu::Instance {
         // used to add them by default, and Debian 13's Vulkan loader then
         // hung or crashed now and then when several threads created and
         // dropped devices at once (rung 1b, T7).
-        flags: wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL.with_env(),
+        flags: flags(),
         memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
         backend_options: wgpu::BackendOptions {
             // FXC ships with Windows, so no DLL goes next to the binary
@@ -221,6 +224,11 @@ pub(crate) fn instance() -> wgpu::Instance {
         },
         display: None,
     })
+}
+
+/// wgpu's release flags, plus what `WGPU_DEBUG` and `WGPU_VALIDATION` ask for.
+fn flags() -> wgpu::InstanceFlags {
+    wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL.with_env()
 }
 
 /// Drives a wgpu future to its end without an async runtime (plan decision

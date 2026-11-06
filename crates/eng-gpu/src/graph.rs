@@ -1,8 +1,23 @@
-//! The fixed render graph (spec 6.3, 6.7; rung 1b plan, decision 1): passes
-//! declare the virtual resources they read and write, and building a graph
-//! checks the declarations. Ordering, culling and pooling come in rung 2.
+//! The render graph (spec 6.3, 6.7; ADR-0003, ADR-0017 and ADR-0019, both
+//! proposed): passes declare the virtual resources they read and write, and
+//! building a graph checks the declarations.
+//!
+//! - [`Graph::new`] and [`Graph::fixed`] are rung 1b's: the passes run in
+//!   the order given, each read after an earlier write.
+//! - [`Graph::sorted`] is rung 2's: it orders [`PassNode`]s itself
+//!   (`order.rs`), drops the passes whose writes reach neither the output nor
+//!   the surface (`cull.rs`), and plans the transient textures (`pool.rs`).
+//!
+//! Both kinds of graph render the same way ([`Graph::render`]).
 
-use std::fmt;
+mod cull;
+mod error;
+mod order;
+mod pool;
+
+pub use error::GraphError;
+pub(crate) use pool::Plan;
+pub use pool::PooledTexture;
 
 /// A virtual resource that passes read and write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -17,6 +32,11 @@ pub enum Resource {
     /// it ([`crate::Targets::with_offscreen_surface`]), in `Bgra8UnormSrgb`.
     /// Only a [`Target::Surface`] graph has one.
     Surface,
+    /// A texture that lives within one frame, from the pass that first writes
+    /// it to the last pass that reads it. The graph plans where it lives
+    /// ([`Graph::pool`]), and the targets keep those textures from frame to
+    /// frame ([`crate::Targets::transient_textures`]).
+    Transient(Transient),
 }
 
 impl Resource {
@@ -26,11 +46,53 @@ impl Resource {
             Self::Scene => "scene",
             Self::Output => "output",
             Self::Surface => "surface",
+            Self::Transient(transient) => transient.name,
         }
     }
 }
 
-/// What a pass reads and writes.
+/// The formats a [`Transient`] can have: the scene's and the output's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Format {
+    /// Linear, scene-referred HDR colour, as the scene.
+    Rgba16Float,
+    /// 8-bit colour, sRGB-encoded on write, as the output.
+    Rgba8UnormSrgb,
+}
+
+/// A transient texture, declared where passes read and write it as
+/// [`Resource::Transient`]. Its name identifies it: a graph refuses two
+/// transients of one name that differ in format or size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Transient {
+    pub name: &'static str,
+    pub format: Format,
+    /// The targets' width and height are divided by this, rounding up: 1 is
+    /// full size, 2 half. At least 1.
+    pub divisor: u32,
+}
+
+impl Transient {
+    /// A transient of the targets' size.
+    pub const fn new(name: &'static str, format: Format) -> Self {
+        Self {
+            name,
+            format,
+            divisor: 1,
+        }
+    }
+
+    /// The same transient at 1/`divisor` of the targets' size.
+    pub const fn divided(self, divisor: u32) -> Self {
+        Self {
+            name: self.name,
+            format: self.format,
+            divisor,
+        }
+    }
+}
+
+/// What a pass reads and writes, in the order [`Graph::new`] runs it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PassDecl {
     pub name: &'static str,
@@ -39,6 +101,50 @@ pub struct PassDecl {
     pub reads: &'static [Resource],
     /// Exactly one: the pass's colour target.
     pub writes: &'static [Resource],
+}
+
+impl PassDecl {
+    /// The same pass for [`Graph::sorted`], continuing no other.
+    pub const fn node(self) -> PassNode {
+        PassNode {
+            name: self.name,
+            reads: self.reads,
+            writes: self.writes,
+            continues: None,
+        }
+    }
+}
+
+/// A pass as [`Graph::sorted`] takes it: what it reads and writes, and the
+/// earlier pass whose target it draws on top of, if any. Its order comes
+/// from these, not from where it is declared.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PassNode {
+    /// Unique within a graph; it breaks ties in the order.
+    pub name: &'static str,
+    /// Each is read after every pass that writes it. A fullscreen pass draws
+    /// from its one read ([`crate::PassRecorder::fullscreen`]).
+    pub reads: &'static [Resource],
+    /// Exactly one: the pass's colour target. Only one pass may start a
+    /// resource; any other pass that writes it continues the one before.
+    pub writes: &'static [Resource],
+    /// The pass whose target this one draws on top of. It must write the
+    /// same resource; this pass runs after it, loads the target instead of
+    /// clearing it, and the resource's readers run after both. A pass can be
+    /// continued by one pass only, so the passes that write a resource form
+    /// one chain. With `None` the pass clears its target.
+    pub continues: Option<&'static str>,
+}
+
+impl PassNode {
+    /// Its name, reads and writes: what its [`crate::Pass::decl`] returns.
+    pub const fn decl(&self) -> PassDecl {
+        PassDecl {
+            name: self.name,
+            reads: self.reads,
+            writes: self.writes,
+        }
+    }
 }
 
 /// Draws the scene. In 1b it is eng-render's top-down pass.
@@ -76,8 +182,19 @@ pub enum Target {
 /// A checked list of passes, run in order by [`Graph::render`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Graph {
+    /// The passes that run, in order.
     pub(crate) passes: Vec<PassDecl>,
     target: Target,
+    /// Every pass as declared, culled ones too: what [`Graph::render`] takes,
+    /// in this order.
+    pub(crate) declared: Vec<PassDecl>,
+    /// For each pass that runs, its place in `declared`.
+    pub(crate) slots: Vec<usize>,
+    /// For each pass that runs, whether it continues an earlier pass, and so
+    /// loads its target rather than clearing it.
+    pub(crate) loads: Vec<bool>,
+    culled: Vec<&'static str>,
+    pub(crate) plan: Plan,
 }
 
 impl Graph {
@@ -86,7 +203,11 @@ impl Graph {
     /// - each pass writes exactly one resource;
     /// - the output is written, never by the pass that writes the surface;
     /// - an offscreen graph never uses the surface, and a surface graph
-    ///   writes it.
+    ///   writes it;
+    /// - transients of one name agree, and none is divided by 0.
+    ///
+    /// Each pass clears its target, and none is culled. Transients are
+    /// pooled as in [`Graph::sorted`].
     pub fn new(passes: &[PassDecl], target: Target) -> Result<Self, GraphError> {
         let mut written: Vec<Resource> = Vec::new();
         for pass in passes {
@@ -126,6 +247,11 @@ impl Graph {
         Ok(Self {
             passes: passes.to_vec(),
             target,
+            declared: passes.to_vec(),
+            slots: (0..passes.len()).collect(),
+            loads: vec![false; passes.len()],
+            culled: Vec::new(),
+            plan: Plan::new(passes)?,
         })
     }
 
@@ -138,6 +264,45 @@ impl Graph {
         Self::new(passes, target).expect("the fixed graph passes its own checks")
     }
 
+    /// Orders `nodes` by what they read, write and continue, whatever order
+    /// they are declared in, then culls and pools (ADR-0019, proposed):
+    /// - **Order:** a pass runs after the pass it continues, and after every
+    ///   pass that writes what it reads. Among passes free to run, the
+    ///   smallest name goes first, as eng-sim orders systems, so any
+    ///   permutation of the same nodes gives the same order.
+    /// - **Checks**, each failing with `[E-GRAPH]` and naming the passes:
+    ///   unique names; one write each; a continued pass that exists and
+    ///   writes the same resource; every read written by some pass; one
+    ///   chain of writers per resource (two passes that write it with
+    ///   neither continuing the other fail); no cycle; and [`Graph::new`]'s
+    ///   rules on the output and the surface.
+    /// - **Culling:** a pass whose writes reach neither the output nor the
+    ///   surface is dropped, and [`Graph::culled`] names it.
+    /// - **Pooling:** transients share a texture when their format, size
+    ///   and usage match and their lifetimes within the frame do not overlap
+    ///   ([`Graph::pool`]).
+    pub fn sorted(nodes: &[PassNode], target: Target) -> Result<Self, GraphError> {
+        let sorted = order::sort(nodes, target)?;
+        let keep = cull::kept(nodes, &sorted.after);
+        let (run, culled): (Vec<usize>, Vec<usize>) =
+            sorted.order.iter().partition(|&&index| keep[index]);
+        let passes: Vec<PassDecl> = run.iter().map(|&index| nodes[index].decl()).collect();
+        let plan = Plan::new(&passes)?;
+        Ok(Self {
+            passes,
+            target,
+            declared: nodes.iter().map(PassNode::decl).collect(),
+            loads: run
+                .iter()
+                .map(|&index| nodes[index].continues.is_some())
+                .collect(),
+            slots: run,
+            culled: culled.iter().map(|&index| nodes[index].name).collect(),
+            plan,
+        })
+    }
+
+    /// The passes that run, in order.
     pub fn passes(&self) -> &[PassDecl] {
         &self.passes
     }
@@ -145,103 +310,17 @@ impl Graph {
     pub fn target(&self) -> Target {
         self.target
     }
-}
 
-/// A graph whose declarations do not fit together, or passes that do not
-/// match their graph.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum GraphError {
-    ReadBeforeWrite {
-        pass: &'static str,
-        resource: Resource,
-    },
-    Writes {
-        pass: &'static str,
-        count: usize,
-    },
-    OutputIsSurface {
-        pass: &'static str,
-    },
-    SurfaceOffscreen {
-        pass: &'static str,
-    },
-    OutputNotWritten,
-    SurfaceNotWritten,
-    /// [`Graph::render`] was given another number of passes.
-    PassCount {
-        expected: usize,
-        found: usize,
-    },
-    /// A pass given to [`Graph::render`] declares other reads or writes than
-    /// the graph has at its position.
-    PassMismatch {
-        index: usize,
-        expected: PassDecl,
-        found: PassDecl,
-    },
-}
-
-impl fmt::Display for GraphError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("[E-GRAPH] ")?;
-        match self {
-            Self::ReadBeforeWrite { pass, resource } => write!(
-                f,
-                "pass `{pass}` reads `{}` before any pass writes it",
-                resource.name()
-            ),
-            Self::Writes { pass, count } => write!(
-                f,
-                "pass `{pass}` writes {count} resources; a pass writes exactly one"
-            ),
-            Self::OutputIsSurface { pass } => write!(
-                f,
-                "pass `{pass}` writes the output into the surface; the output stays an engine-owned texture"
-            ),
-            Self::SurfaceOffscreen { pass } => write!(
-                f,
-                "pass `{pass}` uses the surface, but the graph renders offscreen"
-            ),
-            Self::OutputNotWritten => {
-                f.write_str("no pass writes `output`, which screenshots read")
-            }
-            Self::SurfaceNotWritten => {
-                f.write_str("no pass writes `surface`, so nothing would be presented")
-            }
-            Self::PassCount { expected, found } => write!(
-                f,
-                "the graph declares {expected} passes, but {found} were given"
-            ),
-            Self::PassMismatch {
-                index,
-                expected,
-                found,
-            } if expected.name != found.name => write!(
-                f,
-                "pass {index} is `{}`, but the graph declares `{}` there",
-                found.name, expected.name
-            ),
-            Self::PassMismatch {
-                index,
-                expected,
-                found,
-            } => write!(
-                f,
-                "pass {index}, `{}`, reads {} and writes {}, but the graph declares it reading {} and writing {}",
-                found.name,
-                names(found.reads),
-                names(found.writes),
-                names(expected.reads),
-                names(expected.writes)
-            ),
-        }
+    /// The declared passes that do not run, because their writes reach
+    /// neither the output nor the surface, in the order they would have run.
+    /// Empty for a [`Graph::new`] graph.
+    pub fn culled(&self) -> &[&'static str] {
+        &self.culled
     }
-}
 
-impl std::error::Error for GraphError {}
-
-/// Resources as `[scene, output]`.
-fn names(resources: &[Resource]) -> String {
-    let names: Vec<&str> = resources.iter().map(|r| r.name()).collect();
-    format!("[{}]", names.join(", "))
+    /// The transient textures a frame needs, in the order it first uses
+    /// them, and the transients drawn into each.
+    pub fn pool(&self) -> &[PooledTexture] {
+        self.plan.textures()
+    }
 }

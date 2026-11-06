@@ -1,5 +1,6 @@
 //! Everything that becomes [`PlayerCommand`](eng_core::PlayerCommand)s:
-//! authored input scripts, binary recordings, and live keyboard input.
+//! authored input scripts, binary recordings, and live keyboard and mouse
+//! input.
 //!
 //! Quantization happens here, before the simulation, so the same input
 //! produces identical commands on every platform:
@@ -7,7 +8,9 @@
 //! - scripts: degrees to binary angles ([`degrees_to_angle`]);
 //! - live input: [`KeyEvent`]s mapped through [`Bindings`] to
 //!   [`Action`]s, sampled once per tick ([`LiveInput`], [`quantize`]). The
-//!   caller says which tick it samples; nothing here reads a clock.
+//!   caller says which tick it samples; nothing here reads a clock;
+//! - mouse look: raw motion counts into the view angles by exact integer
+//!   arithmetic ([`MouseLook`], off by default in [`LiveInput`]).
 //!
 //! [`Key`] and [`KeyEvent`] are the platform contract's (`eng-platform-api`),
 //! re-exported here. A platform reports `PlatformEvent`s, and
@@ -17,12 +20,14 @@
 
 mod bindings;
 mod live;
+mod look;
 mod recording;
 mod script;
 
 pub use bindings::{Action, ActionSet, Bindings, BindingsError, DEFAULT_BINDINGS};
 pub use eng_platform_api::{Key, KeyEvent};
 pub use live::{FULL_AXIS, LiveInput, TickInput, command_for, quantize};
+pub use look::{LookSettings, MouseLook};
 pub use recording::{
     RECORDING_KIND, RECORDING_VERSION, Recording, RecordingHeader, TickHash, read_recording,
     write_recording,

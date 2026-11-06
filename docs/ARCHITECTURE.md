@@ -177,6 +177,15 @@ PlatformEvent ──key_event()──▶ KeyEvent (Down/Up of a Key, FocusLost)
   Movement goes along the yaw, so `play` holds the game's
   `GameDef::view_yaw`: 0x4000 (+Y, up the top-down view) for the testbed,
   where W then moves the dot up the window and D to its right.
+- Mouse look (rung 2; `LiveInput::set_look`, off by default) turns those
+  angles by raw motion (`handle_motion`), in `src/look.rs`. Each delta is
+  rounded to a 1/256 count and summed exactly in `i64`; sensitivity is an
+  integer (millionths of a degree per count, default 0.066°), so the turn
+  is one rounded integer division and any split of the motion into ticks
+  gives the same yaw. `dx > 0` lowers yaw and `dy > 0` (towards the user)
+  lowers pitch unless inverted. Pitch holds at ±80° (14563 units), and
+  motion past the limit is dropped at each sample, so only there do tick
+  boundaries matter. `FocusLost` drops motion not yet sampled.
 - App actions (`quit`) are reported in `TickInput::actions` and never
   change the command.
 - Bindings files are `version = 1` plus `[actions] move_forward = ["KeyW",

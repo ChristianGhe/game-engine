@@ -1,6 +1,7 @@
 use eng_core::{PlayerCommand, Tick};
 
 use crate::bindings::{Action, ActionSet, Bindings};
+use crate::look::{LookSettings, MouseLook};
 use eng_platform_api::{Key, KeyEvent};
 
 /// The stick value of a movement action: full speed.
@@ -21,8 +22,8 @@ impl TickInput {
     }
 }
 
-/// Live keyboard input, quantized into one [`PlayerCommand`] per tick
-/// (spec 6.10).
+/// Live keyboard and mouse input, quantized into one [`PlayerCommand`] per
+/// tick (spec 6.10).
 ///
 /// The app passes every [`KeyEvent`] to [`handle`](Self::handle) as it
 /// arrives, then calls [`sample`](Self::sample) once per tick with that
@@ -36,7 +37,10 @@ impl TickInput {
 /// - [`KeyEvent::FocusLost`] releases every key, as if each got its `Up`.
 /// - Opposite movement actions cancel. Movement is full speed (`127`).
 /// - The view angles are held values set with [`set_view`](Self::set_view)
-///   (0 until then); `buttons` and `select` are 0.
+///   (0 until then). With mouse look on ([`set_look`](Self::set_look); off
+///   by default), motion from [`handle_motion`](Self::handle_motion) turns
+///   them by [`MouseLook`]'s rules, and focus loss also drops the motion
+///   not yet sampled. `buttons` and `select` are 0.
 /// - `quit` is reported in [`TickInput::actions`] and never changes the
 ///   command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,8 +49,11 @@ pub struct LiveInput {
     held: [bool; Key::COUNT],
     /// Went from up to down since the last sample.
     pressed: [bool; Key::COUNT],
+    /// The angles the last command carried, or `set_view`'s since.
     view_yaw: u16,
     view_pitch: u16,
+    /// `None`: look is off, and motion is ignored.
+    look: Option<MouseLook>,
     /// The last tick sampled, to check that ticks increase (debug builds).
     last_sampled: Option<Tick>,
 }
@@ -60,6 +67,7 @@ impl LiveInput {
             pressed: [false; Key::COUNT],
             view_yaw: 0,
             view_pitch: 0,
+            look: None,
             last_sampled: None,
         }
     }
@@ -76,9 +84,44 @@ impl LiveInput {
     /// The absolute view angles every following command carries (binary
     /// angles, 65536 per turn, as [`PlayerCommand`]). Movement is relative
     /// to the yaw: with yaw 0, `move_forward` goes along +X.
+    ///
+    /// With mouse look on, look starts again from these angles: the next
+    /// command carries them (pitch clamped to the limit) turned by the
+    /// motion handled after this call only.
     pub const fn set_view(&mut self, yaw: u16, pitch: u16) {
         self.view_yaw = yaw;
         self.view_pitch = pitch;
+        if let Some(look) = &mut self.look {
+            look.set_view(yaw, pitch);
+        }
+    }
+
+    /// Turns mouse look on with `settings`, or off with `None`. Turned on,
+    /// look starts from the angles the last command carried (or
+    /// `set_view`'s since); turned off, those angles hold until `set_view`
+    /// changes them. Either way, motion not yet sampled is dropped.
+    pub const fn set_look(&mut self, settings: Option<LookSettings>) {
+        self.look = match settings {
+            Some(settings) => Some(MouseLook::new(settings, self.view_yaw, self.view_pitch)),
+            None => None,
+        };
+    }
+
+    /// The look settings, or `None` while look is off (the default).
+    pub const fn look_settings(&self) -> Option<LookSettings> {
+        match &self.look {
+            Some(look) => Some(look.settings()),
+            None => None,
+        }
+    }
+
+    /// Takes one mouse motion event (`PlatformEvent::MouseMotion`), in
+    /// arrival order with the key events: raw counts, `dx` right and `dy`
+    /// towards the user. Ignored while look is off.
+    pub fn handle_motion(&mut self, dx: f64, dy: f64) {
+        if let Some(look) = &mut self.look {
+            look.motion(dx, dy);
+        }
     }
 
     /// Whether `key` is down now.
@@ -99,8 +142,13 @@ impl LiveInput {
             }
             KeyEvent::Up(key) => self.held[key.index()] = false,
             // A key that went down since the last sample still counts once,
-            // as with any release.
-            KeyEvent::FocusLost => self.held = [false; Key::COUNT],
+            // as with any release. Motion since the last sample is dropped.
+            KeyEvent::FocusLost => {
+                self.held = [false; Key::COUNT];
+                if let Some(look) = &mut self.look {
+                    look.focus_lost();
+                }
+            }
         }
     }
 
@@ -125,6 +173,9 @@ impl LiveInput {
             }
         }
         self.pressed = [false; Key::COUNT];
+        if let Some(look) = &mut self.look {
+            (self.view_yaw, self.view_pitch) = look.sample();
+        }
         TickInput {
             command: command_for(actions, tick, self.view_yaw, self.view_pitch),
             actions,

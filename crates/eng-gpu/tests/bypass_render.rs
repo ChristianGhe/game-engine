@@ -1,7 +1,7 @@
 //! Bypassed and several-write passes on a real adapter (rung 2, queue item
 //! Q1; ADR-0019): a bypassed pass's readers read its input's
 //! texture, a write bypassed into the output draws there, and a pass with
-//! several writes, which only the plan takes so far, does not render.
+//! several writes renders into all of them (since rung 2's T8).
 //! Without an adapter each test skips, unless `ENG_REQUIRE_GPU=1` (CI) makes
 //! it fail.
 
@@ -192,7 +192,7 @@ fn a_write_bypassed_into_the_output_is_drawn_there() {
 }
 
 #[test]
-fn a_pass_with_several_writes_is_planned_but_not_drawn() {
+fn a_pass_with_several_writes_is_planned_and_drawn() {
     let Some(gpu) = gpu() else { return };
     const EXTRA: Resource = Resource::Transient(Transient::new("extra", Format::Rgba16Float));
     const BOTH: PassDecl = PassDecl {
@@ -219,12 +219,14 @@ fn a_pass_with_several_writes_is_planned_but_not_drawn() {
         TONEMAP,
         fullscreen(&gpu, CLAMP, "clamp_fragment", Resource::Output),
     );
-    let e = graph
+    graph
         .render(&gpu, &targets, &mut [&mut both, &mut tonemap])
-        .unwrap_err();
-    assert_eq!(
-        e.to_string(),
-        "[E-GPU] pass `both`: it writes 2 resources, and drawing into more than one target is \
-         not built yet (rung 2, T8)"
+        .unwrap_or_else(|e| panic!("{e}"));
+    // Its clear reached the scene, which the tone map shows; the transient
+    // nothing reads is drawn into a texture of the pool.
+    assert_all(
+        &targets.read_output(&gpu).unwrap_or_else(|e| panic!("{e}")),
+        [255, 0, 0, 255],
     );
+    assert_eq!(targets.transient_textures(), 1);
 }

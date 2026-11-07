@@ -2,13 +2,15 @@
 //! into, and the output's pixels read back for `shot`, `video` and goldens.
 //! An offscreen texture can stand in for a window's surface, so that a
 //! surface graph renders whole without a window. The targets also keep the
-//! textures that graphs' transients are drawn into (their pool).
+//! textures that graphs' transients are drawn into (their pool), and the
+//! last frame's pass times on their way back (`timing.rs`).
 
 use std::sync::{Mutex, PoisonError};
 
 use crate::error::GpuError;
 use crate::gpu::Gpu;
 use crate::graph::{Format, Plan, PooledTexture};
+use crate::timing::{FrameStats, Timed};
 use crate::{Resource, Transient};
 
 /// The scene's format: linear, scene-referred HDR (spec 6.7).
@@ -46,6 +48,8 @@ fn transient_format(format: Format) -> wgpu::TextureFormat {
     match format {
         Format::Rgba16Float => SCENE_FORMAT,
         Format::Rgba8UnormSrgb => OUTPUT_FORMAT,
+        Format::Rg32Uint => wgpu::TextureFormat::Rg32Uint,
+        Format::Depth32Float => wgpu::TextureFormat::Depth32Float,
     }
 }
 
@@ -65,6 +69,8 @@ pub struct Targets {
     /// Transient textures, in the order they were made. A render takes the
     /// pool by reference ([`crate::Graph::render`]), so it sits in a mutex.
     pool: Mutex<Vec<Pooled>>,
+    /// The last frame's pass times, when the device times passes.
+    timed: Mutex<Timed>,
 }
 
 /// One texture of the targets' pool, for transients of one kind.
@@ -150,6 +156,7 @@ impl Targets {
                 (texture, surface_view)
             }),
             pool: Mutex::new(Vec::new()),
+            timed: Mutex::new(Timed::None),
         })
     }
 
@@ -185,6 +192,29 @@ impl Targets {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .len()
+    }
+
+    /// What the last frame rendered into these targets measured beyond its
+    /// [`crate::FrameCounters`]: the GPU time of each pass that ran, and the
+    /// textures in the pool. With timestamp queries it waits for the GPU to
+    /// finish that frame, as [`Targets::read_output`] does, at most
+    /// [`READBACK_LIMIT`]; without them the times are `None`. A later frame
+    /// replaces the times of one nobody read.
+    pub fn frame_stats(&self, gpu: &Gpu) -> Result<FrameStats, GpuError> {
+        let pass_times = self
+            .timed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .times(gpu)?;
+        Ok(FrameStats {
+            pass_times,
+            transient_textures: self.transient_textures(),
+        })
+    }
+
+    /// Keeps a frame's pass times, in place of the last frame's.
+    pub(crate) fn timed(&self, timed: Timed) {
+        *self.timed.lock().unwrap_or_else(PoisonError::into_inner) = timed;
     }
 
     /// A view of each texture in `plan`, in its order, making those the pool

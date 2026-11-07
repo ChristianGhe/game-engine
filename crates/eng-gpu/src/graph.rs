@@ -58,13 +58,32 @@ impl Resource {
     }
 }
 
-/// The formats a [`Transient`] can have: the scene's and the output's.
+/// The formats a [`Transient`] can have: the scene's and the output's, and
+/// the two more of rung 2's first-person passes (ADR-0020). More may come,
+/// so a match outside eng-gpu needs a wildcard arm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum Format {
     /// Linear, scene-referred HDR colour, as the scene.
     Rgba16Float,
     /// 8-bit colour, sRGB-encoded on write, as the output.
     Rgba8UnormSrgb,
+    /// Two unsigned 32-bit integers, such as `info`'s region, surface class
+    /// and object id. Neither filtered nor blended: a pass reads it with
+    /// `textureLoad` from a `texture_2d<u32>`, and draws it from a
+    /// `vec4<u32>` output.
+    Rg32Uint,
+    /// Depth, drawn as a pass's depth target rather than a colour target,
+    /// and read as a `texture_depth_2d`. eng-gpu's depth is reversed: it
+    /// clears to 0, the far plane, and a nearer fragment has a greater depth.
+    Depth32Float,
+}
+
+impl Format {
+    /// Whether it is drawn as a depth target.
+    pub const fn is_depth(self) -> bool {
+        matches!(self, Self::Depth32Float)
+    }
 }
 
 /// A transient texture, declared where passes read and write it as
@@ -107,7 +126,8 @@ pub struct PassDecl {
     /// Each must be written by an earlier pass. A fullscreen pass draws from
     /// its one read ([`crate::PassRecorder::fullscreen`]).
     pub reads: &'static [Resource],
-    /// Exactly one: the pass's colour target.
+    /// For [`Graph::new`], exactly one: the pass's colour target. A
+    /// [`PassNode`]'s may be several ([`PassNode::writes`]).
     pub writes: &'static [Resource],
 }
 
@@ -137,8 +157,9 @@ pub struct PassNode {
     /// from its one read ([`crate::PassRecorder::fullscreen`]).
     pub reads: &'static [Resource],
     /// At least one, each once. Only one pass may start a resource; any
-    /// other pass that writes it continues one that does. The plan takes
-    /// several; [`Graph::render`] draws only passes with one, for now.
+    /// other pass that writes it continues one that does. A pass draws into
+    /// up to four colour targets and one depth target
+    /// ([`Format::Depth32Float`]), in the order written here.
     pub writes: &'static [Resource],
     /// The pass whose targets this one draws on top of. It writes some or
     /// all of what that pass writes, and nothing else; it runs after it,

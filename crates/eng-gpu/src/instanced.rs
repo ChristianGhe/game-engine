@@ -4,9 +4,10 @@
 
 use crate::graph::Resource;
 
-/// The type of one per-instance attribute: what the vertex stage reads at
-/// `@location(n)`, `n` being its place in [`InstancedDesc::instance`].
-/// Each is stored little-endian.
+/// The type of one vertex-stage attribute: what the vertex stage reads at
+/// `@location(n)`, `n` being its place in [`InstancedDesc::instance`] (per
+/// instance) or [`crate::MeshDesc::vertex`] (per vertex). Each is stored
+/// little-endian.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Attribute {
     /// `vec2<f32>`, 8 bytes.
@@ -27,7 +28,7 @@ impl Attribute {
         }
     }
 
-    fn format(self) -> wgpu::VertexFormat {
+    pub(crate) fn format(self) -> wgpu::VertexFormat {
         match self {
             Self::F32x2 => wgpu::VertexFormat::Float32x2,
             Self::F32x3 => wgpu::VertexFormat::Float32x3,

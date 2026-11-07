@@ -6,7 +6,10 @@
 //! builds rung 1b's passes on it.
 //!
 //! - **[`Gpu`]** opens a device at Tier 0, WebGPU's default features and
-//!   limits, whatever the adapter could do beyond them. [`GpuOptions`] picks
+//!   limits, whatever the adapter could do beyond them, except that it asks
+//!   for timestamp queries when the adapter has them, to time passes (rung
+//!   2, O11); the tier stays 0. It refuses an adapter without storage
+//!   buffers in the vertex stage, which the scene layout needs. [`GpuOptions`] picks
 //!   the adapter: `ENG_GPU_ADAPTER` names it, else wgpu chooses. Without one,
 //!   [`Gpu::new`] fails with `[E-NO-ADAPTER]`; tests then skip, unless
 //!   `ENG_REQUIRE_GPU=1` ([`gpu_required`]) says CI needs a GPU (plan
@@ -41,18 +44,38 @@
 //!   declaration, in the order declared, has every pass that runs record
 //!   into a [`PassRecorder`] in running order, checks each recording against
 //!   its declaration, then uploads the frame's instances, and encodes and
-//!   submits the frame. A pass can clear its target (unless it continues
-//!   another, whose target it loads) and draw, in order:
+//!   submits the frame. A pass draws into up to four colour targets and one
+//!   depth target ([`Format::Depth32Float`], reversed: it clears to 0, the
+//!   far plane). It can clear them (unless it continues another, whose
+//!   targets it loads) and draw, in order, rung 1b's pipelines into a pass
+//!   of one write:
 //!   - [`FullscreenPipeline`]s, which take the pass's one read as input;
 //!     the caller writes only their fragment stage;
 //!   - [`InstancedPipeline`]s: a triangle strip per instance, each instance
 //!     reading its [`Attribute`]s from bytes the pass records, into any
-//!     target but the surface.
+//!     target but the surface;
+//!
+//!   and rung 2's (ADR-0020), made for a pass's reads and writes, which
+//!   [`Graph::render_frame`] gives the frame's [`FrameInput`]: a per-frame
+//!   uniform and [`InstanceRecord`]s, and a [`Scene`]:
+//!   - [`MeshPipeline`]s: indexed triangles from the scene's vertex and
+//!     `u32` index megabuffers ([`MeshDraw`]), each instance a record of the
+//!     chunk's origin minus the eye, taken in f64 on the CPU;
+//!   - [`ScreenPipeline`]s: fullscreen passes that read every read of their
+//!     pass, colour, integer or depth, and bind the uniform.
+//! - **[`Scene`]** ([`Gpu::scene`]): the GPU scene layout of spec 6.7, fixed
+//!   at rung 2 (ADR-0020), written once when a scene loads: the
+//!   megabuffers, a [`Material`] table in storage, and `texture_2d_array`s
+//!   of [`SceneTexture`]s bucketed by size (64, 128 and 256 px), one per
+//!   bucket and [`ColourTag`], sampled at the nearest texel, no mipmaps.
 //! - **[`FrameCounters`]**: [`Graph::render`] returns what the frame asked
 //!   of the GPU (spec 6.13): draws, pipeline switches, bind-group switches
 //!   and uploaded bytes. They are counted from the commands it encodes, so
 //!   they are exact and the same on every adapter. A pass binds a pipeline
-//!   only when a draw needs another, and its input once.
+//!   only when a draw needs another, and each bind group once. They keep
+//!   rung 1b's four fields; what rung 2 measures beyond them, the GPU time
+//!   of each pass (`None` without timestamp queries) and the pool's size,
+//!   is [`FrameStats`], from [`Targets::frame_stats`].
 //! - **Labels**: every pass, target, pooled texture and pipeline is named
 //!   in wgpu's labels, and with `WGPU_DEBUG=1` each pass is also wrapped in
 //!   a debug group of its name.
@@ -88,15 +111,21 @@
 #![forbid(unsafe_code)]
 
 mod counters;
+mod encode;
 mod error;
 mod fullscreen;
 mod gpu;
 mod graph;
 mod instanced;
+mod layout;
+mod mesh;
 mod pass;
 mod report;
+mod scene;
+mod screen;
 mod surface;
 mod targets;
+mod timing;
 
 pub use counters::FrameCounters;
 pub use error::GpuError;
@@ -107,7 +136,15 @@ pub use graph::{
     Target, Transient,
 };
 pub use instanced::{Attribute, InstancedDesc, InstancedPipeline};
-pub use pass::{LinearRgba, Pass, PassRecorder};
+pub use layout::MAX_COLOUR_TARGETS;
+pub use mesh::{MeshDesc, MeshDraw, MeshPipeline};
+pub use pass::{FrameInput, LinearRgba, Pass, PassRecorder};
 pub use report::{Backend, Capabilities, DeviceType, GpuReport};
+pub use scene::{
+    ColourTag, InstanceRecord, MAX_TEXTURE_LAYERS, Material, Scene, SceneDesc, SceneTexture,
+    TEXTURE_SIDES, TextureSlot,
+};
+pub use screen::{ScreenDesc, ScreenPipeline};
 pub use surface::{SurfaceFrame, WindowSurface};
 pub use targets::{Image, READBACK_LIMIT, Targets};
+pub use timing::{FrameStats, PassTime};

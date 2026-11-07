@@ -15,7 +15,8 @@ pub enum GpuError {
         wanted: Option<String>,
         found: Vec<String>,
     },
-    /// The adapter could not open a Tier 0 device. `[E-GPU]`
+    /// The adapter could not open a Tier 0 device, or lacks what rung 2's
+    /// scene layout needs of it. `[E-GPU]`
     Device(String),
     /// A WGSL module or the pipeline made from it did not compile.
     /// `[E-SHADER]`
@@ -35,6 +36,8 @@ pub enum GpuError {
     /// A window's surface could not be made, set up or drawn into, or
     /// offers neither BGRA format. `[E-GPU]`
     Surface(String),
+    /// A scene that its layout cannot hold ([`crate::Gpu::scene`]). `[E-GPU]`
+    Scene { label: String, message: String },
 }
 
 impl fmt::Display for GpuError {
@@ -65,6 +68,7 @@ impl fmt::Display for GpuError {
             ),
             Self::NoSurface => f.write_str("[E-GPU] the targets have no surface to present into"),
             Self::Surface(message) => write!(f, "[E-GPU] {message}"),
+            Self::Scene { label, message } => write!(f, "[E-GPU] scene `{label}`: {message}"),
         }
     }
 }

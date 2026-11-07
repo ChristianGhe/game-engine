@@ -1,16 +1,20 @@
 //! Passes and how a graph runs them. A pass records commands into a
 //! [`PassRecorder`]; once every pass has recorded and each recording fits
-//! its declaration, the frame's instances are uploaded, and the frame is
-//! encoded, counted and submitted at once. Each render pass is labelled with
-//! its pass's name and, with `WGPU_DEBUG=1`, wrapped in a debug group of
-//! that name.
+//! its declaration, the frame's instances, uniform and instance records are
+//! uploaded, and the frame is encoded, counted and submitted at once
+//! (`encode.rs`). Each render pass is labelled with its pass's name and,
+//! with `WGPU_DEBUG=1`, wrapped in a debug group of that name.
 
 use crate::counters::FrameCounters;
 use crate::error::GpuError;
 use crate::fullscreen::FullscreenPipeline;
 use crate::gpu::Gpu;
-use crate::graph::{Graph, GraphError, PassDecl, Resource, Target};
+use crate::graph::{Graph, PassDecl, Resource, Target};
 use crate::instanced::InstancedPipeline;
+use crate::layout::{self, ReadKind};
+use crate::mesh::{MeshDraw, MeshPipeline};
+use crate::scene::{InstanceRecord, Scene};
+use crate::screen::ScreenPipeline;
 use crate::surface::SurfaceFrame;
 use crate::targets::Targets;
 
@@ -46,33 +50,67 @@ pub trait Pass {
     fn record(&mut self, rec: &mut PassRecorder);
 }
 
+/// What a frame brings beside its passes ([`Graph::render_frame`]): rung
+/// 2's per-frame data (ADR-0020). Nothing of it is uploaded unless a pass
+/// of the frame draws a mesh or screen pipeline, which bind it; so a frame
+/// of rung 1b's pipelines uploads and counts what it did in 1b.
+#[derive(Clone, Copy, Default)]
+pub struct FrameInput<'a> {
+    /// A window's image, for a [`Target::Surface`] graph's present pass to
+    /// draw into, as [`Graph::render_to`] does. It must be the targets' size.
+    /// Without one a surface graph draws into the targets' offscreen
+    /// surface.
+    pub surface: Option<&'a SurfaceFrame>,
+    /// The per-frame uniform, `@group(0) @binding(0)` of mesh and screen
+    /// pipelines: the camera's projection and rotation (the eye is the
+    /// origin), EV100 exposure and the look switches, laid out as the
+    /// caller's shaders declare them. A whole number of 16-byte rows, and
+    /// not empty in a frame that draws a mesh or screen pipeline.
+    pub uniform: &'a [u8],
+    /// This frame's record of each drawn chunk or sprite,
+    /// `@group(0) @binding(1)`, which a [`MeshDraw`]'s instances index.
+    pub instances: &'a [InstanceRecord],
+    /// The scene that mesh pipelines draw from, and screen pipelines with
+    /// [`crate::ScreenDesc::scene`] bind.
+    pub scene: Option<&'a Scene>,
+}
+
 /// The commands a pass records for one frame, drawn in order.
 #[derive(Debug)]
 pub struct PassRecorder {
-    clear: Option<LinearRgba>,
-    commands: Vec<Command>,
+    pub(crate) clear: Option<LinearRgba>,
+    pub(crate) commands: Vec<Command>,
 }
 
 #[derive(Debug)]
-enum Command {
+pub(crate) enum Command {
     Fullscreen(FullscreenPipeline),
     Instanced {
         pipeline: InstancedPipeline,
         bytes: Vec<u8>,
     },
+    Mesh {
+        pipeline: MeshPipeline,
+        draw: MeshDraw,
+    },
+    Screen(ScreenPipeline),
 }
 
 impl PassRecorder {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             clear: None,
             commands: Vec::new(),
         }
     }
 
-    /// Starts the pass's target as `colour` rather than
-    /// [`LinearRgba::TRANSPARENT`]. A pass that continues another draws on
-    /// top of its target, so it cannot clear.
+    /// Starts the pass's colour targets, every one of them, as `colour`
+    /// rather than [`LinearRgba::TRANSPARENT`]. An integer target
+    /// ([`crate::Format::Rg32Uint`]) takes its components as integers; how a
+    /// backend converts a value that is not whole is its own, so clear a
+    /// pass with one to whole values (or 0). A depth target always starts
+    /// at 0, the far plane. A pass that continues another draws on top of
+    /// its targets, so it cannot clear.
     pub fn clear(&mut self, colour: LinearRgba) {
         self.clear = Some(colour);
     }
@@ -98,9 +136,33 @@ impl PassRecorder {
         });
     }
 
-    /// Whether the recording fits the pass's declaration, and whether it
-    /// `loads` its target, continuing an earlier pass.
-    fn check(&self, decl: &PassDecl, loads: bool) -> Result<(), GpuError> {
+    /// Draws `draw.indices` of the frame's scene through `pipeline`, once
+    /// for each of the frame's instance records in `draw.instances`
+    /// ([`FrameInput`]). With no indices or no instances it records nothing.
+    pub fn mesh(&mut self, pipeline: &MeshPipeline, draw: MeshDraw) {
+        if draw.indices.is_empty() || draw.instances.is_empty() {
+            return;
+        }
+        self.commands.push(Command::Mesh {
+            pipeline: pipeline.clone(),
+            draw,
+        });
+    }
+
+    /// Draws `pipeline` over the whole of the pass's targets, with every
+    /// read of the pass bound.
+    pub fn screen(&mut self, pipeline: &ScreenPipeline) {
+        self.commands.push(Command::Screen(pipeline.clone()));
+    }
+
+    /// Whether the recording fits the pass's declaration and the frame's
+    /// input, and whether it `loads` its target, continuing an earlier pass.
+    pub(crate) fn check(
+        &self,
+        decl: &PassDecl,
+        loads: bool,
+        input: &FrameInput<'_>,
+    ) -> Result<(), GpuError> {
         let fail = |message: String| GpuError::Pass {
             pass: decl.name,
             message,
@@ -111,24 +173,66 @@ impl PassRecorder {
                     .into(),
             ));
         }
-        let target = |target: Resource| {
-            if decl.writes == [target] {
+        let target = |target: Resource| match decl.writes {
+            [only] if *only == target => Ok(()),
+            [_, _, ..] => Err(fail(format!(
+                "the pipeline draws into `{}` alone, but the pass writes {}",
+                target.name(),
+                names(decl.writes)
+            ))),
+            _ => Err(fail(format!(
+                "the pipeline draws into `{}`, but the pass writes `{}`",
+                target.name(),
+                decl.writes.first().map_or("nothing", |r| r.name())
+            ))),
+        };
+        let shape = |reads: &[Resource], writes: &[Resource]| {
+            if reads == decl.reads && writes == decl.writes {
                 Ok(())
             } else {
                 Err(fail(format!(
-                    "the pipeline draws into `{}`, but the pass writes `{}`",
-                    target.name(),
-                    decl.writes.first().map_or("nothing", |r| r.name())
+                    "the pipeline was made for a pass that reads {} and writes {}, but this pass \
+                     reads {} and writes {}",
+                    names(reads),
+                    names(writes),
+                    names(decl.reads),
+                    names(decl.writes)
                 )))
             }
+        };
+        let frame = || {
+            if input.uniform.is_empty() {
+                Err(fail(
+                    "the pipeline binds the frame's uniform, but the frame has none".into(),
+                ))
+            } else if !input.uniform.len().is_multiple_of(16) {
+                Err(fail(format!(
+                    "the frame's uniform has {} bytes, not a whole number of 16-byte rows",
+                    input.uniform.len()
+                )))
+            } else {
+                Ok(())
+            }
+        };
+        let scene = || {
+            input
+                .scene
+                .ok_or_else(|| fail("the pipeline binds the scene, but the frame has none".into()))
         };
         for command in &self.commands {
             match command {
                 Command::Fullscreen(pipeline) => {
-                    if decl.reads.len() != 1 {
+                    let [read] = decl.reads else {
                         return Err(fail(format!(
                             "a fullscreen draw takes the pass's one read as its input, but the pass reads {}",
                             decl.reads.len()
+                        )));
+                    };
+                    if layout::read_kind(*read) != ReadKind::Colour {
+                        return Err(fail(format!(
+                            "a fullscreen draw filters its input, and `{}` is not colour; a screen \
+                             pipeline reads it",
+                            read.name()
                         )));
                     }
                     target(pipeline.target)?;
@@ -143,10 +247,41 @@ impl PassRecorder {
                         )));
                     }
                 }
+                Command::Mesh { pipeline, draw } => {
+                    shape(&pipeline.reads, &pipeline.writes)?;
+                    frame()?;
+                    let scene = scene()?;
+                    if draw.indices.end > scene.index_count {
+                        return Err(fail(format!(
+                            "the draw takes indices {:?}, but the scene has {}",
+                            draw.indices, scene.index_count
+                        )));
+                    }
+                    let records = input.instances.len();
+                    if draw.instances.end as usize > records {
+                        return Err(fail(format!(
+                            "the draw takes instance records {:?}, but the frame has {records}",
+                            draw.instances
+                        )));
+                    }
+                }
+                Command::Screen(pipeline) => {
+                    shape(&pipeline.reads, &pipeline.writes)?;
+                    frame()?;
+                    if pipeline.scene {
+                        scene()?;
+                    }
+                }
             }
         }
         Ok(())
     }
+}
+
+/// Resources as `[scene, output]`.
+fn names(resources: &[Resource]) -> String {
+    let names: Vec<&str> = resources.iter().map(|r| r.name()).collect();
+    format!("[{}]", names.join(", "))
 }
 
 impl Graph {
@@ -155,17 +290,16 @@ impl Graph {
     /// submits the frame and returns what it counted. The passes that run
     /// are checked against their declarations and record in running order;
     /// then the others are checked, and do not record. Each pass draws into
-    /// the target it writes, transients into the targets' pool; a later
-    /// [`Targets::read_output`] sees the frame. A pass that runs must write
-    /// one resource: drawing into several comes later (rung 2, T8).
+    /// the targets it writes, transients into the targets' pool: up to four
+    /// colour targets and one depth target. A later [`Targets::read_output`]
+    /// sees the frame, and [`Targets::frame_stats`] what it measured.
     pub fn render(
         &self,
         gpu: &Gpu,
         targets: &Targets,
         passes: &mut [&mut dyn Pass],
     ) -> Result<FrameCounters, GpuError> {
-        self.encode(gpu, targets, None, passes)
-            .map(|(counters, _)| counters)
+        self.render_frame(gpu, targets, &FrameInput::default(), passes)
     }
 
     /// Like [`Graph::render`], with a window's image as the
@@ -179,276 +313,46 @@ impl Graph {
         frame: &SurfaceFrame,
         passes: &mut [&mut dyn Pass],
     ) -> Result<FrameCounters, GpuError> {
-        if self.target() != Target::Surface {
-            return Err(GpuError::Surface(
-                "a window's image needs a surface graph, and this one renders offscreen".into(),
-            ));
-        }
-        if frame.size() != targets.size() {
-            let ((fw, fh), (tw, th)) = (frame.size(), targets.size());
-            return Err(GpuError::Surface(format!(
-                "the window's image is {fw}x{fh}, but the targets are {tw}x{th}"
-            )));
-        }
-        self.encode(gpu, targets, Some(&frame.view), passes)
-            .map(|(counters, _)| counters)
+        let input = FrameInput {
+            surface: Some(frame),
+            ..FrameInput::default()
+        };
+        self.render_frame(gpu, targets, &input, passes)
     }
 
-    /// Encodes and submits a frame, and returns its counters and how many
-    /// debug groups it opened.
-    fn encode(
+    /// Like [`Graph::render`], with what the frame brings beside its passes
+    /// ([`FrameInput`]): a window's image, as [`Graph::render_to`] takes it,
+    /// and the uniform, instance records and scene that mesh and screen
+    /// pipelines draw with. Its [`FrameCounters::upload_bytes`] then also
+    /// counts the uniform and the records, if a pass binds them.
+    pub fn render_frame(
         &self,
         gpu: &Gpu,
         targets: &Targets,
-        surface: Option<&wgpu::TextureView>,
+        input: &FrameInput<'_>,
         passes: &mut [&mut dyn Pass],
-    ) -> Result<(FrameCounters, u32), GpuError> {
-        if passes.len() != self.declared.len() {
-            return Err(GraphError::PassCount {
-                expected: self.declared.len(),
-                found: passes.len(),
+    ) -> Result<FrameCounters, GpuError> {
+        if let Some(frame) = input.surface {
+            if self.target() != Target::Surface {
+                return Err(GpuError::Surface(
+                    "a window's image needs a surface graph, and this one renders offscreen".into(),
+                ));
             }
-            .into());
-        }
-        let matches = |index: usize, pass: &dyn Pass| {
-            let (expected, found) = (self.declared[index], pass.decl());
-            if found == expected {
-                Ok(())
-            } else {
-                Err(GraphError::PassMismatch {
-                    index,
-                    expected,
-                    found,
-                })
-            }
-        };
-        // The passes that run, in running order: for a Graph::new graph,
-        // the order given, as in rung 1b.
-        let mut recorded = Vec::with_capacity(self.slots.len());
-        for (at, &index) in self.slots.iter().enumerate() {
-            matches(index, &*passes[index])?;
-            let decl = &self.declared[index];
-            if decl.writes.len() != 1 {
-                return Err(GpuError::Pass {
-                    pass: decl.name,
-                    message: format!(
-                        "it writes {} resources, and drawing into more than one target is not \
-                         built yet (rung 2, T8)",
-                        decl.writes.len()
-                    ),
-                });
-            }
-            let mut rec = PassRecorder::new();
-            passes[index].record(&mut rec);
-            rec.check(decl, self.loads[at])?;
-            recorded.push(rec);
-        }
-        // Then the culled and bypassed passes, which do not record.
-        for (index, pass) in passes.iter().enumerate() {
-            if !self.slots.contains(&index) {
-                matches(index, &**pass)?;
+            if frame.size() != targets.size() {
+                let ((fw, fh), (tw, th)) = (frame.size(), targets.size());
+                return Err(GpuError::Surface(format!(
+                    "the window's image is {fw}x{fh}, but the targets are {tw}x{th}"
+                )));
             }
         }
-        let pooled = if self.plan.textures().is_empty() {
-            Vec::new()
-        } else {
-            targets.pooled(gpu, &self.plan)?
-        };
-        // Only a surface graph uses the surface, which the targets may lack.
-        // Each pass that runs writes one resource (checked above), drawn into
-        // the texture of the resource it takes, if bypassing made it take
-        // another's.
-        let mut views = Vec::with_capacity(recorded.len());
-        for decl in &self.passes {
-            let view = |r: Resource| match (self.aliases.of(r), surface) {
-                (Resource::Surface, Some(window)) => Ok(window),
-                (Resource::Transient(transient), _) => self
-                    .plan
-                    .texture(&transient)
-                    .and_then(|index| pooled.get(index))
-                    .ok_or_else(|| {
-                        GpuError::Wgpu(format!(
-                            "transient `{}` has no texture in the graph's pool",
-                            transient.name
-                        ))
-                    }),
-                (r, _) => targets.view(r).ok_or(GpuError::NoSurface),
-            };
-            let input = decl.reads.first().map(|&r| view(r)).transpose()?;
-            views.push((view(decl.writes[0])?, input));
-        }
-        // Every instance of the frame, in the order the passes draw them.
-        let uploads: Vec<u8> = recorded
-            .iter()
-            .flat_map(|rec| &rec.commands)
-            .filter_map(|command| match command {
-                Command::Instanced { bytes, .. } => Some(bytes.as_slice()),
-                Command::Fullscreen(_) => None,
-            })
-            .flatten()
-            .copied()
-            .collect();
-        gpu.scoped(|| {
-            let mut frame = Frame {
-                gpu,
-                instances: upload(gpu, &uploads),
-                cursor: 0,
-                counters: FrameCounters {
-                    upload_bytes: uploads.len() as u64,
-                    ..FrameCounters::default()
-                },
-            };
-            let mut encoder = gpu
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("frame"),
-                });
-            let mut groups = 0;
-            let steps = self.passes.iter().zip(&self.loads).zip(&recorded);
-            for (((decl, &loads), rec), (target, input)) in steps.zip(&views) {
-                if gpu.debug {
-                    encoder.push_debug_group(decl.name);
-                    groups += 1;
-                }
-                frame.encode(&mut encoder, decl, rec, loads, target, *input);
-                if gpu.debug {
-                    encoder.pop_debug_group();
-                }
-            }
-            gpu.queue.submit([encoder.finish()]);
-            (frame.counters, groups)
-        })
-        .map_err(GpuError::Wgpu)
-    }
-}
-
-/// The frame's instances in one vertex buffer, or `None` without any.
-fn upload(gpu: &Gpu, bytes: &[u8]) -> Option<wgpu::Buffer> {
-    if bytes.is_empty() {
-        return None;
-    }
-    let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("instances"),
-        size: bytes.len() as u64,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    gpu.queue.write_buffer(&buffer, 0, bytes);
-    Some(buffer)
-}
-
-/// One frame being encoded: where the next instances start in the frame's
-/// buffer, and what has been counted so far.
-struct Frame<'a> {
-    gpu: &'a Gpu,
-    instances: Option<wgpu::Buffer>,
-    cursor: u64,
-    counters: FrameCounters,
-}
-
-impl Frame<'_> {
-    /// Encodes one pass, which `loads` its target if it continues an
-    /// earlier pass, and clears it otherwise.
-    fn encode(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        decl: &PassDecl,
-        rec: &PassRecorder,
-        loads: bool,
-        target: &wgpu::TextureView,
-        input: Option<&wgpu::TextureView>,
-    ) {
-        let colour = rec.clear.unwrap_or(LinearRgba::TRANSPARENT);
-        let load = if loads {
-            wgpu::LoadOp::Load
-        } else {
-            wgpu::LoadOp::Clear(wgpu::Color {
-                r: f64::from(colour.r),
-                g: f64::from(colour.g),
-                b: f64::from(colour.b),
-                a: f64::from(colour.a),
-            })
-        };
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some(decl.name),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        // What this pass has bound so far: nothing carries over between passes.
-        let mut bound: Option<&wgpu::RenderPipeline> = None;
-        let mut input_bound = false;
-        for command in &rec.commands {
-            match command {
-                Command::Fullscreen(fullscreen) => {
-                    // `check` made sure a fullscreen pass has its input.
-                    let Some(input) = input else { continue };
-                    set_pipeline(
-                        &mut pass,
-                        &mut bound,
-                        &fullscreen.pipeline,
-                        &mut self.counters,
-                    );
-                    if !input_bound {
-                        let bind_group = self.gpu.shared.bind(&self.gpu.device, input, decl.name);
-                        pass.set_bind_group(0, &bind_group, &[]);
-                        self.counters.bind_group_switches += 1;
-                        input_bound = true;
-                    }
-                    pass.draw(0..3, 0..1);
-                }
-                Command::Instanced { pipeline, bytes } => {
-                    // `upload` made the buffer from every instanced command.
-                    let Some(instances) = &self.instances else {
-                        continue;
-                    };
-                    set_pipeline(
-                        &mut pass,
-                        &mut bound,
-                        &pipeline.pipeline,
-                        &mut self.counters,
-                    );
-                    let len = bytes.len() as u64;
-                    // Tier 0 buffers hold at most 256 MiB, far fewer instances
-                    // than a u32 counts; a larger upload already failed.
-                    let count = u32::try_from(len / pipeline.stride).unwrap_or(u32::MAX);
-                    pass.set_vertex_buffer(0, instances.slice(self.cursor..self.cursor + len));
-                    self.cursor += len;
-                    pass.draw(0..pipeline.vertices, 0..count);
-                }
-            }
-            self.counters.draws += 1;
-        }
-    }
-}
-
-/// Binds `pipeline` unless the pass has it bound already.
-fn set_pipeline<'p>(
-    pass: &mut wgpu::RenderPass<'_>,
-    bound: &mut Option<&'p wgpu::RenderPipeline>,
-    pipeline: &'p wgpu::RenderPipeline,
-    counters: &mut FrameCounters,
-) {
-    if *bound != Some(pipeline) {
-        pass.set_pipeline(pipeline);
-        counters.pipeline_switches += 1;
-        *bound = Some(pipeline);
+        self.encode(gpu, targets, input, passes)
+            .map(|(counters, _)| counters)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{LinearRgba, Pass, PassRecorder};
+    use super::{FrameInput, LinearRgba, Pass, PassRecorder};
     use crate::{DRAW, Gpu, GpuError, GpuOptions, Graph, PassDecl, TONEMAP, Target, Targets};
 
     struct Clear(PassDecl);
@@ -482,7 +386,7 @@ mod tests {
                 .encode(
                     gpu,
                     &targets,
-                    None,
+                    &FrameInput::default(),
                     &mut [&mut Clear(DRAW), &mut Clear(TONEMAP)],
                 )
                 .unwrap_or_else(|e| panic!("{e}"));

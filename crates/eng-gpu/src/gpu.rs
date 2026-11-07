@@ -1,5 +1,6 @@
 //! Opening the GPU: the instance, the adapter (plan decision 4), a Tier 0
-//! device, and what every fullscreen pass shares.
+//! device, what every fullscreen pass shares, and rung 2's bind-group
+//! layouts.
 
 use std::future::Future;
 use std::pin::pin;
@@ -10,6 +11,7 @@ use crate::Resource;
 use crate::error::GpuError;
 use crate::fullscreen::{FullscreenDesc, FullscreenPipeline, Shared};
 use crate::instanced::{self, InstancedDesc, InstancedPipeline};
+use crate::layout::{self, Layouts};
 use crate::report::{self, GpuReport};
 use crate::targets;
 
@@ -51,8 +53,11 @@ pub fn gpu_required() -> bool {
     std::env::var("ENG_REQUIRE_GPU").is_ok_and(|value| value == "1")
 }
 
-/// A device on one adapter, at Tier 0: WebGPU's default features and limits
-/// (spec 6.7), whatever the adapter could do beyond them.
+/// A device on one adapter, at Tier 0: WebGPU's default limits and features
+/// (spec 6.7), whatever the adapter could do beyond them, with one
+/// exception: timestamp queries, which it asks for when the adapter has
+/// them, only to time passes (spec 6.7 "when available"; rung 2 plan, O11).
+/// The tier stays 0, as no pass may rely on them.
 ///
 /// Errors that no call returns, which should not happen through this API,
 /// panic with `[E-GPU]`: validation errors are fatal (spec 6.7).
@@ -60,6 +65,10 @@ pub struct Gpu {
     pub(crate) device: wgpu::Device,
     pub(crate) queue: wgpu::Queue,
     pub(crate) shared: Shared,
+    /// Rung 2's bind-group layouts and samplers.
+    pub(crate) layouts: Layouts,
+    /// Nanoseconds per timestamp tick, when the device times passes.
+    pub(crate) timestamp_period: Option<f32>,
     /// Kept for a window's surface ([`Gpu::with_window`]), whose
     /// capabilities are the adapter's.
     pub(crate) adapter: wgpu::Adapter,
@@ -111,9 +120,24 @@ impl Gpu {
                     .collect(),
             });
         };
+        // Mesh pipelines read the frame's instance records from storage in
+        // the vertex stage. That is WebGPU core, and wgpu marks the adapters
+        // without it (ADR-0020).
+        let downlevel = adapter.get_downlevel_capabilities();
+        if !downlevel
+            .flags
+            .contains(wgpu::DownlevelFlags::VERTEX_STORAGE)
+        {
+            return Err(GpuError::Device(format!(
+                "{} lacks storage buffers in the vertex stage (wgpu's downlevel flag \
+                 VERTEX_STORAGE), which rung 2's scene layout reads its instances from",
+                report::describe(&adapter.get_info())
+            )));
+        }
+        let timestamps = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
         let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("eng-gpu"),
-            required_features: wgpu::Features::empty(),
+            required_features: timestamps,
             required_limits: wgpu::Limits::default(),
             ..wgpu::DeviceDescriptor::default()
         }))
@@ -123,10 +147,17 @@ impl Gpu {
         }));
         let report = report::report(&adapter.get_info(), adapter.features());
         let shared = Shared::new(&device);
+        let layouts = Layouts::new(&device);
+        let timestamp_period = device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY)
+            .then(|| queue.get_timestamp_period());
         Ok(Self {
             device,
             queue,
             shared,
+            layouts,
+            timestamp_period,
             adapter,
             debug: flags().contains(wgpu::InstanceFlags::DEBUG),
             report,
@@ -139,11 +170,21 @@ impl Gpu {
     }
 
     /// Compiles a fullscreen pass's fragment stage (`desc.wgsl`) behind
-    /// eng-gpu's vertex stage, for drawing into `desc.target`.
+    /// eng-gpu's vertex stage, for drawing into `desc.target`, which may not
+    /// be a depth target.
     pub fn fullscreen_pipeline(
         &self,
         desc: &FullscreenDesc<'_>,
     ) -> Result<FullscreenPipeline, GpuError> {
+        if layout::is_depth(desc.target) {
+            return Err(GpuError::Shader {
+                label: desc.label.to_string(),
+                message: format!(
+                    "a fullscreen pipeline draws colour, and `{}` is a depth target",
+                    desc.target.name()
+                ),
+            });
+        }
         let format = targets::format(desc.target);
         self.scoped(|| self.shared.pipeline(&self.device, desc, format))
             .map_err(|message| GpuError::Shader {
@@ -167,6 +208,12 @@ impl Gpu {
         if desc.target == Resource::Surface {
             return Err(shader_error(format!(
                 "instanced pipelines draw into the scene, the output or a transient, not `{}`",
+                desc.target.name()
+            )));
+        }
+        if layout::is_depth(desc.target) {
+            return Err(shader_error(format!(
+                "an instanced pipeline draws colour, and `{}` is a depth target",
                 desc.target.name()
             )));
         }

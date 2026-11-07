@@ -36,7 +36,8 @@ pub struct FullscreenPipeline {
 /// What every fullscreen pipeline shares: the vertex stage, the input's
 /// layout and its sampler.
 pub(crate) struct Shared {
-    vertex: wgpu::ShaderModule,
+    /// Also the vertex stage of rung 2's screen pipelines.
+    pub(crate) vertex: wgpu::ShaderModule,
     inputs: wgpu::BindGroupLayout,
     layout: wgpu::PipelineLayout,
     sampler: wgpu::Sampler,

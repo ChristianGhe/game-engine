@@ -218,8 +218,8 @@ axes that the stop touches at its entry face within `4 * NOISE` per meter
 of coordinate (`NOISE` = 2^-48), with that edge's normal, so the gap rule
 applies. Only if there is none, and the solid ahead is a sliver by depth
 (midway through the rest of the motion's overlap the hull is inside by
-less than 2^-40 m per meter of coordinate on some axis), is the hit a
-graze. Before this rule, the grid let 5 of 5,368 traces starting at vertex
+less than 2^-40 m per meter of coordinate on some axis) and the end is
+free, is the hit a graze. Before this rule, the grid let 5 of 5,368 traces starting at vertex
 contacts on maps off the axes pass through 1.3 cm to 43 cm of solid
 (`crates/eng-collision-grid/tests/vertices.rs`). The grid's proptests now
 also check that the hull, shrunk by 1e-6 m, stays free on the traced
@@ -227,6 +227,7 @@ segment before the hit.
 
 **f32 normals.** The grid uses each edge's unit normal rounded to f32 as
 its separating axis, so each solid is a superset of the authored one by
-about 4e-8 times the edge's length. The contact promise holds exactly
-against the grid's own geometry; against the authored face it holds
-within `CONTACT_GAP` for edges up to about 20 m.
+about 4e-8 times the edge's length. The contact promise holds against the
+grid's own geometry (exactly on the axes, within rounding off them:
+measured at most 8e-15 m); against the authored face it holds within
+`CONTACT_GAP` for edges up to about 20 m.

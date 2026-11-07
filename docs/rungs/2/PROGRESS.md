@@ -559,3 +559,42 @@ ADR-0020, O11)
     it into the ADR with the follow-up.
   - **Plan decision 2:** a slab is a solid convex prism whose sides
     block. Before, its wording was "a z sweep inside its polygon".
+
+**T5: the collision grid** (de2d0e8, follow-up 6e97310; decision 2,
+ADR-0024 and its Amendment 1)
+- **Built** by one builder in a worktree pinned to d106e7f:
+  - ADR-0024's contact rule and `CONTACT_GAP` (2^-20 m) in
+    `eng-collision-api`, checked by `conformance::check`;
+  - `eng-collision-grid`, with walls and solid slabs in 1 m cells. Its
+    SAT sweep uses f64 basic operations over X, Y, Z and f32-rounded
+    edge normals. The crate docs list its six rounding rules;
+  - a brute-force oracle in the tests;
+  - `kit-fps`'s flat-ground proptest and step tests over the grid.
+- **No step-tie test:** the grid has no floors off the axes, so decision
+  3's tie rule cannot be seen there. The carry moves to format v2's
+  slopes.
+- **Reviews:**
+  - **The builder's own reviewer** found vertex-contact faults, which
+    the builder fixed before handing over.
+  - **The independent review:** 45 min, 356k tokens, 214 calls, with an
+    exact-rational oracle. It found the vertex pass-through, with the
+    fix above.
+  - **The re-check of 20589df:** 6 min, 25k tokens, 27 calls.
+    - The fix matches the reviewer's own.
+    - The five pass-through cases block.
+    - Of about 15.5k new vertex-start traces, none passes through more
+      than 1 µm.
+    - Axis-aligned chains give the same bits as before the fix.
+    - Two wording fixes to the amendment were made on `main` with this
+      entry.
+- **Not run:** RISC-V, since this Mac has no QEMU and Docker was off.
+  CI's `riscv: core-tests` runs the grid at the next push.
+- **Checked on `main`:** `quick` 7 of 7 after the cherry-picks.
+- **Carries** are in the plan's T7 and T17 rows. G5's protection row now
+  names the grid's test files.
+- **Cost:**
+  - The builder took 1 h 40 min + 15 min, about 700k tokens and 360
+    calls, its reviewer included.
+  - The two reviews took 740k tokens in all.
+  - It counts as one session (16 of 52), though it cost about twice a
+    typical task.

@@ -64,8 +64,8 @@
 //!   off the image is the plain pipeline's
 //!   ([`FirstPersonRenderer::render_plain`]). Its
 //!   [`FirstPersonRenderer::read_depth`], [`FirstPersonRenderer::read_info`],
-//!   [`FirstPersonRenderer::read_lit`] and
-//!   [`FirstPersonRenderer::read_fogged`] read those targets back.
+//!   [`FirstPersonRenderer::read_albedo`], [`FirstPersonRenderer::read_lit`]
+//!   and [`FirstPersonRenderer::read_fogged`] read those targets back.
 //! - **[`FirstPersonCamera`]**: an f64 eye, [`BAngle`](eng_math::BAngle)
 //!   yaw and pitch, a vertical field of view and a near plane
 //!   ([`NEAR_PLANE`], 0.1 m), made ready for an aspect ratio as a

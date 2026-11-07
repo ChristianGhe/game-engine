@@ -11,7 +11,12 @@
 //!   must hold it to half-float rounding, and the output must be within
 //!   one level of the CPU's tone map of it (`tone/mod.rs`). With banding,
 //!   a pixel whose step is within the distance's error of a whole step is
-//!   left out: either side of it is right;
+//!   left out: either side of it is right. The albedo is the GPU's own,
+//!   read back from `albedo`: the oracle checks the light model, not the
+//!   adapter's sRGB decode of the texture, which is the adapter's (Mesa
+//!   lavapipe's is 1.1% below the formula at code 40, Metal's 0.09%), and
+//!   which the decode is checked against only loosely, to see the texel
+//!   is the face's;
 //! - **fog:** `fogged` is `lit + (fog - lit) * (1 - e^(-density * distance))`
 //!   with the pixel's region's fog, to half-float rounding and the
 //!   distance's error; the sky keeps `lit` exactly.
@@ -36,12 +41,9 @@ use room::{AROUND, Camera64, Face, Seen, depth_tolerance, seen};
 /// Twice a half float's rounding, relative: 2^-10.
 const HALF_ULP_TWICE: f64 = 1.0 / 1024.0;
 
-/// How far `lit` may be from the CPU's luminance, relative: 2^-9. It is
-/// rounded to a half float twice, in `albedo` and in `lit` (2^-11 each),
-/// after the adapter's own sRGB decode of the texel, which on the M2 Pro
-/// is up to about 0.09% from the formula (the worst pixel there is 0.13%
-/// off in all).
-const LIT_TOLERANCE: f64 = 1.0 / 512.0;
+/// How far the adapter's decoded albedo may be from the sRGB formula's,
+/// relative: a check that the texel is the face's, not of the decode.
+const DECODE_SLACK: f64 = 0.03;
 
 /// A pixel the CPU knows: where it is, the face it shows and how far away.
 struct Probe {
@@ -148,6 +150,10 @@ fn the_light_model_is_the_cpus_on_every_unambiguous_pixel() {
         let lit = renderer
             .read_lit(&gpu, &targets)
             .unwrap_or_else(|e| panic!("{e}"));
+        // Without fog, nothing draws over `albedo` after the light pass.
+        let albedo = renderer
+            .read_albedo(&gpu, &targets)
+            .unwrap_or_else(|e| panic!("{e}"));
         let (mut checked, mut on_edges, mut failures) = (0, 0, Vec::new());
         let mut steps = std::collections::BTreeSet::new();
         for probe in &probes {
@@ -167,15 +173,23 @@ fn the_light_model_is_the_cpus_on_every_unambiguous_pixel() {
                 step = eng_math::floor_f64(step);
             }
             steps.insert((step * 8.0) as i64);
-            if !probe.colour_known {
-                continue;
-            }
             checked += 1;
-            let nits = tone::lambert(probe.albedo, lux(step));
+            let decoded = rgb16(&albedo, probe.x, probe.y);
+            if probe.colour_known {
+                let formula = probe.albedo.map(tone::decode);
+                if (0..3).any(|c| (decoded[c] - formula[c]).abs() > formula[c] * DECODE_SLACK) {
+                    failures.push(format!(
+                        "({}, {}) face {}: albedo {decoded:.4?}, not the face's {formula:.4?}",
+                        probe.x, probe.y, probe.face.info.id
+                    ));
+                }
+            }
+            let nits = decoded.map(|a| a * lux(step) / std::f64::consts::PI);
             let got = rgb16(&lit, probe.x, probe.y);
-            // Without banding the distance's error moves the step too, and
+            // `lit` rounds to a half float once (2^-11) after f32 sums; and
+            // without banding the distance's error moves the step too, and
             // lux a quarter stop a step (under 0.2 relative per step).
-            let tolerance = LIT_TOLERANCE + if banding { 0.0 } else { 0.2 * step_error };
+            let tolerance = HALF_ULP_TWICE + if banding { 0.0 } else { 0.2 * step_error };
             for c in 0..3 {
                 if (got[c] - nits[c]).abs() > nits[c] * tolerance + 1e-6 {
                     failures.push(format!(
@@ -196,8 +210,8 @@ fn the_light_model_is_the_cpus_on_every_unambiguous_pixel() {
         }
         assert!(
             failures.is_empty(),
-            "banding {banding}: {} differences over {checked} pixels (lit and the output each \
-             count), first:\n{}",
+            "banding {banding}: {} differences over {checked} pixels (albedo, lit and the \
+             output each count), first:\n{}",
             failures.len(),
             failures[..failures.len().min(12)].join("\n")
         );

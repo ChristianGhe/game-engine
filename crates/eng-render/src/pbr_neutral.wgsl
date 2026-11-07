@@ -9,9 +9,9 @@
 // ToneMapping, PBR_Neutral): with F90 = 0.04, Ks = 0.8 - F90, Kd = 0.15,
 // x the least channel, the offset f is x - x^2 / (4 F90) for x <= 2 F90
 // and F90 above; the colour minus f is kept if its peak p is at most Ks;
-// above, the peak is compressed to pn = 1 - (1 - Ks)^2 / (p + 1 - 2 Ks)
-// and the colour, scaled by pn / p, is desaturated toward pn by
-// 1 - 1 / (Kd (p - pn) + 1).
+// above, the peak is compressed to p' = 1 - (1 - Ks)^2 / (p + 1 - 2 Ks)
+// and the colour, scaled by p' / p, is desaturated toward p' by
+// 1 - 1 / (Kd (p - p') + 1).
 
 // The per-frame uniform; every first-person shader declares it alike
 // (eng-render's `first_person/frame.rs`).

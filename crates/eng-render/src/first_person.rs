@@ -48,7 +48,7 @@ pub use world::{Chunk, GpuWorld, WorldMesh, WorldVertex};
 
 use crate::{FirstPersonCamera, FrameCounters, RenderError};
 use passes::{
-    DEPTH, FOG, FOGGED, INFO, LIGHT, LIT, LOOK_NODES, LOOK_NODES_PRESENTED, OPAQUE, Opaque,
+    ALBEDO, DEPTH, FOG, FOGGED, INFO, LIGHT, LIT, LOOK_NODES, LOOK_NODES_PRESENTED, OPAQUE, Opaque,
     PALETTE, PLAIN_NODES, PLAIN_NODES_PRESENTED, PLAIN_TONEMAP, Present, SKY, Screen, TONEMAP,
 };
 
@@ -294,6 +294,15 @@ impl FirstPersonRenderer {
     /// [`FirstPersonRenderer::read_depth`] is.
     pub fn read_info(&self, gpu: &Gpu, targets: &Targets) -> Result<Texels, RenderError> {
         self.read(gpu, targets, INFO)
+    }
+
+    /// The albedo the last frame's opaque pass drew, linear, as half floats
+    /// (`Rgba16Float`): each surface's texel as the adapter decoded it,
+    /// before any light. Refused as [`FirstPersonRenderer::read_depth`] is,
+    /// and also after a frame with fog, whose `fogged` takes `albedo`'s
+    /// pooled texture once the light pass has read it.
+    pub fn read_albedo(&self, gpu: &Gpu, targets: &Targets) -> Result<Texels, RenderError> {
+        self.read(gpu, targets, ALBEDO)
     }
 
     /// The luminance the last frame's light and sky passes drew, in nits,

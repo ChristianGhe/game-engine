@@ -30,9 +30,9 @@ pub fn saturating_luminance(ev100: f64) -> f64 {
 /// from its definition: `F90 = 0.04`, `Ks = 0.8 - F90`, `Kd = 0.15`; `x`
 /// the least channel; `f = x - x^2 / (4 F90)` if `x <= 2 F90`, else `F90`;
 /// `p` the greatest channel of `c - f`; if `p <= Ks` the result is
-/// `c - f`; else `pn = 1 - (1 - Ks)^2 / (p + 1 - 2 Ks)`,
-/// `g = 1 / (Kd (p - pn) + 1)`, and the result is
-/// `(c - f) (pn / p) g + pn (1 - g)` in every channel.
+/// `c - f`; else `p' = 1 - (1 - Ks)^2 / (p + 1 - 2 Ks)`,
+/// `g = 1 / (Kd (p - p') + 1)`, and the result is
+/// `(c - f) (p' / p) g + p' (1 - g)` in every channel.
 pub fn pbr_neutral(c: [f64; 3]) -> [f64; 3] {
     const F90: f64 = 0.04;
     const KS: f64 = 0.8 - F90;
@@ -48,9 +48,9 @@ pub fn pbr_neutral(c: [f64; 3]) -> [f64; 3] {
     if p <= KS {
         return shifted;
     }
-    let pn = 1.0 - (1.0 - KS) * (1.0 - KS) / (p + 1.0 - 2.0 * KS);
-    let g = 1.0 / (KD * (p - pn) + 1.0);
-    shifted.map(|v| v * (pn / p) * g + pn * (1.0 - g))
+    let new_peak = 1.0 - (1.0 - KS) * (1.0 - KS) / (p + 1.0 - 2.0 * KS);
+    let g = 1.0 / (KD * (p - new_peak) + 1.0);
+    shifted.map(|v| v * (new_peak / p) * g + new_peak * (1.0 - g))
 }
 
 /// An sRGB code's linear value (IEC 61966-2-1).

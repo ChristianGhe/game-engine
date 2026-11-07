@@ -3,7 +3,9 @@
 
 use std::time::Duration;
 
-use eng_platform_api::{App, Control, Instant, Key, Platform, PlatformError, PlatformEvent, Wake};
+use eng_platform_api::{
+    App, Control, CursorGrab, Instant, Key, Platform, PlatformError, PlatformEvent, Request, Wake,
+};
 use eng_platform_headless::HeadlessPlatform;
 use proptest::prelude::*;
 
@@ -274,6 +276,97 @@ fn a_script_out_of_time_order_is_refused() {
         (ms(9), PlatformEvent::FocusGained),
         (ms(4), PlatformEvent::FocusLost),
     ]);
+}
+
+/// Grabs in `start`, frees on focus loss and grabs again on focus gain, as
+/// first-person `play` does (ADR-0022), toggles fullscreen in frames, and
+/// exits on a close request. Keeps every answer.
+#[derive(Default)]
+struct Asker {
+    answers: Vec<(Instant, String)>,
+    frames: u32,
+}
+
+impl Asker {
+    fn grab(&mut self, ctx: &mut dyn Control, grab: bool) {
+        let answer = ctx.grab_cursor(grab);
+        self.answers
+            .push((ctx.now(), format!("grab {grab}: {answer:?}")));
+    }
+}
+
+impl App for Asker {
+    fn start(&mut self, ctx: &mut dyn Control) {
+        self.grab(ctx, true);
+    }
+
+    fn event(&mut self, ctx: &mut dyn Control, event: PlatformEvent) {
+        match event {
+            PlatformEvent::FocusLost => self.grab(ctx, false),
+            PlatformEvent::FocusGained => self.grab(ctx, true),
+            PlatformEvent::CloseRequested => ctx.exit(),
+            _ => {}
+        }
+    }
+
+    fn frame(&mut self, ctx: &mut dyn Control) -> Wake {
+        self.frames += 1;
+        let on = self.frames % 2 == 1;
+        let took = ctx.set_fullscreen(on);
+        self.answers
+            .push((ctx.now(), format!("fullscreen {on}: {took}")));
+        Wake::At(ctx.now() + Duration::from_millis(4))
+    }
+}
+
+#[test]
+fn requests_are_recorded_with_their_times_and_change_nothing() {
+    let script = [
+        (ms(3), PlatformEvent::FocusLost),
+        (ms(6), PlatformEvent::FocusGained),
+        (ms(6), PlatformEvent::CloseRequested),
+    ];
+    let mut platform = HeadlessPlatform::new().script(script);
+    assert!(platform.requests().is_empty(), "nothing before a run");
+    let mut app = Asker::default();
+    assert_eq!(platform.run(&mut app), Ok(()));
+    use Request::{Fullscreen, GrabCursor};
+    let want = [
+        (ms(0), GrabCursor(true)),
+        (ms(0), Fullscreen(true)),
+        (ms(3), GrabCursor(false)),
+        (ms(3), Fullscreen(false)),
+        (ms(6), GrabCursor(true)),
+    ];
+    assert_eq!(platform.requests(), want);
+    // No window: nothing is grabbed and nothing goes fullscreen.
+    let answers: Vec<&str> = app.answers.iter().map(|(_, a)| a.as_str()).collect();
+    assert_eq!(
+        answers,
+        [
+            "grab true: None",
+            "fullscreen true: false",
+            "grab false: None",
+            "fullscreen false: false",
+            "grab true: None",
+        ]
+    );
+    assert_eq!(CursorGrab::default(), CursorGrab::None);
+}
+
+#[test]
+fn each_run_starts_the_record_again() {
+    let script = [(ms(5), PlatformEvent::CloseRequested)];
+    let mut platform = HeadlessPlatform::new().script(script);
+    assert_eq!(platform.run(&mut Asker::default()), Ok(()));
+    let first = platform.requests().to_vec();
+    assert_eq!(platform.run(&mut Asker::default()), Ok(()));
+    assert_eq!(platform.requests(), first, "the second run's, alone");
+    assert_eq!(first.len(), 3, "{first:?}");
+    // An app that asks nothing leaves the record empty.
+    let mut quiet = Recorder::new(|_| None);
+    assert_eq!(platform.run(&mut quiet), Ok(()));
+    assert!(platform.requests().is_empty());
 }
 
 // --- Properties -------------------------------------------------------

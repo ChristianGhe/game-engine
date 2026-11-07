@@ -31,4 +31,10 @@ impl eng_platform_api::window::Window for WinitWindow {
         let size = self.0.inner_size();
         PhysicalSize::new(size.width, size.height)
     }
+
+    /// From the monitor winit says the window is on. macOS knows none for
+    /// a window not yet shown (during `App::window`).
+    fn refresh_rate(&self) -> Option<u32> {
+        self.0.current_monitor()?.refresh_rate_millihertz()
+    }
 }

@@ -17,7 +17,8 @@ pub enum PlatformEvent {
     KeyUp(Key),
     /// The mouse moved: raw, unaccelerated device counts, not pixels. `dx`
     /// is positive to the right and `dy` towards the user (down the
-    /// screen), as operating systems report it.
+    /// screen), as operating systems report it. A platform with a window
+    /// reports it only while the window has focus, wherever the cursor is.
     MouseMotion {
         dx: f64,
         dy: f64,
@@ -94,7 +95,10 @@ pub enum MouseButton {
 }
 
 /// How far the wheel turned. `y` is positive away from the user (up) and
-/// `x` to the right.
+/// `x` to the right: the way the wheel turned, not the way content scrolls.
+/// Natural scrolling reverses what the system reports; a platform that can
+/// read the setting turns it back (winit does on macOS, where it is on by
+/// default), and one that cannot reports what the system gives.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WheelDelta {
     /// Notches of a wheel, possibly fractional.

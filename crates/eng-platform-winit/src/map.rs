@@ -1,12 +1,34 @@
 //! winit's events as the contract's plain data: physical keys by W3C
-//! code, focus, size, occlusion and close requests. Everything else winit
-//! reports is left out, the mouse included: rung 1b maps only keys (plan,
-//! eng-platform-api's row), and the mouse comes with rung 2's raw-input
-//! shim (`docs/rungs/1b/PROGRESS.md`, T10, has winit's conventions).
+//! code, mouse buttons, the wheel, raw mouse motion, focus, size,
+//! occlusion and close requests. Everything else winit reports is left
+//! out. Rung 1b's T10 found winit's conventions
+//! (`docs/rungs/1b/PROGRESS.md`, "For rung 2"); rung 2's T13 maps them:
+//!
+//! - **The wheel.** winit's deltas say where content moves, right and down
+//!   positive. The contract's say where the wheel turned, up (away from the
+//!   user) and right positive: `y` keeps winit's sign and `x` is negated,
+//!   as SDL does on macOS. Natural scrolling reverses both; on macOS, where
+//!   it is on by default, the platform reads the setting and turns them
+//!   back ([`wheel`]'s `natural`).
+//! - **Raw motion** is winit's device motion (`DeviceEvent::MouseMotion`),
+//!   which winit sends only while the window has focus; the platform also
+//!   drops any that comes without focus. On macOS winit's deltas are
+//!   accelerated and coalesced, not the raw counts the contract promises,
+//!   so the platform leaves them out there ([`RAW_MOTION`]): macOS motion
+//!   comes from the GCMouse shim (`eng-platform-gcmouse`, task T14).
+//!   Under X11's `Confined` grab (an X pointer grab) the X server sends
+//!   winit each raw motion twice, from the same device (seen under Xvfb
+//!   with XTEST input; once each without the grab). SDL drops a raw motion
+//!   with the same X time and deltas as the one before; winit gives neither
+//!   the time nor anything else that tells the copies apart, so both pass.
 
-use eng_platform_api::{Key, PhysicalSize, PlatformEvent};
-use winit::event::{ElementState, WindowEvent};
+use eng_platform_api::{Key, MouseButton, PhysicalSize, PlatformEvent, WheelDelta};
+use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{KeyCode, PhysicalKey};
+
+/// Whether winit's device motion is the contract's raw motion here: not on
+/// macOS, where winit reports NSEvent's accelerated deltas, coalesced.
+pub(crate) const RAW_MOTION: bool = !cfg!(target_os = "macos");
 
 /// winit's code for each of the contract's keys, in [`Key::ALL`] order.
 /// Both name keys by W3C `code`, except that winit calls `MetaLeft` and
@@ -154,14 +176,74 @@ pub(crate) fn keyboard(
     })
 }
 
-/// A window event, if the contract has it.
-pub(crate) fn window_event(event: &WindowEvent) -> Option<PlatformEvent> {
+/// A mouse button going down or up. Both name the same buttons.
+pub(crate) const fn button(
+    button: winit::event::MouseButton,
+    state: ElementState,
+) -> PlatformEvent {
+    use winit::event::MouseButton as W;
+    let button = match button {
+        W::Left => MouseButton::Left,
+        W::Right => MouseButton::Right,
+        W::Middle => MouseButton::Middle,
+        W::Back => MouseButton::Back,
+        W::Forward => MouseButton::Forward,
+        W::Other(n) => MouseButton::Other(n),
+    };
+    match state {
+        ElementState::Pressed => PlatformEvent::MouseDown(button),
+        ElementState::Released => PlatformEvent::MouseUp(button),
+    }
+}
+
+/// The wheel: winit says where content moves (right and down positive), the
+/// contract where the wheel turned (right and up, away from the user).
+/// With `natural` scrolling the system has reversed both already.
+///
+/// X11 reports a wheel that only has buttons 4 to 7 (XTEST's, as `xdotool
+/// click 4` sends under Xvfb) on both the press and the release, so such a
+/// notch comes twice; a wheel with XInput2 scroll valuators (evdev,
+/// libinput) comes once. winit's event does not say which it was.
+pub(crate) fn wheel(delta: MouseScrollDelta, natural: bool) -> PlatformEvent {
+    // `0.0 - v`, not `-v`: an axis that did not move stays +0.
+    let flip = |v: f64, flip: bool| if flip { 0.0 - v } else { v };
+    PlatformEvent::Wheel(match delta {
+        MouseScrollDelta::LineDelta(x, y) => WheelDelta::Lines {
+            x: flip(f64::from(x), !natural),
+            y: flip(f64::from(y), natural),
+        },
+        MouseScrollDelta::PixelDelta(p) => WheelDelta::Pixels {
+            x: flip(p.x, !natural),
+            y: flip(p.y, natural),
+        },
+    })
+}
+
+/// Raw device motion: winit's `DeviceEvent::MouseMotion`, `dx` right and
+/// `dy` down, as the contract has it. Only where [`RAW_MOTION`].
+pub(crate) const fn motion((dx, dy): (f64, f64)) -> PlatformEvent {
+    PlatformEvent::MouseMotion { dx, dy }
+}
+
+/// Whether macOS's natural scrolling is on, from the output of `defaults
+/// read -g com.apple.swipescrolldirection`: `None` (no such key, or no
+/// output) is the system's default, on.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn natural_scrolling(output: Option<&str>) -> bool {
+    output.is_none_or(|out| out.trim() != "0")
+}
+
+/// A window event, if the contract has it. `natural`: the system's natural
+/// scrolling is on, as far as the platform can tell.
+pub(crate) fn window_event(event: &WindowEvent, natural: bool) -> Option<PlatformEvent> {
     Some(match event {
         WindowEvent::KeyboardInput {
             event,
             is_synthetic,
             ..
         } => return keyboard(event.physical_key, event.state, event.repeat, *is_synthetic),
+        WindowEvent::MouseInput { state, button, .. } => self::button(*button, *state),
+        WindowEvent::MouseWheel { delta, .. } => wheel(*delta, natural),
         WindowEvent::Focused(true) => PlatformEvent::FocusGained,
         WindowEvent::Focused(false) => PlatformEvent::FocusLost,
         WindowEvent::Resized(size) => {
@@ -262,8 +344,77 @@ mod tests {
             (WindowEvent::CloseRequested, PlatformEvent::CloseRequested),
         ];
         for (winit, ours) in pairs {
-            assert_eq!(window_event(&winit), Some(ours), "{winit:?}");
+            assert_eq!(window_event(&winit, false), Some(ours), "{winit:?}");
+            assert_eq!(window_event(&winit, true), Some(ours), "{winit:?}");
         }
+    }
+
+    #[test]
+    fn mouse_buttons_go_down_and_up_by_name() {
+        use winit::event::MouseButton as W;
+        let pairs = [
+            (W::Left, MouseButton::Left),
+            (W::Right, MouseButton::Right),
+            (W::Middle, MouseButton::Middle),
+            (W::Back, MouseButton::Back),
+            (W::Forward, MouseButton::Forward),
+            (W::Other(12), MouseButton::Other(12)),
+        ];
+        for (winit, ours) in pairs {
+            assert_eq!(
+                button(winit, ElementState::Pressed),
+                PlatformEvent::MouseDown(ours)
+            );
+            assert_eq!(
+                button(winit, ElementState::Released),
+                PlatformEvent::MouseUp(ours)
+            );
+        }
+    }
+
+    #[test]
+    fn the_wheel_says_where_it_turned_not_where_content_moves() {
+        // A notch away from the user: winit's content moves down, +y.
+        assert_eq!(
+            wheel(MouseScrollDelta::LineDelta(0.0, 1.0), false),
+            PlatformEvent::Wheel(WheelDelta::Lines { x: 0.0, y: 1.0 })
+        );
+        // Tilted right: content moves left, winit's -x; X11's button 7.
+        assert_eq!(
+            wheel(MouseScrollDelta::LineDelta(-1.0, 0.0), false),
+            PlatformEvent::Wheel(WheelDelta::Lines { x: 1.0, y: 0.0 })
+        );
+        let pixels = MouseScrollDelta::PixelDelta(PhysicalPosition::new(3.5, -7.25));
+        assert_eq!(
+            wheel(pixels, false),
+            PlatformEvent::Wheel(WheelDelta::Pixels { x: -3.5, y: -7.25 })
+        );
+        // Natural scrolling has reversed both: turned back.
+        assert_eq!(
+            wheel(MouseScrollDelta::LineDelta(0.5, -1.0), true),
+            PlatformEvent::Wheel(WheelDelta::Lines { x: 0.5, y: 1.0 })
+        );
+        assert_eq!(
+            wheel(pixels, true),
+            PlatformEvent::Wheel(WheelDelta::Pixels { x: 3.5, y: 7.25 })
+        );
+    }
+
+    #[test]
+    fn natural_scrolling_is_on_unless_the_setting_says_0() {
+        assert!(natural_scrolling(None), "never set: macOS's default");
+        assert!(natural_scrolling(Some("1\n")));
+        assert!(!natural_scrolling(Some("0\n")));
+        assert!(!natural_scrolling(Some("0")));
+    }
+
+    #[test]
+    fn raw_motion_keeps_its_counts_and_signs() {
+        assert_eq!(
+            motion((3.0, -1.5)),
+            PlatformEvent::MouseMotion { dx: 3.0, dy: -1.5 }
+        );
+        assert_eq!(RAW_MOTION, !cfg!(target_os = "macos"));
     }
 
     #[test]
@@ -275,7 +426,7 @@ mod tests {
             WindowEvent::HoveredFileCancelled,
         ];
         for event in others {
-            assert_eq!(window_event(&event), None, "{event:?}");
+            assert_eq!(window_event(&event, false), None, "{event:?}");
         }
     }
 }

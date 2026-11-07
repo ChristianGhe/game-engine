@@ -18,7 +18,12 @@
 //! - **The window seam** ([`window::Window`], ADR-0016) is the only part
 //!   that names `raw-window-handle`'s traits. A windowed platform hands its
 //!   window to [`App::window`]; nothing a platform must implement mentions
-//!   it, so the headless platform, outside the seam, never does.
+//!   it, so the headless platform, outside the seam, never does. The window
+//!   tells its monitor's refresh rate ([`window::Window::refresh_rate`]).
+//! - **Requests** (ADR-0022): the app grabs the cursor
+//!   ([`Control::grab_cursor`]) and asks for borderless fullscreen
+//!   ([`Control::set_fullscreen`]). Their default bodies change nothing, as
+//!   on a platform without a window; the headless platform records them.
 //!
 //! # The rules
 //!
@@ -40,6 +45,13 @@
 //! running until the app exits. The clock never goes back. `run` can be
 //! called again once it has returned, and each run's clock starts at zero.
 //!
+//! Requests act at once on the window handed to [`App::window`], from that
+//! callback on; before it, and with no window, they change nothing and
+//! answer [`CursorGrab::None`] or `false`. A grab never outlives focus: the
+//! platform frees the cursor before [`PlatformEvent::FocusLost`], and never
+//! grabs or changes fullscreen unasked. [`App::stop`] gets `&dyn Control`,
+//! so no request is made there; the window, and its grab, go with the run.
+//!
 //! [`conformance::check`] checks these rules on any platform, and
 //! [`conformance::check_scripted`] checks event delivery, exact times and
 //! close requests on a platform that can be scripted.
@@ -52,7 +64,7 @@ mod event;
 mod key;
 pub mod window;
 
-pub use app::{App, Control, Platform, PlatformError, Wake};
+pub use app::{App, Control, CursorGrab, Platform, PlatformError, Request, Wake};
 pub use clock::Instant;
 pub use event::{
     GamepadAxis, GamepadButton, GamepadId, MouseButton, PhysicalSize, PlatformEvent, WheelDelta,

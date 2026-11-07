@@ -11,8 +11,8 @@
 //!   and anything holding one such as a GPU surface, by `stop`; the window
 //!   closes then (on macOS winit closes it at the end of the run anyway).
 //!   If the window cannot be made, `run` returns
-//!   [`PlatformError::Unavailable`] and calls nothing. It is resizable, not
-//!   fullscreen (plan decision 7), and winit's default size.
+//!   [`PlatformError::Unavailable`] and calls nothing. It is resizable,
+//!   winit's default size, and fullscreen only when the app asks.
 //! - **Running again.** winit makes its event loop once per process, so
 //!   the platform owns it and each run is winit's `run_app_on_demand`
 //!   (Windows, macOS, X11 and Wayland). A second [`WinitPlatform::new`] in
@@ -43,10 +43,23 @@
 //!   size in physical pixels; occlusion, where winit reports it (macOS:
 //!   minimised or covered; X11: fully covered; on Windows a minimised
 //!   window shows as 0 x 0 instead, and Wayland reports neither); and
-//!   close requests, which the app handles. Rung 1b maps only keys (the
-//!   plan): no mouse events until rung 2, whose raw-input shim gives macOS
-//!   the raw counts the contract asks for (winit's are accelerated there),
-//!   and no gamepad events until gilrs (rung 6).
+//!   close requests, which the app handles. Mouse buttons, and the wheel
+//!   turned to the contract's signs (winit's say where content moves; on
+//!   macOS the platform reads natural scrolling once, when it is made, and
+//!   turns it back). Raw mouse motion is winit's device motion, only while
+//!   the window has focus, and not on macOS, where winit's deltas are
+//!   accelerated and coalesced: there it comes from the GCMouse shim
+//!   (rung 2, task T14). No gamepad events until gilrs (rung 6).
+//!   `map.rs` has the details.
+//! - **Requests** (ADR-0022). Borderless fullscreen on the window's
+//!   monitor, at once. A cursor grab hides the cursor, moves it to the
+//!   middle of the window and tries winit's `Locked`, then `Confined`
+//!   (X11 has no lock), but holds only while the window has focus: asked
+//!   for without focus (as in `App::window`, before the window shows) it
+//!   waits for focus and answers `None` until then, and focus loss frees
+//!   the cursor, so the app asks again on `FocusGained`. The end of a run
+//!   frees it too. `request.rs` says why. The window's refresh rate is its
+//!   monitor's, as winit reads it.
 //! - **Displays.** Linux and the BSDs need `DISPLAY` or `WAYLAND_DISPLAY`;
 //!   winit loads X11 or Wayland at run time, so building needs no system
 //!   development packages (plan decision 5). Without a display `new` is
@@ -55,11 +68,13 @@
 //!
 //! It passes the contract's conformance suite where a display exists
 //! (rung 1b, T10). `examples/events.rs` prints what a real window reports,
-//! to check a machine's input by hand.
+//! to check a machine's input by hand; `--grab` and `--fullscreen` make
+//! the requests.
 #![forbid(unsafe_code)]
 
 mod map;
 mod pace;
+mod request;
 mod run;
 mod window;
 
@@ -77,6 +92,8 @@ use crate::run::Run;
 pub struct WinitPlatform {
     event_loop: EventLoop<()>,
     title: String,
+    /// macOS's natural scrolling, read once when the platform is made.
+    natural: bool,
 }
 
 impl WinitPlatform {
@@ -102,7 +119,30 @@ impl WinitPlatform {
         Ok(Self {
             event_loop,
             title: title.to_string(),
+            natural: natural_scrolling(),
         })
+    }
+}
+
+/// Whether the system's natural scrolling is on, which reverses winit's
+/// wheel deltas. macOS keeps it in a user default that winit does not
+/// read; `defaults` reads it (one process, once per platform). Elsewhere
+/// the platform cannot tell, and takes the deltas as the system gives
+/// them.
+fn natural_scrolling() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let out = std::process::Command::new("/usr/bin/defaults")
+            .args(["read", "-g", "com.apple.swipescrolldirection"])
+            .output()
+            .ok()
+            .filter(|out| out.status.success());
+        let text = out.map(|out| String::from_utf8_lossy(&out.stdout).into_owned());
+        map::natural_scrolling(text.as_deref())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
     }
 }
 
@@ -115,7 +155,7 @@ impl Platform for WinitPlatform {
         let attributes = winit::window::Window::default_attributes()
             .with_title(self.title.as_str())
             .with_visible(false);
-        let mut run = Run::new(app, attributes);
+        let mut run = Run::new(app, attributes, self.natural);
         let result = self.event_loop.run_app_on_demand(&mut run);
         run.finish();
         if let Some(why) = run.unavailable.take() {

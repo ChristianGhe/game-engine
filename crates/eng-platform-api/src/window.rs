@@ -20,4 +20,12 @@ pub trait Window: HasWindowHandle + HasDisplayHandle + Send + Sync {
     /// The drawable area now, in physical pixels. Changes also arrive as
     /// [`PlatformEvent::Resized`](crate::PlatformEvent::Resized).
     fn size(&self) -> PhysicalSize;
+
+    /// The refresh rate of the window's monitor now, in millihertz
+    /// (`60_000` is 60 Hz), or `None` when the platform cannot tell: no
+    /// monitor yet, or one that reports none. It may change as the window
+    /// moves between monitors.
+    fn refresh_rate(&self) -> Option<u32> {
+        None
+    }
 }

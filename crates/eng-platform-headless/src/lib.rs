@@ -16,6 +16,12 @@
 //!   [`PlatformError::Stalled`] after
 //!   [`STALL_FRAMES`](HeadlessPlatform::STALL_FRAMES) frames. None of
 //!   them hangs.
+//! - **Requests recorded** (ADR-0022). Cursor grabs and fullscreen requests
+//!   change nothing here, as on any platform without a window: they answer
+//!   [`CursorGrab::None`] and `false`. Each is kept with the clock's time,
+//!   in order, and [`HeadlessPlatform::requests`] reads them after the run,
+//!   so a test sees what an app asked for (that it frees the cursor on
+//!   `FocusLost`, say) without a screen.
 //!
 //! It passes the contract's conformance suite, scripted parts included,
 //! and has no window, so it stays outside the window seam (ADR-0016): it
@@ -23,7 +29,9 @@
 //! [`App::window`].
 #![forbid(unsafe_code)]
 
-use eng_platform_api::{App, Control, Instant, Platform, PlatformError, PlatformEvent, Wake};
+use eng_platform_api::{
+    App, Control, CursorGrab, Instant, Platform, PlatformError, PlatformEvent, Request, Wake,
+};
 
 /// The platform with no window: a virtual clock and scripted events.
 ///
@@ -33,6 +41,8 @@ use eng_platform_api::{App, Control, Instant, Platform, PlatformError, PlatformE
 pub struct HeadlessPlatform {
     script: Vec<(Instant, PlatformEvent)>,
     limit: Option<Instant>,
+    /// The last run's requests.
+    requests: Vec<(Instant, Request)>,
 }
 
 impl HeadlessPlatform {
@@ -47,6 +57,7 @@ impl HeadlessPlatform {
         Self {
             script: Vec::new(),
             limit: None,
+            requests: Vec::new(),
         }
     }
 
@@ -73,12 +84,20 @@ impl HeadlessPlatform {
         self.limit = Some(limit);
         self
     }
+
+    /// The requests the last run's app made, each with the clock's time
+    /// when it asked, in order. Empty before the first run; each run starts
+    /// the record again.
+    pub fn requests(&self) -> &[(Instant, Request)] {
+        &self.requests
+    }
 }
 
 /// What the app sees during a callback.
 struct Clock {
     now: Instant,
     exit: bool,
+    requests: Vec<(Instant, Request)>,
 }
 
 impl Control for Clock {
@@ -88,6 +107,18 @@ impl Control for Clock {
 
     fn exit(&mut self) {
         self.exit = true;
+    }
+
+    /// Recorded; there is no window to grab.
+    fn grab_cursor(&mut self, grab: bool) -> CursorGrab {
+        self.requests.push((self.now, Request::GrabCursor(grab)));
+        CursorGrab::None
+    }
+
+    /// Recorded; there is no window to make fullscreen.
+    fn set_fullscreen(&mut self, on: bool) -> bool {
+        self.requests.push((self.now, Request::Fullscreen(on)));
+        false
     }
 }
 
@@ -100,10 +131,12 @@ impl Platform for HeadlessPlatform {
         let mut ctx = Clock {
             now: Instant::ZERO,
             exit: false,
+            requests: Vec::new(),
         };
         app.start(&mut ctx);
         let result = self.batches(app, &mut ctx);
         app.stop(&ctx);
+        self.requests = ctx.requests;
         result
     }
 }

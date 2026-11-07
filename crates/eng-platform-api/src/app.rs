@@ -27,6 +27,14 @@ pub trait Platform {
 }
 
 /// What the app may ask of the platform during a callback.
+///
+/// The cursor and fullscreen requests (ADR-0022) act on the window the
+/// platform handed to [`App::window`], at once, from that callback on.
+/// Before it, and on a platform without a window, they change nothing and
+/// answer [`CursorGrab::None`] or `false`. Their default bodies are that
+/// answer, so a platform without a window, and a wrapper that does not
+/// forward them, need not implement them; a wrapper meant to pass requests
+/// through forwards them to its inner `Control`.
 pub trait Control {
     /// The monotonic clock: time since this run started. It never goes
     /// back, and it may stand still within a callback.
@@ -36,6 +44,68 @@ pub trait Control {
     /// [`App::stop`]: the rest of the current batch of events is dropped.
     /// Calling it again changes nothing.
     fn exit(&mut self);
+
+    /// Grabs the cursor for mouse look (`true`) or frees it (`false`), and
+    /// returns the grab now in force. A grab tries [`CursorGrab::Locked`],
+    /// then [`CursorGrab::Confined`], and hides the cursor; freeing shows
+    /// it and answers [`CursorGrab::None`].
+    ///
+    /// A grab never outlives focus: when the window loses it, the platform
+    /// frees the cursor before [`PlatformEvent::FocusLost`] arrives. It
+    /// never grabs unasked, so an app that wants the grab back asks again
+    /// on [`PlatformEvent::FocusGained`]. A grab asked for while the window
+    /// lacks focus may wait for it (winit's does, as in `App::window`,
+    /// before the window shows), answering `None` until then.
+    fn grab_cursor(&mut self, grab: bool) -> CursorGrab {
+        let _ = grab;
+        CursorGrab::None
+    }
+
+    /// Borderless fullscreen on the window's monitor (`true`), or back to
+    /// a window (`false`). Returns whether the platform took the request:
+    /// the change itself may land later (macOS animates it), and its new
+    /// size arrives as [`PlatformEvent::Resized`].
+    fn set_fullscreen(&mut self, on: bool) -> bool {
+        let _ = on;
+        false
+    }
+}
+
+/// How the cursor is held for mouse look: [`Control::grab_cursor`]'s
+/// answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum CursorGrab {
+    /// Not held: the cursor moves freely and shows.
+    #[default]
+    None,
+    /// Kept inside the window, where the system cannot hold it still
+    /// (X11, in winit).
+    Confined,
+    /// Held still. Raw motion still arrives.
+    Locked,
+}
+
+impl CursorGrab {
+    /// Its name in reports: `"none"`, `"confined"` or `"locked"`.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Confined => "confined",
+            Self::Locked => "locked",
+        }
+    }
+}
+
+/// A request an app made through [`Control`], as a platform that records
+/// them (the headless one) keeps it, with the clock's time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Request {
+    /// [`Control::grab_cursor`]: `true` grabs, `false` frees.
+    GrabCursor(bool),
+    /// [`Control::set_fullscreen`]: `true` asks for fullscreen.
+    Fullscreen(bool),
 }
 
 /// When the app wants its next [`App::frame`].

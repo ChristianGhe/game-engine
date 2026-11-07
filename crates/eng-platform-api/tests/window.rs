@@ -52,6 +52,8 @@ fn an_arc_dyn_window_is_a_wgpu_surface_target() {
     });
     let window = surface_target(window);
     assert_eq!(window.size(), PhysicalSize::new(640, 480));
+    // `refresh_rate`'s default body: a window that cannot tell.
+    assert_eq!(window.refresh_rate(), None);
     assert!(matches!(
         window.window_handle(),
         Err(HandleError::Unavailable)

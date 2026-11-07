@@ -3,7 +3,9 @@
 
 use std::time::Duration;
 
-use eng_platform_api::{App, Control, Instant, PhysicalSize, Platform, PlatformError, Wake};
+use eng_platform_api::{
+    App, Control, CursorGrab, Instant, PhysicalSize, Platform, PlatformError, Request, Wake,
+};
 
 #[test]
 fn an_instant_is_nanoseconds_since_the_run_started() {
@@ -112,4 +114,40 @@ fn platforms_and_apps_are_object_safe() {
             Err(PlatformError::Unavailable(_))
         ));
     }
+}
+
+/// A `Control` from before ADR-0022: only the clock and exit.
+struct OldControl;
+
+impl Control for OldControl {
+    fn now(&self) -> Instant {
+        Instant::ZERO
+    }
+
+    fn exit(&mut self) {}
+}
+
+#[test]
+fn the_requests_default_bodies_change_nothing() {
+    let mut ctx = OldControl;
+    let ctx: &mut dyn Control = &mut ctx;
+    assert_eq!(ctx.grab_cursor(true), CursorGrab::None);
+    assert_eq!(ctx.grab_cursor(false), CursorGrab::None);
+    assert!(!ctx.set_fullscreen(true));
+    assert!(!ctx.set_fullscreen(false));
+}
+
+#[test]
+fn grabs_and_requests_are_plain_data() {
+    assert_eq!(CursorGrab::default(), CursorGrab::None);
+    let names = [
+        (CursorGrab::None, "none"),
+        (CursorGrab::Confined, "confined"),
+        (CursorGrab::Locked, "locked"),
+    ];
+    for (grab, name) in names {
+        assert_eq!(grab.name(), name);
+    }
+    assert_ne!(Request::GrabCursor(true), Request::GrabCursor(false));
+    assert_ne!(Request::GrabCursor(true), Request::Fullscreen(true));
 }

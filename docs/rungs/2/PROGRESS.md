@@ -305,3 +305,35 @@ subagent tokens in all, tool calls):
 - T0, T0a and T0b 3.
 
 That is 11 of the proposed 43.
+
+**Fourth fresh review, and the fourth revision** (04:00 to 04:20)
+- **The review carried out sitting 1 literally** in a scratch clone, all
+  of it:
+  - `acceptance.json` written, with `current.txt` at `1b`;
+  - 1b's G6;
+  - `quick-lock.patch`;
+  - the crate-path G2 and G3 patches;
+  - the ADRs accepted.
+
+  `quick` and lint were 7 of 7, and G6's shots test gave 0 differing
+  pixels on Metal.
+- **It found two blockers in the later sittings:**
+  1. **Goldens are all or nothing.** With 1b's goldens in, G5's new
+     first-person shots fail with `[E-GOLDEN] … is missing; other shots
+     have theirs` (`shots.rs:343`, the protected `parts.rs:434-440`)
+     until sitting 3. **Fix:** T16's G5 patch gives `shots.toml` an
+     owner-set `golden = "pending"` marker per shot. A marked shot counts
+     as "no golden yet", and the owner clears the marker with its golden.
+     The alternative, moving 1b's G6 to sitting 3, is in the plan with
+     its cost.
+  2. **Sitting 1 never pushed `main`.** `cargo xtask push` refuses an
+     agent branch whose protected files differ from GitHub's `main`, so
+     every push from T5 on would fail. **Fix:** sitting 1 now ends with
+     `quick`, then a push of `main`.
+- **The revision also:**
+  - starts `rung-diff` mutants at 314383d, so Q2's core code is covered,
+    and makes it pending on push runs;
+  - lists batch 3's 17 rows;
+  - fixes stale text.
+- **The review's cost:** 8 min, 140k tokens, 53 calls.
+- **Sessions:** 12 used of 43. The plan counts five planning sessions.

@@ -1,11 +1,12 @@
 # Rung 2: Inside the room
 
 > **DRAFT, NOT APPROVED.** Drafted 2026-11-06 by Claude (Opus 5.5) while
-> the owner was away, and revised twice after fresh reviews; nothing here
-> binds until the owner approves it at gate G1. `docs/rungs/current.txt`
-> stays `1b` until G5 (O1), and `docs/rungs/2/acceptance.json` does not
-> exist: the owner writes it at G1 from "Proposed acceptance criteria". Every proposal below stands
-> until the owner changes it.
+> the owner was away, and revised after each of four fresh reviews; nothing
+> here binds until the owner approves it at gate G1.
+> `docs/rungs/current.txt` stays `1b` until G5 (O1), and
+> `docs/rungs/2/acceptance.json` does not exist: the owner writes it at G1
+> from "Proposed acceptance criteria". Every proposal below stands until the
+> owner changes it.
 
 - **Status:** draft for the owner's first sitting. The four pre-approval
   queue items have landed on `main` (commits in `docs/rungs/2/PROGRESS.md`).
@@ -40,9 +41,10 @@ Each item links to its decision; the recommended answer comes first.
 1. **G1, the plan:** approve it, the 25 criteria, 14 days and 43 sessions.
    Write `docs/rungs/2/acceptance.json`, but keep `current.txt` at `1b`
    until G5 (O1: the native-steps test reads the current rung's checks).
-2. **1b:** commit its goldens (G6; the three commands are in
+2. **1b:** commit its goldens (G6; the commands are in
    `docs/rungs/2/PROGRESS.md`, session 1), play it (G7), and accept
-   ADR-0017. Optionally apply `docs/rungs/1b/patches/quick-lock.patch`
+   ADR-0017. Rung 2's new shots then wait behind a per-shot
+   `golden = "pending"` marker until sitting 3 (decision 12). Optionally apply `docs/rungs/1b/patches/quick-lock.patch`
    (amendment 98's lock for `quick`). Amendments 96 and 97, the guard's
    parser gaps, are still open: Anthropic's safeguards stopped the agent
    building them.
@@ -66,6 +68,11 @@ Each item links to its decision; the recommended answer comes first.
    is 17 names, and each path passes `quick` and the lint job. The
    patches do nothing for O5: its tool comes with T20.
 7. **G4:** accept, change or refuse ADR-0019 to ADR-0024.
+8. **Last: `cargo xtask quick`, then push `main`** (`git push origin main`).
+   GitHub's `main` is at 6443ea5, and `cargo xtask push` refuses any agent
+   branch whose protected files differ from it (`push.rs:69-75`). Until this
+   push, every agent push from T5 on fails, and there is no CI: no RISC-V for
+   the new core grid (P9), no x64 and no Windows.
 
 Sitting 2 is G5 (the patches, then a push); sitting 3 is G6 and G7 for rung
 2 ("Owner gates").
@@ -77,8 +84,28 @@ Approved 2026-10-31; CI green on all five native jobs on 2026-11-01 (run
 Still open: G6 (the owner commits the four golden candidates, ready with
 commands in `docs/rungs/2/PROGRESS.md`), G7 (the owner plays), and ADR-0017
 (three passes), still "Proposed". Rung 2 keeps 1b's top-down pictures, five
-hash streams and assertions byte-for-byte as they are (decision 1), so G6
-and G7 can come before rung 2's first sitting or in it.
+hash streams and assertions byte-for-byte as they are (decision 1).
+
+**1b's G6 and rung 2's shots: not "either order".** Goldens are all or
+nothing today. Once any golden exists, a shot without one fails with
+`[E-GOLDEN] … is missing; other shots have theirs` (`shots.rs:343`; the
+protected `tests/shots/parts.rs:434-440` asserts it). With 1b's four goldens
+in at sitting 1, the first-person shots that G5 adds would turn `quick` (on a
+Mac with a GPU), `shot-exact`, `shot-flip` and selftest's `golden-edit` red
+until sitting 3. Two ways out:
+- **Recommended: a per-shot marker.** T16's G5 patch lets `shots.toml` mark
+  a shot `golden = "pending"`, set by the owner (the manifest is protected).
+  The harness treats a marked shot as "no golden yet", with
+  `ENG_GOLDEN_DIR` too: it writes the candidate, its step is pending, and it
+  fails nothing. Unmarked shots keep the all-or-nothing rule. The owner
+  clears the markers in the commit that adds the new goldens, at sitting 3.
+  **Cost:** one more rule in the protected harness, a test for it in
+  `parts.rs`, and markers to clear; in return 1b closes at sitting 1 and its
+  four goldens guard the top-down view through T5-T22.
+- **Alternative: 1b's G6 moves to sitting 3,** with rung 2's goldens.
+  **Cost:** no harness change, but 1b stays open through rung 2, and no
+  golden guards the top-down pictures while the renderer changes, only the
+  builders' before-and-after byte checks.
 
 **Protected tests that pin today's APIs.** Several protected tests build
 1b's types by struct literal, implement 1b's traits, or pin output exactly.
@@ -377,7 +404,8 @@ passes, all on by default. No new exit code.
 12. **Shots** *[spec 8.3 + proposal]*. First-person shots take player 0's
     camera at the tick, at alpha 1. The list moves from `shots.rs`'s
     constant into a protected `crates/game-testbed/shots.toml` (names,
-    ticks, inputs; poses with A3). Per-shot FLIP limits live with the
+    ticks, inputs; poses with A3; the owner's `golden = "pending"` marker,
+    "Where rung 1b stands"). Per-shot FLIP limits live with the
     goldens, in the owner's `golden/thresholds.toml`, as `[flip.<shot>]`
     tables beside today's `[flip]` (spec 15: "per test"). Proposed shots:
     `room-spawn`, `-step`, `-alcove`, `-sky`, `-sprites`, `-ledge` and
@@ -403,11 +431,18 @@ passes, all on by default. No new exit code.
     - A push that changes no core crate writes a **pending** `in-diff` step,
       as 1b's X2 defines it: not a pass, failing no job. (A job with no report
       fails, `acceptance.rs:48-52`.)
-    - **The rung's run.** The push after G5 carries only G5's files, so
-      `in-diff` may stay pending. So the weekly schedule, and a manual
-      dispatch the owner can start, also run a `rung-diff` step: the diff
-      from the commit that added the current rung's `acceptance.json` (G1),
-      which holds every core change of T5-T22. Criterion 19 binds to it.
+    - **The rung's run.** No single push is sure to carry the rung's core
+      changes. Sitting 1 pushes `main`, and agent branches run `in-diff`
+      on their own pushes. If the owner moves `main` to green agent branches
+      between sittings, the G5 push carries only G5's files. So the weekly
+      schedule, and a manual dispatch the owner can start, also run a
+      `rung-diff` step. It mutates the diff from the commit that added the
+      current rung's `plan.md` (314383d for rung 2), which holds every core
+      change of the rung, Q2's `ground_move` (528a19c, c5c61a5) included.
+      Criterion 19 binds to it.
+    - A push run writes a pending `rung-diff` step, so the criterion shows
+      pending between real runs, not FAIL (`acceptance.rs:68` fails a
+      missing step).
     - A missed mutant fails unless `.cargo/mutants.toml` (protected) excludes
       it. A weekly full run is reported, not failed.
 16. **docs-lint** *[spec 7.4 + proposal]*: `docs-check` also checks that
@@ -574,7 +609,7 @@ mutation testing, (12) the owner plays (touchpoint 1).
 | 16 | `docs-lint` | Decision 16; a stale path fails | lint: docs-check; selftest: violation:docs-stale-path | 9 |
 | 17 | `notices` | Notices list every third-party crate in the testbed binary for the three playable targets, with licence texts; a licence off the list fails | lint: notices | 10 |
 | 18 | `dist` | The archive holds the stripped binary, its debug info, `version.json` and notices; the unpacked binary runs `--version --json` and `run --headless --ticks 60` | native ubuntu-24.04, windows-2025, macos-26: dist | 10 |
-| 19 | `mutants` | Over the rung's core changes (the diff from the G1 commit), no missed mutant outside the exclusions (decision 15) | mutants: rung-diff | 11 |
+| 19 | `mutants` | Over the rung's core changes (the diff from the commit that added `docs/rungs/2/plan.md`, 314383d, Q2 included), no missed mutant outside the exclusions; pending on push runs (decision 15) | mutants: rung-diff | 11 |
 | 20 | `violations-2` | Each fails, with a selftest | selftest: violation:unsafe-outside-shim, violation:gcmouse-outside-shim, violation:docs-stale-path, violation:mutant-missed | 6, 9, 11 |
 | 21 | `gpu-report-budgets` | As 1b's criterion 9, plus a first-person room shot within a new `[gpu.first_person]` table (the step renders one from G5), and per-pass GPU times (or `null`) and the pool's texture count in new `gpu` keys. `per_frame`, `tier: 0` and the capability names stay as `shot_video.rs` pins them | native x5: gpu-budgets | 3 |
 | 22 | `proof-video` | As 1b's, plus `room.apng`, the 600-tick room walk | native ubuntu-24.04: proof-video | 12 |
@@ -606,15 +641,18 @@ Three planning tasks, so that every gate of the first sitting has its inputs
 ready; sitting 1 waits until all three are done. Like the queue, they change
 no protected path on `main`: they commit ADR drafts (`docs/adr/` is not
 protected) and patch files under `docs/rungs/2/patches/`, tested in a
-scratch clone. **State now:** T0a is drafted (ADR-0020 to ADR-0024 in
-`docs/adr/`, Proposed, reviewed twice); T0 and T0b are done (seven patches
-in `docs/rungs/2/patches/`, reviewed).
+scratch clone. **State now: all three are done.** T0a's ADR-0020 to
+ADR-0024 are in `docs/adr/` (c879061; Proposed, reviewed twice). T0 and T0b
+made seven patches in `docs/rungs/2/patches/` (2888bae, reviewed), one path
+per O3 answer (sitting 1's list, item 6). A fourth review applied sitting 1
+in a scratch clone (the crate path, 1b's G6 and `quick-lock`, the ADRs
+accepted): `quick` and the lint job were 7 of 7.
 
 | Task | Builds | Done when |
 |---|---|---|
-| T0 | The G2 patch: skeletons of the four crates (crate roots with the required attributes, `Cargo.toml` with `[lints] workspace = true`), their `architecture.toml` entries and new edges, and `overflow-checks` for `eng-collision-grid`, in one commit's worth, since `arch-check` fails on a listed crate that does not exist as on one not listed (1b's T0). The shim crate's lines are a separate patch, so O3's other answers apply without it | `quick` green in a scratch clone with the patch applied, with and without the shim patch |
-| T0a (drafted, under review) | ADR drafts, all "Proposed": ADR-0020 (the first-person passes and the GPU scene layout, decision 6; it also records difference 1, the palette after the tone map and the k×k upscale in `present`, amending ADR-0003 and ADR-0017); ADR-0021 (`unsafe` in the shim, decision 11); ADR-0022 (the platform contract: `Control`'s requests and `Window::refresh_rate`, with decision 10's migration notes); ADR-0023 (maps and sim data, decision 1); ADR-0024 (traces stop at contact: exactly on axis faces, within `CONTACT_GAP` off them; decision 2, with migration notes); and the ADR index | `docs-check` and `typos` pass; each names what it amends and how it migrates; a fresh `reviewer` reads them against this plan |
-| T0b | The G3 patch: crate batch 3 in `deny.toml`'s allow-list, the wrapper ban for `objc2-game-controller` (naming the shim crate, or `eng-platform-winit` if O3 picks a module), a `clarify` entry if `bincode-next`'s licence needs one, `_typos.toml` if needed. Also a separate parry3d patch, resolved against the real lock, so O4's other answer can be applied at the same sitting | `cargo deny check` passes in a scratch clone that adds batch 3's crates to `eng-bench` and the shim crate with T0's patch and this one applied, and again with the parry3d patch |
+| T0 (done) | The G2 patch: skeletons of the four crates (crate roots with the required attributes, `Cargo.toml` with `[lints] workspace = true`), their `architecture.toml` entries and new edges, and `overflow-checks` for `eng-collision-grid`, in one commit's worth, since `arch-check` fails on a listed crate that does not exist as on one not listed (1b's T0). The shim crate's lines are a separate patch, so O3's other answers apply without it | `quick` green in a scratch clone with the patch applied, with and without the shim patch |
+| T0a (done) | ADR drafts, all "Proposed": ADR-0020 (the first-person passes and the GPU scene layout, decision 6; it also records difference 1, the palette after the tone map and the k×k upscale in `present`, amending ADR-0003 and ADR-0017); ADR-0021 (`unsafe` in the shim, decision 11); ADR-0022 (the platform contract: `Control`'s requests and `Window::refresh_rate`, with decision 10's migration notes); ADR-0023 (maps and sim data, decision 1); ADR-0024 (traces stop at contact: exactly on axis faces, within `CONTACT_GAP` off them; decision 2, with migration notes); and the ADR index | `docs-check` and `typos` pass; each names what it amends and how it migrates; a fresh `reviewer` reads them against this plan |
+| T0b (done) | The G3 patch: crate batch 3 (17 names) in `deny.toml`'s allow-list, the wrapper ban for `objc2-game-controller` (naming the shim crate, or `eng-platform-winit` if O3 picks a module), and `objc2-game-controller` under `architecture.toml`'s `[floor]`. No `clarify` entry was needed. Also a separate parry3d patch, resolved against the real lock, so O4's other answer can be applied at the same sitting | `cargo deny check` passes in a scratch clone that adds batch 3's crates to `eng-bench` and the shim crate with T0's patch and this one applied, and again with the parry3d patch |
 
 **If the owner answers O3-O5 otherwise at sitting 1:**
 - **O3 as a module:** G2 applies T0 without the shim patch; the wrapper ban
@@ -632,15 +670,15 @@ two reviews (19 units) and used 31 sessions, five of them planning. So each
 planned unit cost 26 / 19 = 1.37 sessions, counting follow-ups, review fixes,
 patches and the first-run fix.
 
-- **Used so far** (`docs/rungs/2/PROGRESS.md`): 2 planning sessions and 4
-  queue sessions (Q1 to Q4, each with its review and fixes), 6 in all. The
-  second and third revisions are two more planning sessions: 8.
-- **Still to come,** counted as 1b's were, so nothing counts twice: T0, T0a,
-  T0b and T5-T22, one unit each (21); T23, the two rung reviews, as 1b
-  planned them (2; their fixes are in the 1.37); T24, collecting candidates,
-  as 1b's T16 (1; first-run fixes are in the 1.37); T25, as 1b's T17 (1).
-  25 units × 1.37 = 34.25, rounded up to 35.
-- **Total: 8 + 35 = 43.**
+- **Used so far** (`docs/rungs/2/PROGRESS.md`): 4 planning sessions (the
+  draft and three revisions), 4 queue sessions (Q1 to Q4) and 3 for T0, T0a
+  and T0b, 11 in all. This fourth revision makes 12.
+- **Still to come,** counted as 1b's were, so nothing counts twice: T5-T22,
+  one unit each (18); T23, the two rung reviews, as 1b planned them (2;
+  their fixes are in the 1.37); T24, collecting candidates, as 1b's T16 (1;
+  first-run fixes are in the 1.37); T25, as 1b's T17 (1). 22 units × 1.37 =
+  30.14, rounded up to 31.
+- **Total: 12 + 31 = 43.**
 
 **The proposal.**
 - **AI budget:** the owner's current Claude plan and nothing else (P1
@@ -649,13 +687,13 @@ patches and the first-run fix.
   `docs/rungs/2/PROGRESS.md`. As in 1b, a task with its reviewer is one
   session.
 - **Time-box:** **14 calendar days from G1**, as in 1a and 1b.
-  - **Agent time:** 35 sessions at 4 to 6 per five-hour window is 6 to 9
+  - **Agent time:** 31 sessions at 4 to 6 per five-hour window is 6 to 8
     windows. The 2026-11-06 window ran 2 planning sessions, a plan review and
     the 4 queue items with their reviews (2.5M to 2.9M subagent tokens by
     PROGRESS.md's costs table, which counts the planner's revision "in all")
     before the limit stopped it after about 2 hours 15 minutes; in 1b, four
     builders and their reviewers used one in under three hours. At two or
-    three windows a day that is 2 to 4.5 days.
+    three windows a day that is 2 to 4 days.
   - The rest is the owner's three sittings and the new jobs' first runs. In
     1b the owner's gates were the long pole: G6 and G7 are still open six
     days after green CI.
@@ -708,10 +746,10 @@ here, because a note left only in an entry gets lost (1b lesson).
 | T13 | G4 (ADR-0022) | The platform contract change (decision 10): `Control`'s requests and `Window::refresh_rate` with default bodies; headless records requests; winit maps mouse motion, buttons and wheel and reads the refresh rate. Patch: the new suite (a file under `src/conformance/` and its `mod` line) and new headless and winit tests for it, to be protected. **Carry (1b T10):** the contract's wheel `y` keeps winit's sign and its `x` is winit's negated; under Xvfb a notch came twice; winit hides macOS's natural scrolling and acceleration; raw motion comes only while focused | the new suite passes headless and on winit where a display exists; the existing suite, `eng-platform-headless/tests/conformance.rs`, `eng-platform-winit/tests/conformance.rs` and `twin.rs` pass unchanged |
 | T14 | G2, G3, G4 (ADR-0021), T13 | `eng-platform-gcmouse` (decision 11) with its callback count; `examples/events.rs` prints its deltas. **Carry:** GCMouse's sign of `deltaY` and its units are unverified; check them on the owner's Mac with the screen unlocked | builds on macos-26; unit tests with a fake source; on this Mac, callbacks arrive per event |
 | T15 | T3, T10 (`--look`), T12, T13 | `eng-app`: first-person `play` (decisions 9, 10), the flags, the live view angles, through new functions; `play_on` and `PlayRun::start` keep their signatures (`twin.rs:76,84`). **Carry (1b T11):** waking at once after each present spins under Xvfb (no vsync); a lost surface is a panic and should now be recreated from the kept window; a locked Mac screen counts as occluded. **Carry (Q3):** `MouseLook` has no reader for the angles between ticks (`sample` consumes the pending motion), so the live view needs one; sensitivity is integer millionths, so `--sensitivity 0.066` needs an exact decimal parse (at most six decimals, refused beyond); the default pitch limit is 14_563 units, and `degrees_to_angle(80.0)` gives 14_564, so a `--pitch-limit` in degrees must round down | `play.rs` and `twin.rs` pass unchanged; a windowed room run's hash stream equals `run --headless` with the same script and seed (the committed stream lands at G5) |
-| T16 | T10, T12 | Shots: `shots.toml`, the first-person shots, `--view`, the look harness `tests/look.rs`, and `shots.rs` reading the manifest and per-shot limits, all as patches. In `eng-cli`, the probe's strict budgets parser (`budgets.rs:13,33,43`) gains an optional `[gpu.first_person]` table, applied to first-person frames, before G5 adds it to `budgets.toml`. **Carry:** pass `LP_NATIVE_VECTOR_WIDTH=256` only; candidates go to `target/golden-candidates/`; p999 cannot see under about 77 px | candidates from Metal and lavapipe |
+| T16 | T10, T12 | Shots: `shots.toml` with the new shots marked `golden = "pending"`, the first-person shots, `--view`, the look harness `tests/look.rs`, and `shots.rs` reading the manifest, the per-shot limits and the marker (a marked shot is "no golden yet", with `ENG_GOLDEN_DIR` too; unmarked shots stay all or nothing), with a `parts.rs` test for the marker, all as patches. In `eng-cli`, the probe's strict budgets parser (`budgets.rs:13,33,43`) gains an optional `[gpu.first_person]` table, applied to first-person frames, before G5 adds it to `budgets.toml`. **Carry:** pass `LP_NATIVE_VECTOR_WIDTH=256` only; candidates go to `target/golden-candidates/`; p999 cannot see under about 77 px | candidates from Metal and lavapipe; in a scratch clone with 1b's goldens and the patch applied, `quick` (on Metal with `ENG_REQUIRE_GPU=1`) and `selftest golden-edit` stay green while the marked shots have no golden |
 | T17 | G2, G3, T5, T7 | `eng-bench`; `cargo xtask bench` and `ci --job bench` (patch); the workflow job with valgrind and `gungraun-runner` =0.20.0; comparison with the push's base (decision 14). **Carry:** gungraun only on Linux, so `cargo test --all-targets` still builds on the other four native runners | a local Docker run on Linux x64 reports counts for a head and its base; `eng-bench` builds on this Mac |
 | T18 | G1 | Docs-lint in `docs-check` (patch) and its selftest | a stale path in a scratch copy of AGENTS.md fails |
-| T19 | G1, O8 | `cargo xtask mutants` and `ci --job mutants` (shards, time-box; `in-diff` from the push's base, pending when no core crate changed; `rung-diff` from the commit that added the current rung's `acceptance.json`), the weekly schedule and a manual dispatch, `.cargo/mutants.toml`, the `test-auditor` subagent (spec 7.5), all patches | an in-diff run on T2's change reports its mutants; a push with no core change writes a pending step; `rung-diff` in a scratch clone covers Q1-Q4's core changes |
+| T19 | G1, O8 | `cargo xtask mutants` and `ci --job mutants` (shards, time-box; `in-diff` from the push's base, pending when no core crate changed; `rung-diff` from the commit that added the current rung's `plan.md`, real on the weekly schedule and a manual dispatch, pending on pushes), the weekly schedule and a manual dispatch, `.cargo/mutants.toml`, the `test-auditor` subagent (spec 7.5), all patches | an in-diff run on T2's change reports its mutants; a push with no core change writes a pending step; `rung-diff` in a scratch clone from 314383d covers Q2's `ground_move` (the queue's core code); a push run writes a pending `rung-diff` step |
 | T20 | G1, O5 | `cargo xtask notices` and `dist` (decision 17), `about.toml` and its template (to be protected), patches | notices and an archive on this Mac; Linux in Docker; the unpacked binary runs |
 | TA1-TA5 | only if taken at G1 | A1: T10, T16. A2: TA1. A3: with T16. A4: T16, before T21 (its selftests join the G5 package). A5: TA1 | as in the agent-seeing table |
 | T21 | T15-T20 (and TA rows taken) | The G5 package: new `test` and `native` steps, `gpu-budgets` also rendering a room shot under `[gpu.first_person]` (today it renders dot-square only, `ci_native.rs:384-415`), the `selftest` cases, the summary and acceptance for the new jobs, workflows, `budgets.toml`, protection, and `current.txt` set to `2` (the G5 rows). **Carry (1b):** build26's Mesa has no window surface, so Ubuntu's lavapipe goes first in `VK_DRIVER_FILES` for windows; find windows by `--pid`; on Windows a running `xtask.exe` cannot be replaced and `canonicalize` gives `\\?\`; Xcode's git defaults to `main` | each job's steps pass where they can run locally; in a scratch clone with the package applied and `current.txt` at `2`, `quick` is green, `ci_native_tests.rs`'s check of every native step included |
@@ -722,8 +760,8 @@ here, because a note left only in an entry gets lost (1b lesson).
 
 **Order, with at most two builders at a time:**
 1. done: T1 with T2, then T3 with T4;
-2. before sitting 1: T0 with T0a, then T0b;
-3. **sitting 1** (G1-G4);
+2. done before sitting 1: T0 with T0a, then T0b;
+3. **sitting 1** (G1-G4 and 1b's G6, then `quick` and a push of `main`);
 4. T5 with T6, T7 with T8, T9 with T13, T10 with T11, T12 with T14, T15
    with T16 (and TA3), T17 with T18, T19 with T20, then the TA rows taken;
 5. T21 with T22, then T23;
@@ -800,8 +838,10 @@ here, because a note left only in an entry gets lost (1b lesson).
 Every change below is to a path `protected.toml` lists, except G1's plan,
 `current.txt`, and G4's ADRs (rule decisions). Agents prepare each change and
 the owner applies it. **Three sittings, each with its inputs ready:**
-1. **Sitting 1, at the start,** once T0, T0a and T0b are done: G1, G2 (T0's
-   patch), G3 (T0b's patch) and G4 (T0a's ADRs);
+1. **Sitting 1, at the start** (T0, T0a and T0b are done): G1, G2 (T0's
+   patch), G3 (T0b's patch), G4 (T0a's ADRs) and 1b's G6, ending with
+   `quick` and **a push of `main`**, without which `cargo xtask push`
+   refuses every agent branch (sitting 1's list, item 8);
 2. **Sitting 2,** when T21's package is ready: G5, ending with a push (and
    G5b after it if the first run needs a fix);
 3. **Sitting 3,** after a green run's candidates: G6 and G7.
@@ -809,22 +849,24 @@ the owner applies it. **Three sittings, each with its inputs ready:**
 | Gate | Sitting | Path | Change | Unblocks |
 |---|---|---|---|---|
 | G1 | 1 | this plan; `docs/rungs/2/acceptance.json` | Approve; write the criteria in 1b's format; decide O1-O13 and A1-A5. `current.txt` stays `1b` (O1) | everything after it |
-| G2 | 1 | `architecture.toml`; root `Cargo.toml` `[profile]` | Apply T0's patch: the four crates and their edges; `[profile.release.package.eng-collision-grid] overflow-checks = true`; one commit with the skeletons | T5, T12, T14, T17 |
-| G3 | 1 | `deny.toml`; `_typos.toml` if needed | Apply T0b's patch: crate batch 3, the `objc2-game-controller` wrapper ban, a `clarify` entry if needed (a parry3d batch too, if O4 picks it) | T14, T17 (T5 with parry3d) |
+| G2 | 1 | `architecture.toml`; root `Cargo.toml` `[profile]` | Apply `g2-crates.patch` and the O3 path's G2 patch (sitting 1's list, item 6): the crates and their edges, `[floor]` for the shim, `[profile.release.package.eng-collision-grid] overflow-checks = true` | T5, T12, T14, T17 |
+| G3 | 1 | `deny.toml` | Apply the O3 path's batch 3 patch (17 names, the `objc2-game-controller` wrapper ban), and `g3-parry3d.patch` if O4 picks it | T14, T17 (T5 with parry3d) |
+| 1b's G6 | 1 | `crates/game-testbed/golden/**` | 1b's four goldens from run 41302087332 (commands in `PROGRESS.md`); the first-person shots that G5 adds carry the marker until G6 (decision 12) | 1b's criteria 4 and 5 |
+| push | 1 | none | `quick`, then `git push origin main` | agent pushes and CI from T5 on |
 | G4 | 1 | ADRs (rule decisions) | Accept, change or refuse ADR-0019 (graph), ADR-0020 (first-person passes, difference 1, and the scene layout), ADR-0021 (`unsafe` in the shim), ADR-0022 (platform contract), ADR-0023 (maps and sim data), ADR-0024 (contact and `CONTACT_GAP`); and 1b's ADR-0017 | T5, T6, T8, T13, T14 |
 | G5 | 2 | `xtask/**` | Docs-lint; `bench`; `mutants`; `notices` and `dist`; replay reads `map` (T6); new `test` steps (collision, movement, sim-data, render-graph, sprites, mouse-look) and `native` steps (window-room, look, dist); `gpu-budgets` also renders a room shot; mutants' `in-diff` and `rung-diff`; proof video adds `room.apng`; selftest cases; summary and acceptance for the new jobs; `arch-check` refuses `allow(unsafe_code)` outside the shim's one module, scanning every Rust file in the workspace, as ADR-0021 lists | criteria 1-21 |
 | G5 | 2 | `.github/workflows/**` | The `bench` job (valgrind, `gungraun-runner` =0.20.0); the `mutants` job (`cargo-mutants` =27.1.0, four shards, a weekly `schedule` and a manual dispatch for `rung-diff`); `cargo-mutants` in the `selftest` job too, for `violation:mutant-missed`; `cargo-about` =0.9.3 in `lint`; `dist` artifacts on three runners; `room.apng`; actions pinned by SHA, `permissions: {}` | the new jobs exist |
 | G5 | 2 | `scenarios.toml`, `**/*.assert.toml` | T7's `room-scenarios.patch`, applied with T6's replay patch: the room's scenarios, assertions and hash streams in one commit (its input scripts are already committed) | 1, 2, 4 |
 | G5 | 2 | `docs/rungs/current.txt` (not protected); `docs/rungs/2/acceptance.json` | Set `current.txt` to `2` in G5's commit (O1). Amend `acceptance.json` if a job or step name drifted from this plan, or to add the rows of TA tasks taken | rung 2's acceptance computed by CI |
 | G5 | 2 | `budgets.toml` | A new `[gpu.first_person]` table (from T10's counters); `[ci]` minutes for `bench` and `mutants`. `[gpu]` may stay as it is: `shot_video.rs` feeds its own literal, which the parser must keep accepting | 15, 19, 21 |
-| G5 | 2 | `protected.toml`, `.github/CODEOWNERS` | Protect: Q1's `crates/eng-gpu/tests/{graph_order,graph_errors,pool,bypass,bypass_render,transients}.rs` and `tests/support/**`; Q2's `crates/kit-fps/tests/{ground,slopes,boxes}.rs` and `tests/support/**`; Q3's `crates/eng-input/tests/{mouse_look,mouse_look_exact,mouse_look_model}.rs` and `tests/look_rig/**`; Q4's `crates/eng-render/tests/{camera,sprite_rotation,palette}.rs` (`palette.rs` holds Ottosson's known answers and the pinned bake hash); `crates/eng-collision-api/src/conformance.rs`, which T5 extends; the grid's oracle test; T6's sim-data tests (criterion 5); T13's new conformance tests; `shots.toml`; `tests/look.rs`; `about.toml` and its template; `**/*.rules.toml` if A2 is taken | criteria cannot be weakened |
+| G5 | 2 | `protected.toml`, `.github/CODEOWNERS` | Protect: Q1's `crates/eng-gpu/tests/{graph_order,graph_errors,pool,bypass,bypass_render,transients}.rs` and `tests/support/**`; Q2's `crates/kit-fps/tests/{ground,slopes,boxes}.rs` and `tests/support/**`; Q3's `crates/eng-input/tests/{mouse_look,mouse_look_exact,mouse_look_model}.rs` and `tests/look_rig/**`; Q4's `crates/eng-render/tests/{camera,sprite_rotation,palette}.rs` (`palette.rs` holds Ottosson's known answers and the pinned bake hash); `crates/eng-collision-api/src/conformance.rs`, which T5 extends; the grid's oracle test; T6's sim-data tests (criterion 5); T13's new conformance tests; `shots.toml`, its `golden = "pending"` markers included; `tests/look.rs`; `about.toml` and its template; `**/*.rules.toml` if A2 is taken | criteria cannot be weakened |
 | G5 | 2 | `crates/eng-platform-api/src/conformance.rs`, `src/conformance/**` | T13's suite: a new file and its `mod` line; the existing suites unchanged | 10 |
-| G5 | 2 | `crates/game-testbed/tests/shots.rs`, `tests/shots/**` | Read `shots.toml` and the per-shot `[flip.<shot>]` limits | 12, 13 |
+| G5 | 2 | `crates/game-testbed/tests/shots.rs`, `tests/shots/**`; `shots.toml` | Read `shots.toml`, the per-shot `[flip.<shot>]` limits and the `golden = "pending"` marker (T16), with its `parts.rs` test; `shots.toml` lists the first-person shots marked | 12, 13 |
 | G5 | 2 | `.cargo/mutants.toml` | Exclusions, empty to start | 19 |
 | G5 | 2 | `.claude/**` | The `test-auditor` subagent and the `perf-investigate` skill (spec 7.5) | T19, T24 |
 | G5, if needed | 2 | `**/*.proptest-regressions`; `.config/nextest.toml` | Failing proptests' regression files; a test group for GPU tests | as found |
 | G5b, if needed | between 2 and 3 | `xtask/**`, `.github/workflows/**` | T24's first-run fixes as one patch, as 1b's `ci-first-run.patch` (6443ea5): the owner applies it and pushes, a few minutes outside the sittings | a green run, then sitting 3 |
-| G6 | 3 | `**/golden/**` | Goldens for every manifest shot from the pinned lavapipe; per-shot `[flip.<shot>]` tables in `thresholds.toml`; 1b's four, if 1b's G6 is still open | 12, 13 |
+| G6 | 3 | `**/golden/**`; `shots.toml` | Goldens for the first-person shots from the pinned lavapipe, per-shot `[flip.<shot>]` tables in `thresholds.toml`, and the `golden = "pending"` markers cleared, all in one commit | 12, 13 |
 | G7 | 3 | none | Watch `room.apng`, play, confirm `owner-mac-shots` and `gcmouse-rate`; accept or send back | 14, 23, 25; rung done |
 
 **Protected paths rung 2 leaves alone,** each by a design choice in
@@ -845,23 +887,25 @@ next gate.
 
 ## Crate batch 3
 
-*[proposal]* The third-party crates G3 adds to `[bans] allow`: 17 names (T0b found two
-more than this table first listed: `rustc_version` 0.4.1 and `semver`
-1.0.28, build dependencies of `derive_more-impl`).
+*[proposal]* The third-party crates G3 adds to `[bans] allow`: 17 names. The
+first draft listed 15, because its scratch tree showed normal dependencies
+only; T0b found `rustc_version` and `semver`, build dependencies of
+`derive_more-impl`, and both are in the table below.
 
 - **Source:** a scratch project outside the repo, resolved 2026-11-06, with
   `gungraun =0.20.0` and `objc2-game-controller =0.3.2`
   (`default-features = false`; `std`, `block2`, `GCDevice`, `GCMouse`,
   `GCMouseInput`, `GCPhysicalInputProfile`).
-- **Not final:** it ran on this machine's Rust 1.93.1, not the pinned
-  1.99.1, and was resolved, not compiled. T0b checks it with cargo-deny, and
-  T14 and T17 recompute it against the real lock and report any difference
-  as an amendment.
+- **Checked:** the first resolution ran on this machine's Rust 1.93.1, not
+  the pinned 1.99.1. T0b then ran cargo-deny with batch 3 really added as
+  dependencies in a scratch copy, and it passed. T14 and T17 recompute the
+  list against the real lock and report any difference as an amendment.
 - **Already allowed:** `objc2` 0.6.5, `objc2-foundation` 0.3.2, `block2`
   0.6.2 (batch 2), `serde`, `serde_json`, `syn`, `itoa`, `memchr`, `zmij`,
   and `flate2` (for dist's archive). Every new licence is on the list.
 - **Flags:** `bincode-next` writes its licence "MIT or Apache-2.0" with a
-  lowercase `or`, so cargo-deny may need a `clarify` entry. It is not the
+  lowercase `or`; cargo-deny reads it, and no `clarify` entry is needed
+  (T0b). It is not the
   banned `bincode` (spec 6.8) but a fork, used inside gungraun only; MSRV
   1.90. gungraun builds only on Linux, but cargo-deny checks every listed
   target, so it needs the entries anyway.
@@ -883,6 +927,8 @@ more than this table first listed: `rustc_version` 0.4.1 and `semver`
 | `proc-macro-error-attr3` | 3.1.1 | MIT OR Apache-2.0 | proc-macro-error3 |
 | `rapidhash` | 4.5.1 | MIT OR Apache-2.0 | gungraun |
 | `rustversion` | 1.0.23 | MIT OR Apache-2.0 | rapidhash, through bincode-next |
+| `rustc_version` | 0.4.1 | MIT OR Apache-2.0 | derive_more-impl (build) |
+| `semver` | 1.0.28 | MIT OR Apache-2.0 | rustc_version (build) |
 
 **Tools, not dependencies.** They are installed by the workflows (G5), so
 they are not in `deny.toml`. Versions were checked with `cargo search` and
@@ -913,8 +959,9 @@ they are not in `deny.toml`. Versions were checked with `cargo search` and
 | The bench gate is noisy if two runner images differ | the head and the push's base are built and run in the same job |
 | The native jobs build `--all-targets` on Windows and macOS, where gungraun is absent | gungraun is a Linux-only dev-dependency and each bench is an empty `main` elsewhere; T17 checks a build on this Mac |
 | A protected test pins an API this plan assumed it could extend | "Protected tests that pin today's APIs" lists what stays; a task that hits another one stops and proposes a patch |
-| `bincode-next`'s licence string | T0b runs cargo-deny and adds a `clarify` entry if it refuses |
+| `bincode-next`'s licence string | cargo-deny accepted it in T0b's scratch copy; no `clarify` entry |
 | The owner may dislike the tone curve or the look | every look pass switches off; the curve is one function |
-| 1b's G6 and G7 are still open | rung 2 keeps 1b's pictures and streams byte-identical, so either order works |
+| Goldens are all or nothing: with 1b's in at sitting 1, rung 2's new shots would fail until sitting 3 | the owner's `golden = "pending"` marker in `shots.toml` (decision 12, T16); or move 1b's G6 to sitting 3 ("Where rung 1b stands") |
+| Sitting 1 does not end with a push of `main` | `cargo xtask push` refuses every agent branch whose protected files differ from GitHub's `main`, so sitting 1's last step is `quick` and the push |
 | Q1 built part of T8 ahead of the plan, and the owner may change ADR-0019 | T8 may change that design; G4 is where the owner first sees it |
 | A rung file read through `current.txt` turns `quick` red before its steps exist | `current.txt` moves to `2` at G5, in the commit that adds the steps (O1); T21 checks `quick` with it set in a scratch clone |

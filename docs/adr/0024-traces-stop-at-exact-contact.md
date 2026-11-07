@@ -1,12 +1,13 @@
 # ADR-0024: Traces stop at exact contact
 
-- **Status:** Proposed (for the owner's approval)
+- **Status:** Accepted
 - **Date:** 2026-11-07
 - **Decision:** a contract change to `eng-collision-api` (spec 6.2 rule 6;
   spec 6.11): `CollisionWorld::trace` promises that a blocked hull stops in
   contact with what it hit, and `conformance::check` checks it
-- **Who:** Claude's proposal (rung 2 plan, decision 2 and T5's carry from
-  queue item Q2; owner decision O4). The owner decides.
+- **Who:** Owner decided (2026-11-07, at rung 2 gate G4, with O4: the
+  brute-force oracle), on Claude's proposal (rung 2 plan, decision 2 and
+  T5's carry from queue item Q2; owner decision O4).
 
 ## Context
 

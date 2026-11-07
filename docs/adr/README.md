@@ -20,11 +20,11 @@ Source: `docs/superpowers/specs/2026-10-20-ai-built-engine-design.md` (draft v3,
 | [0014](0014-direct-commits-to-main.md) | Direct commits to main | Accepted | changes 7.3, 7.6 |
 | [0015](0015-open-pulsar-runs.md) | Unattended runs through open-pulsar | Accepted | changes 7.3, 7.5 |
 | [0016](0016-window-handle-traits.md) | Window-handle traits in public APIs | Accepted | changes 6.2 rule 4 (rung 1b gate G4) |
-| [0017](0017-three-pass-graph.md) | Three passes, not two | Proposed | amends ADR-0003 (D7, 6.7): draw, tonemap, present |
+| [0017](0017-three-pass-graph.md) | Three passes, not two | Accepted | amends ADR-0003 (D7, 6.7): draw, tonemap, present |
 | [0018](0018-agent-branches.md) | Agents push to agent branches | Accepted | amends ADR-0015: agents push `agent/*` branches with `cargo xtask push` |
-| [0019](0019-render-graph-ordering-and-pooling.md) | The render graph orders, culls, bypasses, pools and labels | Proposed | carries out ADR-0003 (D7, 6.7) for rung 2: `Graph::sorted`, `continues`, bypass, culling, transient pool |
-| [0020](0020-first-person-passes-and-scene-layout.md) | The first-person passes and the GPU scene layout | Proposed | amends ADR-0003 and ADR-0017: a palette pass after the tone map, the k×k upscale in `present`; 6.7's scene layout (megabuffers, storage-buffer instances, material table, texture arrays) |
-| [0021](0021-unsafe-in-the-gcmouse-shim.md) | `unsafe` in the GCMouse shim | Proposed | 6.10: one module of `eng-platform-gcmouse` may use `unsafe`; `arch-check` refuses it anywhere else (O3) |
-| [0022](0022-platform-cursor-fullscreen-refresh-rate.md) | Cursor, fullscreen and refresh rate in the platform contract | Proposed | contract change (6.2 rule 6, 6.10); extends ADR-0016's `Window`: `Control` requests and `Window::refresh_rate`, with default bodies and migration notes (O9) |
-| [0023](0023-maps-and-sim-data.md) | Maps and sim data | Proposed | 6.11 brought forward: constant resources outside the state, `Sim::sim_data_hash` in recordings and stream headers, `GameMaps` beside `GameDef` (O2) |
-| [0024](0024-traces-stop-at-exact-contact.md) | Traces stop at exact contact | Proposed | contract change (6.2 rule 6, 6.11): a blocked trace ends in contact, checked by `conformance::check`, with migration notes (O4) |
+| [0019](0019-render-graph-ordering-and-pooling.md) | The render graph orders, culls, bypasses, pools and labels | Accepted | carries out ADR-0003 (D7, 6.7) for rung 2: `Graph::sorted`, `continues`, bypass, culling, transient pool |
+| [0020](0020-first-person-passes-and-scene-layout.md) | The first-person passes and the GPU scene layout | Accepted | amends ADR-0003 and ADR-0017: a palette pass after the tone map, the k×k upscale in `present`; 6.7's scene layout (megabuffers, storage-buffer instances, material table, texture arrays) |
+| [0021](0021-unsafe-in-the-gcmouse-shim.md) | `unsafe` in the GCMouse shim | Accepted | 6.10: one module of `eng-platform-gcmouse` may use `unsafe`; `arch-check` refuses it anywhere else (O3) |
+| [0022](0022-platform-cursor-fullscreen-refresh-rate.md) | Cursor, fullscreen and refresh rate in the platform contract | Accepted | contract change (6.2 rule 6, 6.10); extends ADR-0016's `Window`: `Control` requests and `Window::refresh_rate`, with default bodies and migration notes (O9) |
+| [0023](0023-maps-and-sim-data.md) | Maps and sim data | Accepted | 6.11 brought forward: constant resources outside the state, `Sim::sim_data_hash` in recordings and stream headers, `GameMaps` beside `GameDef` (O2) |
+| [0024](0024-traces-stop-at-exact-contact.md) | Traces stop at exact contact | Accepted | contract change (6.2 rule 6, 6.11): a blocked trace ends in contact, checked by `conformance::check`, with migration notes (O4) |

@@ -1,5 +1,5 @@
 //! Bypassing for [`super::Graph::sorted_without`] (rung 2 plan, decision 5;
-//! ADR-0019, proposed): a switched-off pass that may be bypassed is removed,
+//! ADR-0019): a switched-off pass that may be bypassed is removed,
 //! and its write takes the texture of its input, its first read, so its
 //! readers read the input. A built-in resource keeps its own texture: with
 //! the palette pass switched off, `toned` is drawn into `output`.

@@ -1,5 +1,5 @@
 //! Bypassed and several-write passes on a real adapter (rung 2, queue item
-//! Q1; ADR-0019, proposed): a bypassed pass's readers read its input's
+//! Q1; ADR-0019): a bypassed pass's readers read its input's
 //! texture, a write bypassed into the output draws there, and a pass with
 //! several writes, which only the plan takes so far, does not render.
 //! Without an adapter each test skips, unless `ENG_REQUIRE_GPU=1` (CI) makes

@@ -1,20 +1,21 @@
 # Rung 2: Inside the room
 
-> **DRAFT, NOT APPROVED.** Drafted 2026-11-06 by Claude (Opus 5.5) while
-> the owner was away, and revised after each of four fresh reviews; nothing
-> here binds until the owner approves it at gate G1.
-> `docs/rungs/current.txt` stays `1b` until G5 (O1), and
-> `docs/rungs/2/acceptance.json` does not exist: the owner writes it at G1
-> from "Proposed acceptance criteria". Every proposal below stands until the
-> owner changes it.
+> **APPROVED by the owner on 2026-11-07, at gate G1 (sitting 1).** Drafted
+> 2026-11-06 by Claude (Opus 5.5) while the owner was away, and revised
+> after each of four fresh reviews. The owner took every recommended answer
+> (O2-O13), the GCMouse shim as its own crate (O3), and the agent-seeing
+> additions A1, A2's three rules, A3 and A4 (O6); A5 waits for rung 3. The
+> criteria are in `docs/rungs/2/acceptance.json`: 41 features, a 14-day
+> time-box from 2026-11-07 and at most 52 agent sessions.
+> `docs/rungs/current.txt` stays `1b` until G5 (O1). The text below is the
+> plan as approved; where it says "proposal", read "decided".
 
-- **Status:** draft for the owner's first sitting. The four pre-approval
-  queue items have landed on `main` (commits in `docs/rungs/2/PROGRESS.md`).
-  Sitting 1 needed three planning tasks first ("Before the first sitting"):
-  all three are done. T0a's ADR-0020 to ADR-0024 are in `docs/adr/`
-  (Proposed, reviewed twice), and T0's and T0b's patches are in
-  `docs/rungs/2/patches/` (reviewed). They write only ADR drafts and patch
-  files.
+- **Status:** approved; sitting 1 (G1-G4, and rung 1b's G6, G7 and ADR-0017)
+  is recorded in `docs/rungs/2/PROGRESS.md`. The four pre-approval queue
+  items are on `main`. T0a's ADR-0019 to ADR-0024 are accepted, and T0's and
+  T0b's patches are applied for the crate path (`g2-crates`,
+  `g2-gcmouse-crate`, `g3-crate-batch-3`). Next: T5 onward, then sitting 2
+  (G5).
 - **Spec:** the rung 2 row of section 9 of
   `docs/superpowers/specs/2026-10-20-ai-built-engine-design.md`, with 6.1-6.3
   (crates, rules, the fixed spine), 6.4 (simulation), 6.6 (frame loop), 6.7
@@ -38,8 +39,9 @@
 ## Sitting 1: what you decide
 
 Each item links to its decision; the recommended answer comes first.
-1. **G1, the plan:** approve it, the 25 criteria, 14 days and 43 sessions.
-   Write `docs/rungs/2/acceptance.json`, but keep `current.txt` at `1b`
+1. **G1, the plan:** approve it, the 25 criteria, 14 days and 43 sessions
+   (52 with A1-A4, as approved). Write `docs/rungs/2/acceptance.json`, but
+   keep `current.txt` at `1b`
    until G5 (O1: the native-steps test reads the current rung's checks).
 2. **1b:** commit its goldens (G6; the commands are in
    `docs/rungs/2/PROGRESS.md`, session 1), play it (G7), and accept
@@ -854,7 +856,7 @@ the owner applies it. **Three sittings, each with its inputs ready:**
 | 1b's G6 | 1 | `crates/game-testbed/golden/**` | 1b's four goldens from run 41302087332 (commands in `PROGRESS.md`); the first-person shots that G5 adds carry the marker until G6 (decision 12) | 1b's criteria 4 and 5 |
 | push | 1 | none | `quick`, then `git push origin main` | agent pushes and CI from T5 on |
 | G4 | 1 | ADRs (rule decisions) | Accept, change or refuse ADR-0019 (graph), ADR-0020 (first-person passes, difference 1, and the scene layout), ADR-0021 (`unsafe` in the shim), ADR-0022 (platform contract), ADR-0023 (maps and sim data), ADR-0024 (contact and `CONTACT_GAP`); and 1b's ADR-0017 | T5, T6, T8, T13, T14 |
-| G5 | 2 | `xtask/**` | Docs-lint; `bench`; `mutants`; `notices` and `dist`; replay reads `map` (T6); new `test` steps (collision, movement, sim-data, render-graph, sprites, mouse-look) and `native` steps (window-room, look, dist); `gpu-budgets` also renders a room shot; mutants' `in-diff` and `rung-diff`; proof video adds `room.apng`; selftest cases; summary and acceptance for the new jobs; `arch-check` refuses `allow(unsafe_code)` outside the shim's one module, scanning every Rust file in the workspace, as ADR-0021 lists | criteria 1-21 |
+| G5 | 2 | `xtask/**` | Docs-lint; `bench`; `mutants`; `notices` and `dist`; replay reads `map` (T6); new `test` steps (collision, movement, sim-data, render-graph, sprites, mouse-look) and `native` steps (window-room, look, dist, and frame-record, scene-rules and poses for the additions taken: A1-A3); `gpu-budgets` also renders a room shot; mutants' `in-diff` and `rung-diff`; proof video adds `room.apng`; selftest cases (A2's `rule-1` to `rule-3` and A4's `render-bug-1` to `render-bug-12` among them, so that every check in `acceptance.json` names a step before `current.txt` says `2`); summary and acceptance for the new jobs; `arch-check` refuses `allow(unsafe_code)` outside the shim's one module, scanning every Rust file in the workspace, as ADR-0021 lists | criteria 1-21 |
 | G5 | 2 | `.github/workflows/**` | The `bench` job (valgrind, `gungraun-runner` =0.20.0); the `mutants` job (`cargo-mutants` =27.1.0, four shards, a weekly `schedule` and a manual dispatch for `rung-diff`); `cargo-mutants` in the `selftest` job too, for `violation:mutant-missed`; `cargo-about` =0.9.3 in `lint`; `dist` artifacts on three runners; `room.apng`; actions pinned by SHA, `permissions: {}` | the new jobs exist |
 | G5 | 2 | `scenarios.toml`, `**/*.assert.toml` | T7's `room-scenarios.patch`, applied with T6's replay patch: the room's scenarios, assertions and hash streams in one commit (its input scripts are already committed) | 1, 2, 4 |
 | G5 | 2 | `docs/rungs/current.txt` (not protected); `docs/rungs/2/acceptance.json` | Set `current.txt` to `2` in G5's commit (O1). Amend `acceptance.json` if a job or step name drifted from this plan, or to add the rows of TA tasks taken | rung 2's acceptance computed by CI |

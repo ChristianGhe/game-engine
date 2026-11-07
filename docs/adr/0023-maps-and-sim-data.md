@@ -1,14 +1,14 @@
 # ADR-0023: Maps and sim data
 
-- **Status:** Proposed (for the owner's approval)
+- **Status:** Accepted
 - **Date:** 2026-11-07
 - **Decision:** brings spec 6.11's sim data forward from rung 3, as
   constant resources outside the per-tick state, with `Sim::sim_data_hash`
   filling the recording header's existing field (6.4, ADR-0008); departs
   from 6.4's and 6.5's "whole world" hash and snapshot; adds a map
   selector beside `GameDef` (rung 2 plan, decision 1 and difference 2)
-- **Who:** Claude's proposal (rung 2 plan, decision 1; owner decision O2).
-  The owner decides.
+- **Who:** Owner decided (2026-11-07, at rung 2 gate G4, with O2: a second
+  map), on Claude's proposal (rung 2 plan, decision 1; owner decision O2).
 
 ## Context
 

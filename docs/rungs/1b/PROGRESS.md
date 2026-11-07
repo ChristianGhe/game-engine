@@ -6533,6 +6533,38 @@ This was part of the overnight window that drafted rung 2's plan
   - **Untested by any test, checked by hand:** the hook's skip path, the
     exit through `process::exit(75)`, and `run()`'s nested check.
 
+## 2026-11-07, session 20: G6 and G7 closed, ADR-0017 accepted, the lock applied (Claude Opus 5.5, with the owner)
+
+Part of rung 2's first sitting (`docs/rungs/2/PROGRESS.md`, sitting 1).
+The owner closed rung 1b's last gates.
+
+- **G6:** the owner copied run 41302087332's four candidates into
+  `crates/game-testbed/golden/`, ran
+  `ENG_REQUIRE_GPU=1 cargo test -p game-testbed --test shots`, and
+  committed them (7f44f1b). The committed files equal the candidates byte
+  for byte; their SHA-256s begin `c6cb0547eb48a67e`, `bd264452cd2f5ef4`,
+  `d1726b1ecac42ebc` and `8bb9845b5e6aa2c2`. `shot-exact` and
+  `shot-flip` compare against them from the next CI run on `main`.
+- **G7:** the owner played `cargo run -p game-testbed -- play`, had the
+  proof video from run 41302087332's `report-native-ubuntu-24.04`
+  artifact, and accepted the rung: "I accept 1b". `owner-play` is
+  done.
+- **ADR-0017** (three passes) is accepted.
+- **Amendment 98's lock** is applied (e0288dd), with the owner's unlock
+  of `xtask/**`. Before applying it, it was compiled for the first time
+  for `x86_64-pc-windows-msvc` on the Mac: `cargo check` and
+  `cargo clippy -- -D warnings` for xtask, all targets, both clean. It
+  has still not run on Windows; CI's Windows jobs run it from the push.
+  The Stop hook's new behaviour starts only once the owner reinstalls
+  the hooks from the pushed `main` (`cargo xtask install-hooks`), since
+  the hook binary is built from `origin/main`.
+- **Still open:** amendments 96 and 97, the guard's parser gaps and
+  `git credential`, for the owner (session 19).
+- **Rung 1b is done** once CI's summary on the pushed `main` computes
+  `shot-exact` and `shot-flip`.
+- **Sessions:** this one counts against rung 2. 1b's total stays at 32
+  of 30.
+
 ## Proposals for the owner (protected paths)
 
 Applied so far: proposals 1, 2, 3 and 10 (G1 and G2, 2026-10-31); X1

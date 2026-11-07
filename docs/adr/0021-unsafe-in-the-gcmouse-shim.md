@@ -1,13 +1,14 @@
 # ADR-0021: `unsafe` in the GCMouse shim
 
-- **Status:** Proposed (for the owner's approval)
+- **Status:** Accepted
 - **Date:** 2026-11-07
 - **Decision:** the engine's first `unsafe` code. One module of a new
   crate, `eng-platform-gcmouse`, is excepted from the workspace lint
   `unsafe_code = "deny"`; every other crate stays as it is (spec 6.10;
   rung 2 plan, decision 11 and difference 4)
-- **Who:** Claude's proposal (rung 2 plan, decision 11; owner decision
-  O3). The owner decides.
+- **Who:** Owner decided (2026-11-07, at rung 2 gate G4, with O3: its own
+  crate), on Claude's proposal (rung 2 plan, decision 11; owner decision
+  O3).
 
 ## Context
 

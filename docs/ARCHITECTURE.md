@@ -309,7 +309,7 @@ Graph::render ──▶ FrameCounters (draws, switches, uploaded bytes)
   the surface, and that only a surface graph uses the surface, which it
   must write. Its passes run in the order given. `Graph::fixed` is rung
   1b's list, and the one eng-render draws through.
-- **The sorted graph** (rung 2, ADR-0019, proposed): `Graph::sorted` takes
+- **The sorted graph** (rung 2, ADR-0019): `Graph::sorted` takes
   `PassNode`s, which add `continues`, the earlier pass whose targets a pass
   draws on top of (writing some or all of them), and `bypassable`.
   `Graph::sorted_without` also takes the names of passes switched off.

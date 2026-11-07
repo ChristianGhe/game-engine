@@ -1,4 +1,4 @@
-//! Pooling (ADR-0019, proposed): which texture each transient is drawn into.
+//! Pooling (ADR-0019): which texture each transient is drawn into.
 //! A transient lives from the first pass that uses it to the last, in the
 //! order the passes run. Transients of one format, size and usage share a
 //! texture when their lifetimes do not overlap.

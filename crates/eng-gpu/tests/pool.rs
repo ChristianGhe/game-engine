@@ -1,4 +1,4 @@
-//! The transient pool's plan (rung 2, queue item Q1; ADR-0019, proposed):
+//! The transient pool's plan (rung 2, queue item Q1; ADR-0019):
 //! transients share a texture when their format, size and usage match and
 //! their lifetimes within the frame do not overlap. No GPU is needed;
 //! `transients.rs` checks that the targets really reuse the textures.

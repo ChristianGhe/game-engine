@@ -1,4 +1,4 @@
-//! Culling for [`super::Graph::sorted`] (ADR-0019, proposed): a pass runs only
+//! Culling for [`super::Graph::sorted`] (ADR-0019): a pass runs only
 //! if what it writes reaches the output or the surface, through the passes
 //! that read it or continue it.
 

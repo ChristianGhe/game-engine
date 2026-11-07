@@ -1,11 +1,11 @@
 # ADR-0019: The render graph orders, culls, bypasses, pools and labels
 
-- **Status:** Proposed (for the owner's approval)
+- **Status:** Accepted
 - **Date:** 2026-11-06
 - **Decision:** carries out ADR-0003 (D7, spec 6.7) on rung 2's render
   graph; keeps ADR-0017's fixed graph
-- **Who:** Claude's proposal (rung 2 plan, decision 5; built in queue item
-  Q1). The owner decides.
+- **Who:** Owner decided (2026-11-07, at rung 2 gate G4), on Claude's
+  proposal (rung 2 plan, decision 5; built in queue item Q1).
 
 ## Context
 

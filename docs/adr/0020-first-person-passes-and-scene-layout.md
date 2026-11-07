@@ -1,13 +1,13 @@
 # ADR-0020: The first-person passes and the GPU scene layout
 
-- **Status:** Proposed (for the owner's approval)
+- **Status:** Accepted
 - **Date:** 2026-11-07
 - **Decision:** amends ADR-0003 (D7, spec 6.7) and ADR-0017: a palette
   pass follows the tone map, and the integer upscale is in `present`
   (rung 2 plan, difference 1). Fixes 6.7's GPU scene layout for rung 2
   (plan, decision 6). Uses ADR-0019's graph rules unchanged
-- **Who:** Claude's proposal (rung 2 plan, decision 6 and difference 1;
-  task T0a). The owner decides.
+- **Who:** Owner decided (2026-11-07, at rung 2 gate G4), on Claude's
+  proposal (rung 2 plan, decision 6 and difference 1; task T0a).
 
 ## Context
 

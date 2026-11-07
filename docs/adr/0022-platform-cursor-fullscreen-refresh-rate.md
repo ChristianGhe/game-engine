@@ -1,13 +1,14 @@
 # ADR-0022: Cursor, fullscreen and refresh rate in the platform contract
 
-- **Status:** Proposed (for the owner's approval)
+- **Status:** Accepted
 - **Date:** 2026-11-07
 - **Decision:** a contract change to `eng-platform-api` (spec 6.2 rule 6;
   spec 6.10): `Control` gains cursor and fullscreen requests and `Window`
   gains `refresh_rate`, all with default bodies. Extends ADR-0016's
   `Window`
-- **Who:** Claude's proposal (rung 2 plan, decision 10; owner decision
-  O9). The owner decides.
+- **Who:** Owner decided (2026-11-07, at rung 2 gate G4, with O9: fullscreen
+  by default for first-person maps), on Claude's proposal (rung 2 plan,
+  decision 10; owner decision O9).
 
 ## Context
 

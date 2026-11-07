@@ -21,13 +21,13 @@
 //! - **[`Graph`]**, the render graph. Passes declare what they read and
 //!   write ([`PassDecl`]).
 //!   - Rung 1b's fixed graph (decision 1) has three passes, not the spec's
-//!     two (ADR-0017, proposed): [`DRAW`] writes the [`Resource::Scene`],
+//!     two (ADR-0017): [`DRAW`] writes the [`Resource::Scene`],
 //!     [`TONEMAP`] reads it and writes the [`Resource::Output`], and
 //!     [`PRESENT`] reads the output and writes the [`Resource::Surface`], in
 //!     a [`Target::Surface`] graph only. [`Graph::new`] checks a list that
 //!     runs in the order given; [`Graph::fixed`] is rung 1b's list, and the
 //!     one eng-render draws through.
-//!   - Rung 2's graph (ADR-0019, proposed): [`Graph::sorted`] orders
+//!   - Rung 2's graph (ADR-0019): [`Graph::sorted`] orders
 //!     [`PassNode`]s by what they read, write and continue (a pass that
 //!     draws on top of an earlier pass's targets), names breaking ties;
 //!     refuses a cycle and two writers of one resource with `[E-GRAPH]`;

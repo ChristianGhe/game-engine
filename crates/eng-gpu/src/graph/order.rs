@@ -1,4 +1,4 @@
-//! Ordering for [`super::Graph::sorted`] (ADR-0019, proposed): the checks on
+//! Ordering for [`super::Graph::sorted`] (ADR-0019): the checks on
 //! the declarations, then a topological sort over reads, writes and
 //! continues, in which the smallest name runs first among the passes free
 //! to run.

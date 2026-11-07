@@ -292,7 +292,7 @@ impl Graph {
     }
 
     /// Orders `nodes` by what they read, write and continue, whatever order
-    /// they are declared in, then culls and pools (ADR-0019, proposed). It is
+    /// they are declared in, then culls and pools (ADR-0019). It is
     /// [`Graph::sorted_without`] with every pass switched on.
     /// - **Order:** a pass runs after the pass it continues, and after the
     ///   last pass that writes each resource it reads. Among passes free to

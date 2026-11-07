@@ -1,5 +1,5 @@
 //! Bypassing in [`Graph::sorted_without`] (rung 2 plan, decision 5 and Q1
-//! done-when 4; ADR-0019, proposed): a switched-off pass that may be
+//! done-when 4; ADR-0019): a switched-off pass that may be
 //! bypassed is removed and its readers read its input; formats that differ,
 //! or switching off a pass that may not be bypassed, are `[E-GRAPH]`. No
 //! GPU is needed; `transients.rs` renders a bypassed graph.

@@ -1,7 +1,7 @@
 # Rung 2 progress (append-only)
 
-Rung 2, inside the room: see `plan.md`, a draft the owner has not
-approved yet (`docs/rungs/current.txt` stays `1b`). Each session appends
+Rung 2, inside the room: see `plan.md`, approved by the owner on
+2026-11-07 (`docs/rungs/current.txt` stays `1b` until G5). Each session appends
 what it did, costs and timings. Changes to protected paths are written
 here as proposals for the owner, never made by agents.
 
@@ -337,3 +337,95 @@ That is 11 of the proposed 43.
   - fixes stale text.
 - **The review's cost:** 8 min, 140k tokens, 53 calls.
 - **Sessions:** 12 used of 43. The plan counts five planning sessions.
+
+## 2026-11-07, session 2: sitting 1, gates G1 to G4 (Claude Opus 5.5, with the owner)
+
+The owner held sitting 1 in this session, from the plan's "Sitting 1:
+what you decide" list. Claude asked each decision with the recommended
+answer first, and applied the protected changes after the owner listed
+their paths in `.claude/guard-unlock`: `docs/rungs/2/acceptance.json`,
+`architecture.toml`, `Cargo.toml`, `deny.toml` and `xtask/**`.
+
+**The owner's answers**
+- **G1:** the plan is approved, with the agent-seeing additions A1, A2's
+  three rules, A3 and A4 (O6). A5 waits for rung 3.
+- **O3:** the GCMouse shim is its own crate, with the engine's only
+  `unsafe` code.
+- **Every other decision as recommended:**
+  - O2: a second map with sim data;
+  - O4: the brute-force oracle;
+  - O5: `cargo xtask dist`;
+  - O7: benchmarks against the push's base;
+  - O8: a missed mutant fails;
+  - O9: fullscreen by default for first-person maps;
+  - O10: Khronos PBR Neutral;
+  - O11: GPU timestamps when the adapter has them;
+  - O12: `pmove`'s angled-wall fix in rung 3;
+  - O13: gravity only in the air.
+- **G4:** ADR-0019 to ADR-0024 are accepted as written, and 1b's
+  ADR-0017 with them.
+- **Rung 1b:** G6 and G7 are closed and the lock is applied (1b's
+  session 20).
+
+**Applied**
+- **`docs/rungs/2/acceptance.json`** (G1), in 1b's format: 41 features.
+  - The plan's criteria 1-23 and 25.
+  - Criterion 24's 13 features carried from 1b.
+  - Four from A1-A4: `frame-record`, `scene-rules`, `fps-poses` and
+    `check-misses`.
+  - Three are the owner's (`owner: true`, no checks): `owner-mac-shots`,
+    `owner-play` and `gcmouse-rate`.
+  - The time-box is 14 calendar days from 2026-11-07, and the AI budget
+    at most 52 sessions.
+  - `current.txt` stays `1b` until G5 (O1).
+  - **Step names that G5 may rename:** A4's and A2's self-test steps are
+    written `violation:render-bug-<n>` and `violation:rule-<n>`, the
+    form `selftest.rs` gives every case. The plan's table wrote A4's
+    without the prefix. If T21's xtask names them otherwise, G5 amends
+    the file, as the plan allows.
+- **G2 and G3** (f9c095d): `g2-crates.patch`, `g2-gcmouse-crate.patch`
+  and `g3-crate-batch-3.patch`, applied in that order. The other four
+  patches in `docs/rungs/2/patches/` stay unused: the module and no-shim
+  paths, and parry3d.
+- **G4:**
+  - every accepted ADR now says "Accepted" and who decided, and so does
+    its row in the index;
+  - the comments and docs that said "ADR-0019, proposed" or "ADR-0017,
+    proposed" no longer do;
+  - the plan's banner records the approval.
+- **The lock for `quick`** (e0288dd), 1b's amendment 98.
+
+**Checked**
+- A scratch clone of d1db807 with all four patches and `acceptance.json`
+  applied: `quick` 7 of 7 in 188 s.
+- `main`'s full tree, after G6, before these commits: `quick` 7 of 7.
+- The goldens in 7f44f1b equal CI's candidates byte for byte.
+
+**A fresh review of `acceptance.json`**
+- **What it compared:** the file against the plan's criteria table and
+  agent-seeing table, and against 1b's file.
+- **What matched:** every id, check, owner flag and top-level field (2.8
+  min, 102k tokens, 14 calls).
+- **Fixed after the review:**
+  - the 13 carried features have `done_when` 1-12, the plan's "all",
+    instead of null;
+  - the budget note says T23 is the two rung reviews;
+  - the plan's sitting list gives 52 sessions;
+  - the plan's G5 xtask row names A1-A3's native steps and A2's and A4's
+    self-test cases, which G5's package must add before `current.txt`
+    says `2`.
+
+**Left for the owner, to finish sitting 1**
+- **Push `main`:** `git push origin main`. GitHub's `main` is at 6443ea5,
+  and until the push, `cargo xtask push` refuses every agent branch.
+  CI's first run on the pushed `main` then runs:
+  - 1b's goldens on all five runners;
+  - the lock's Windows code;
+  - the four new crates on every target, with RISC-V for the grid.
+- **Reinstall the hooks** from the pushed `main` with `cargo xtask
+  install-hooks`, so that the Stop hook uses the lock.
+- **Remove `.claude/guard-unlock`** before agents work unattended.
+
+**Next:** T5 onward, at most two builders at once; then sitting 2 (G5).
+
+**Sessions:** this sitting is session 13 of 52.

@@ -7,7 +7,36 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
-[dependencies]
+# `cargo bench` runs the two gungraun harnesses below and nothing else, so
+# their JSON summaries are all that reaches stdout (`cargo xtask bench`).
+[lib]
+bench = false
+
+# Dev-dependencies only: the benchmarks measure the testbed's sim, a game
+# crate, which a tool crate may reach only so (`[E-ARCH-GAME-DEP]`).
+[dev-dependencies]
+eng-collision-api.workspace = true
+eng-collision-grid.workspace = true
+eng-core.workspace = true
+eng-math.workspace = true
+eng-sim.workspace = true
+game-testbed-sim.workspace = true
+kit-fps.workspace = true
+
+# gungraun runs only where valgrind does; elsewhere each bench is an empty
+# `main` (src/lib.rs).
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gungraun.workspace = true
+
+[[bench]]
+name = "sim"
+path = "benches/sim/main.rs"
+harness = false
+
+[[bench]]
+name = "collision"
+path = "benches/collision/main.rs"
+harness = false
 
 [lints]
 workspace = true

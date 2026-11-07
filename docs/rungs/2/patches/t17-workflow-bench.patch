@@ -1,0 +1,94 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 70c947b68e05f7c43b241fd465b876316abac4f1..b4207b3179a968468963830264f993a00f1af90c 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -328,10 +328,60 @@ jobs:
+           name: logs-native-${{ matrix.runner }}
+           path: target/agent-logs/
+ 
++  # Instruction counts (rung 2, decision 14): xtask builds the pushed head and
++  # the push's base here, on one runner, runs eng-bench's gungraun benchmarks
++  # under valgrind for both, and fails a count more than 5% over the base's
++  # unless the push adds a performance ADR naming it that the owner accepted
++  # (on main), which xtask prints as a `[W-BENCH-EXCUSED]` warning; one an
++  # agent branch marked Accepted itself leaves the step pending. On main the
++  # base is the push's `before`; elsewhere, and for a `before` off the
++  # branch, xtask takes the merge base with origin/main, so the whole
++  # history is fetched. Other events have no base: the job is skipped. The
++  # gate catches regressions; it is no boundary against the head's own
++  # code, which runs in this job (the owner's push to main is the gate).
++  bench:
++    if: github.event_name == 'push' || github.event_name == 'pull_request'
++    runs-on: ubuntu-24.04
++    timeout-minutes: 30
++    permissions:
++      contents: read
++    steps:
++      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
++        with:
++          persist-credentials: false
++          fetch-depth: 0
++      - name: valgrind (Ubuntu's)
++        run: |
++          sudo apt-get update -qq
++          sudo apt-get install -y -qq valgrind
++      # Before the install: rust-cache restores ~/.cargo/bin, and an installed
++      # runner of the same version is kept.
++      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
++        with:
++          save-if: ${{ github.ref == 'refs/heads/main' }}
++      # The runner must be the version of eng-bench's gungraun library.
++      - name: gungraun-runner 0.20.0
++        run: cargo install --locked gungraun-runner@0.20.0
++      - name: cargo xtask ci --job bench
++        env:
++          ENG_BENCH_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
++        run: cargo xtask ci --job bench
++      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
++        if: always()
++        with:
++          name: report-bench
++          path: target/ci/reports/
++      # Each step's full log, `cargo bench`'s for both trees among them.
++      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
++        if: always()
++        with:
++          name: logs-bench
++          path: target/agent-logs/
++
+   # Cross-architecture equality across the PR tier and the native jobs, the
+   # measured durations, and the CI-computed acceptance status.
+   summary:
+-    needs: [lint, test, riscv, wasm, selftest, native]
++    needs: [lint, test, riscv, wasm, selftest, native, bench]
+     if: always()
+     runs-on: ubuntu-24.04
+     timeout-minutes: 30
+@@ -370,7 +420,7 @@ jobs:
+ 
+   # The one check to require on main: green only if every job above is.
+   ci:
+-    needs: [lint, test, riscv, wasm, selftest, native, summary]
++    needs: [lint, test, riscv, wasm, selftest, native, bench, summary]
+     if: always()
+     runs-on: ubuntu-24.04
+     timeout-minutes: 5
+@@ -379,6 +429,17 @@ jobs:
+       - name: every job passed
+         env:
+           RESULTS: ${{ join(needs.*.result, ' ') }}
++          BENCH: ${{ needs.bench.result }}
++          BENCH_RUNS: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+         run: |
+           echo "job results: $RESULTS"
+-          for r in $RESULTS; do [ "$r" = success ] || exit 1; done
++          # One job may be skipped: bench, where its `if` skips it.
++          skipped=0
++          for r in $RESULTS; do
++            case "$r" in
++              success) ;;
++              skipped) skipped=$((skipped + 1)) ;;
++              *) exit 1 ;;
++            esac
++          done
++          [ "$skipped" = 0 ] || { [ "$skipped" = 1 ] && [ "$BENCH" = skipped ] && [ "$BENCH_RUNS" = false ]; }

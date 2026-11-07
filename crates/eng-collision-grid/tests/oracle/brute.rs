@@ -1,6 +1,10 @@
 //! The brute-force oracle's world: every primitive, in index order, no grid.
 //! It follows the rules in `eng_collision_grid`'s crate docs from the walls
 //! and slabs alone. Part of the oracle test (`../oracle.rs`).
+//!
+//! `eng-bench` includes this file too, by `#[path]`, for its brute-force
+//! trace benchmarks (`benches/collision/main.rs`) and their tests, so it
+//! keeps to the public items of the crates it names and uses no proptest.
 
 use eng_collision_api::{BoxHull, CollisionWorld, Trace};
 use eng_collision_grid::{BACKOFF_STEPS, GRAZE, NOISE, NUDGE_STEPS, Point2, Slab, Wall};

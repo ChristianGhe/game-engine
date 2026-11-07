@@ -75,6 +75,10 @@ nv-flip = "=0.1.2"
 objc2-game-controller = { version = "=0.3.2", default-features = false, features = ["std", "block2", "GCDevice", "GCMouse", "GCMouseInput", "GCPhysicalInputProfile"] }
 block2 = { version = "=0.6.2", default-features = false, features = ["std"] }
 objc2 = { version = "=0.6.5", default-features = false, features = ["std"] }
+# Batch 3 (rung 2). Instruction counts under valgrind for eng-bench, a
+# dev-dependency on Linux only; `gungraun-runner` (CI's bench job) must be
+# the same version.
+gungraun = "=0.20.0"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

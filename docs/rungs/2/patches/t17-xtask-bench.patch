@@ -1,0 +1,1517 @@
+diff --git a/xtask/src/bench.rs b/xtask/src/bench.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..e90fb639004709e14d9d4b143271db6f9e3ad657
+--- /dev/null
++++ b/xtask/src/bench.rs
+@@ -0,0 +1,488 @@
++//! `cargo xtask bench [--base REV]` and `cargo xtask ci --job bench` (rung 2,
++//! decision 14 and criterion 15): gungraun's instruction counts for the
++//! pushed head and for the push's base, built and run on one runner, and
++//! compared benchmark by benchmark. There is no stored baseline.
++//!
++//! **The design limit.** The gate is a check that catches regressions on
++//! agent branches. It is not a security boundary against code that runs in
++//! the same job: the head's benchmarks run here with the job's rights. The
++//! owner's push to `main` (ADR-0018) remains the gate. What the verdict
++//! trusts is still read before any of the head's code runs (`Trusted`).
++//!
++//! - **The base** (`bench_git.rs`): `--base REV` if given. Off `main`, the
++//!   merge base of `HEAD` with `origin/main` (or `main`): the push's
++//!   `before` is the branch's own previous tip, so a second push could hide
++//!   the first one's regression. On `main`, `ENG_BENCH_BASE`, which the
++//!   workflow sets to the push's `before`, if it is an ancestor of `HEAD`;
++//!   else (all zeros, missing, a force-push) that merge base. Never `HEAD`'s
++//!   parent. A base that is `HEAD`, with no change in the working tree,
++//!   leaves nothing to compare: `base` and `bench` are pending.
++//! - **Each is built** in its own target directory, `target/bench/head` or
++//!   `/base` (cargo hashes a workspace's crates by their path inside it, so
++//!   two checkouts sharing one take each other's binaries for fresh). The
++//!   head is the working tree, the base a detached worktree at
++//!   `target/bench/tree`, removed afterwards. Each runs `cargo bench -p
++//!   eng-bench` with `GUNGRAUN_OUTPUT_FORMAT=json`: one JSON summary per
++//!   benchmark on stdout, whose callgrind `Ir` is the count, named by its
++//!   gungraun `module_path` and `id` (`sim::tick::room::walk`). A base
++//!   without `crates/eng-bench/benches/` has no counts; a tree that has them
++//!   and prints no summary fails.
++//! - **The verdict** (the `bench` step): a head count more than 5% above the
++//!   base's (`head * 100 > base * 105`, in integers) fails, and so does a
++//!   benchmark the base has and the head lacks, unless the push adds a
++//!   performance ADR that names it: a `docs/adr/NNNN-*.md` that
++//!   `git diff --diff-filter=A <base> HEAD` lists as added, whose status
++//!   line reads `- **Status:** Accepted` and whose text holds the name in
++//!   backticks (`` `sim::tick::room::walk` ``). Both are read from text an
++//!   agent cannot have written (`bench_adr.rs`): the pushed file on a run for
++//!   `main` (CI's `GITHUB_REF`, or the branch checked out), which only the
++//!   owner pushes (ADR-0018); elsewhere `origin/main`'s copy. Off `main`, an
++//!   ADR whose pushed text alone excuses makes the step pending, excused
++//!   once the owner accepts it on `main`; one not marked Accepted fails,
++//!   saying so. Each excuse prints a `[W-BENCH-EXCUSED]` line. A benchmark
++//!   new in the head passes. A base that does not build or run fails.
++//! - **Pending** where it cannot run: off Linux, or without valgrind or
++//!   `gungraun-runner` 0.20.0, which must equal eng-bench's gungraun. On CI
++//!   a missing tool on Linux fails instead, since the workflow installs both.
++//!
++//! The report (`target/ci/reports/bench-<host>.json`) adds a `bench` key
++//! with both commits and every benchmark's counts and verdict.
++
++use std::path::Path;
++use std::process::Command;
++use std::time::Instant;
++
++use serde_json::{Map, Value, json};
++
++use crate::bench_adr::{Adr, Excuse, accepted, excuse, push_adrs};
++use crate::bench_git::{self, ADRS};
++use crate::util::{self, Done, Steps};
++use crate::{ci, ci_report};
++
++/// The steps, in order: what each tree counts, then the comparison.
++pub const STEPS: [&str; 3] = ["head", "base", "bench"];
++/// Over this much more than the base fails (decision 14).
++pub const LIMIT_PERCENT: u64 = 5;
++/// `gungraun-runner` must be the version of the library eng-bench uses.
++pub const RUNNER_VERSION: &str = "0.20.0";
++const PACKAGE: &str = "eng-bench";
++const BENCHES: &str = "crates/eng-bench/benches";
++const USAGE: &str = "usage: cargo xtask bench [--base REV]";
++const SAME: &str = "nothing to compare: the base is HEAD";
++
++/// `cargo xtask bench [--base REV]`'s arguments: the base, if given.
++pub fn parse(args: &[&str]) -> Result<Option<String>, String> {
++    match args {
++        [] => Ok(None),
++        ["--base", rev] if !rev.starts_with('-') => Ok(Some((*rev).to_string())),
++        _ => Err(USAGE.into()),
++    }
++}
++
++/// `cargo xtask bench`: the bench job's steps and report.
++pub fn run(root: &Path, base: Option<&str>) -> Result<String, String> {
++    let started = Instant::now();
++    let mut steps = Steps::default();
++    let extra = steps_into(root, base, &mut steps);
++    ci_report::finish(root, "bench", steps, started, extra)
++}
++
++/// A benchmark's instruction count.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct Count {
++    pub name: String,
++    pub instructions: u64,
++}
++
++/// Why the job cannot run here, if it cannot: `os` is
++/// `std::env::consts::OS`, the tools' `--version` lines as found.
++pub fn missing(os: &str, valgrind: Option<&str>, runner: Option<&str>) -> Option<String> {
++    if os != "linux" {
++        return Some(format!(
++            "instruction counts need valgrind's callgrind, on Linux; this is {os}"
++        ));
++    }
++    if valgrind.is_none() {
++        return Some("valgrind is not installed (apt-get install valgrind)".into());
++    }
++    let install = format!("cargo install --locked gungraun-runner@{RUNNER_VERSION}");
++    match runner {
++        None => Some(format!("gungraun-runner is not installed ({install})")),
++        Some(line) if !line.split_whitespace().any(|w| w == RUNNER_VERSION) => Some(format!(
++            "eng-bench's gungraun needs gungraun-runner {RUNNER_VERSION}, not {:?} ({install} --force)",
++            line.trim()
++        )),
++        Some(_) => None,
++    }
++}
++
++/// The first line a tool prints for `--version`, if it runs.
++fn tool_version(program: &str) -> Option<String> {
++    let out = Command::new(program).arg("--version").output().ok()?;
++    let text = String::from_utf8_lossy(&out.stdout);
++    out.status
++        .success()
++        .then(|| text.lines().next().unwrap_or_default().to_string())
++}
++
++/// The counts in `cargo bench`'s stdout with `GUNGRAUN_OUTPUT_FORMAT=json`:
++/// one summary per line; lines that are not a summary are skipped.
++pub fn parse_counts(stdout: &str) -> Result<Vec<Count>, String> {
++    let mut counts: Vec<Count> = Vec::new();
++    for line in stdout.lines().map(str::trim).filter(|l| l.starts_with('{')) {
++        let Ok(summary) = serde_json::from_str::<Value>(line) else {
++            continue;
++        };
++        let Some(path) = summary["module_path"].as_str() else {
++            continue;
++        };
++        let name = match summary["id"].as_str() {
++            Some(id) => format!("{path}::{id}"),
++            None => path.to_string(),
++        };
++        let instructions = instructions(&summary)
++            .ok_or_else(|| format!("[E-BENCH] {name}: no callgrind Ir in its summary"))?;
++        if counts.iter().any(|c| c.name == name) {
++            return Err(format!("[E-BENCH] two benchmarks are named {name}"));
++        }
++        counts.push(Count { name, instructions });
++    }
++    Ok(counts)
++}
++
++/// This run's callgrind `Ir` in a summary (schema version 7): the Callgrind
++/// profile's `data.total.metrics.Ir.values.new`. gungraun's own comparison
++/// with its previous run (`old`) is not used.
++fn instructions(summary: &Value) -> Option<u64> {
++    let profiles = summary["profiles"].as_array()?;
++    let callgrind = profiles.iter().find(|p| p["tool"] == "Callgrind")?;
++    callgrind["data"]["total"]["metrics"]["Ir"]["values"]["new"].as_u64()
++}
++
++/// One benchmark compared.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct Row {
++    pub name: String,
++    pub head: Option<u64>,
++    pub base: Option<u64>,
++    /// Over the limit, or gone from the head; with what the ADRs say.
++    pub flagged: bool,
++    pub excuse: Option<Excuse>,
++}
++
++impl Row {
++    fn verdict(&self) -> String {
++        let why = match (self.head, self.base) {
++            (Some(_), None) => return "new".into(),
++            (None, _) => "removed",
++            (Some(_), Some(_)) if self.flagged => "over",
++            (Some(_), Some(_)) => return "within".into(),
++        };
++        match &self.excuse {
++            Some(Excuse::Accepted(adr)) => format!("{why}, excused by {adr}"),
++            Some(Excuse::Unconfirmed(adr)) => {
++                format!("{why}, excused once the owner accepts {adr} on main")
++            }
++            Some(Excuse::NotAccepted(adr)) => {
++                format!("{why}; {adr} names it but is not Accepted: the owner must accept it")
++            }
++            None => why.into(),
++        }
++    }
++
++    fn change_percent(&self) -> Option<f64> {
++        let (head, base) = (self.head? as f64, self.base? as f64);
++        (base > 0.0).then(|| (head - base) / base * 100.0)
++    }
++
++    fn change(&self) -> String {
++        match (self.head, self.change_percent()) {
++            (None, _) => "removed".into(),
++            (Some(_), Some(p)) => format!("{p:+.2}%"),
++            (Some(_), None) => "new".into(),
++        }
++    }
++
++    fn failed(&self) -> bool {
++        let excused = matches!(
++            self.excuse,
++            Some(Excuse::Accepted(_) | Excuse::Unconfirmed(_))
++        );
++        self.flagged && !excused
++    }
++
++    fn line(&self) -> String {
++        let count = |c: Option<u64>| c.map_or_else(|| "-".into(), |c| c.to_string());
++        let change = match self.change_percent() {
++            Some(p) => format!(" ({p:+.2}%)"),
++            None => String::new(),
++        };
++        let (base, head) = (count(self.base), count(self.head));
++        format!(
++            "{}: {base} -> {head}{change}, {}",
++            self.name,
++            self.verdict()
++        )
++    }
++}
++
++/// Whether `head` is more than [`LIMIT_PERCENT`] over `base`.
++pub fn over_limit(head: u64, base: u64) -> bool {
++    u128::from(head) * 100 > u128::from(base) * u128::from(100 + LIMIT_PERCENT)
++}
++
++/// Compares the head's counts with the base's, head order first, then what
++/// only the base has; a flagged benchmark gets what `adrs` say for it.
++pub fn compare(head: &[Count], base: &[Count], adrs: &[Adr]) -> Vec<Row> {
++    let find =
++        |list: &[Count], name: &str| list.iter().find(|c| c.name == name).map(|c| c.instructions);
++    let row = |name: &str, head: Option<u64>, base: Option<u64>| {
++        let flagged = match (head, base) {
++            (Some(h), Some(b)) => over_limit(h, b),
++            (None, Some(_)) => true,
++            _ => false,
++        };
++        let excuse = if flagged { excuse(adrs, name) } else { None };
++        Row {
++            name: name.to_string(),
++            head,
++            base,
++            flagged,
++            excuse,
++        }
++    };
++    let mut rows: Vec<Row> = head
++        .iter()
++        .map(|c| row(&c.name, Some(c.instructions), find(base, &c.name)))
++        .collect();
++    rows.extend(
++        base.iter()
++            .filter(|c| find(head, &c.name).is_none())
++            .map(|c| row(&c.name, None, Some(c.instructions))),
++    );
++    rows
++}
++
++/// A `[W-BENCH-EXCUSED]` line for each benchmark an ADR excuses, or will
++/// once the owner accepts it on `main`.
++pub fn warnings(rows: &[Row]) -> Vec<String> {
++    rows.iter()
++        .filter(|r| r.flagged)
++        .filter_map(|r| {
++            let by = match r.excuse.as_ref()? {
++                Excuse::Accepted(adr) => format!("by {adr}"),
++                Excuse::Unconfirmed(adr) => format!("once the owner accepts {adr} on main"),
++                Excuse::NotAccepted(_) => return None,
++            };
++            Some(format!(
++                "[W-BENCH-EXCUSED] {} {} excused {by}",
++                r.name,
++                r.change()
++            ))
++        })
++        .collect()
++}
++
++/// The `bench` step's verdict over `rows`, the excuses last: failed if any
++/// flagged benchmark has no excuse, pending if one waits for the owner's
++/// acceptance on `main`, else passed.
++pub fn verdict(rows: &[Row]) -> Result<Done, String> {
++    let mut lines: Vec<String> = rows.iter().map(Row::line).collect();
++    lines.extend(warnings(rows));
++    let names = |pick: fn(&Row) -> bool| -> Vec<&str> {
++        rows.iter()
++            .filter(|r| pick(r))
++            .map(|r| r.name.as_str())
++            .collect()
++    };
++    let failed = names(Row::failed);
++    let waiting = names(|r| r.flagged && matches!(r.excuse, Some(Excuse::Unconfirmed(_))));
++    let (n, lines) = (rows.len(), lines.join("\n"));
++    if !failed.is_empty() {
++        return Err(format!(
++            "[E-BENCH] more than {LIMIT_PERCENT}% over the base, or gone from the head: {}. \
++             A performance ADR added in this push ({ADRS}NNNN-*.md) that names the \
++             benchmark in backticks, Accepted by the owner on main, lets it pass\n{lines}",
++            failed.join(", ")
++        ));
++    }
++    if !waiting.is_empty() {
++        return Ok(Done::Pending(format!(
++            "{n} benchmarks; {} excused once the owner accepts their ADR on main\n{lines}",
++            waiting.join(", ")
++        )));
++    }
++    Ok(Done::Pass(format!(
++        "{n} benchmarks, none more than {LIMIT_PERCENT}% over the base unexcused\n{lines}"
++    )))
++}
++
++/// `cargo bench -p eng-bench` in `tree`, built in `target/bench/<label>`;
++/// a run that prints no summary fails.
++fn measure(root: &Path, tree: &Path, label: &str) -> Result<Vec<Count>, String> {
++    let target = root.join("target/bench").join(label);
++    let mut cmd = ci::cargo_command(tree, &["bench", "-p", PACKAGE]);
++    cmd.env("CARGO_TARGET_DIR", &target)
++        .env("GUNGRAUN_HOME", target.join("gungraun"))
++        .env("GUNGRAUN_OUTPUT_FORMAT", "json");
++    let stdout = util::run_quiet(root, &format!("bench-{label}"), &mut cmd)?;
++    let counts = parse_counts(&stdout)?;
++    if counts.is_empty() {
++        return Err(format!(
++            "[E-BENCH] the {label}'s `cargo bench -p {PACKAGE}` printed no summary"
++        ));
++    }
++    Ok(counts)
++}
++
++/// The base's counts: `None` if it has no benchmarks.
++fn measure_base(root: &Path, sha: &str) -> Result<Option<Vec<Count>>, String> {
++    bench_git::in_worktree(root, sha, |tree| {
++        if tree.join(BENCHES).is_dir() {
++            measure(root, tree, "base").map(Some)
++        } else {
++            Ok(None)
++        }
++    })
++}
++
++fn short(sha: &str) -> &str {
++    sha.get(..12).unwrap_or(sha)
++}
++
++fn listed(counts: &[Count]) -> String {
++    let lines: Vec<String> = counts
++        .iter()
++        .map(|c| format!("{}: {}", c.name, c.instructions))
++        .collect();
++    format!("{} benchmarks\n{}", counts.len(), lines.join("\n"))
++}
++
++/// Runs the job's three steps into `steps` and returns the report's `bench`
++/// key.
++pub fn steps_into(root: &Path, base_arg: Option<&str>, steps: &mut Steps) -> Map<String, Value> {
++    let mut extra = Map::new();
++    let valgrind = tool_version("valgrind");
++    let runner = tool_version("gungraun-runner");
++    if let Some(why) = missing(std::env::consts::OS, valgrind.as_deref(), runner.as_deref()) {
++        let fail = util::on_ci() && std::env::consts::OS == "linux";
++        for name in STEPS {
++            steps.run_judged(name, || {
++                if fail {
++                    Err(format!("[E-BENCH] {why}; the workflow installs it"))
++                } else {
++                    Ok(Done::Pending(why.clone()))
++                }
++            });
++        }
++        extra.insert("bench".into(), json!({ "pending": why }));
++        return extra;
++    }
++    // Everything the verdict trusts, read before any of the head's code runs.
++    let t = trusted(root, base_arg);
++    let mut head = None;
++    steps.run("head", || {
++        let counts = measure(root, root, "head")?;
++        let detail = format!(
++            "head {} (the working tree): {}",
++            short(&t.head),
++            listed(&counts)
++        );
++        head = Some(counts);
++        Ok(detail)
++    });
++    let mut base = None;
++    steps.run_judged("base", || {
++        let (sha, from) = t.base.clone()?;
++        if t.same {
++            return Ok(Done::Pending(format!("{SAME} ({from})")));
++        }
++        let counts = measure_base(root, &sha)?;
++        let detail = match &counts {
++            Some(counts) => format!("base {} ({from}): {}", short(&sha), listed(counts)),
++            None => format!("base {} ({from}) has no {BENCHES}", short(&sha)),
++        };
++        base = Some(counts);
++        Ok(Done::Pass(detail))
++    });
++    let mut rows = Vec::new();
++    steps.run_judged("bench", || {
++        if t.same {
++            return Ok(Done::Pending(SAME.into()));
++        }
++        let head = head.as_ref().ok_or("[E-BENCH] the head was not measured")?;
++        let counts = base.as_ref().ok_or("[E-BENCH] the base was not measured")?;
++        let adrs = t.adrs.as_ref().map_err(Clone::clone)?;
++        rows = compare(head, counts.as_deref().unwrap_or_default(), adrs);
++        let annotate = std::env::var_os("GITHUB_ACTIONS").is_some();
++        for line in warnings(&rows) {
++            println!("{}{line}", if annotate { "::warning::" } else { "" });
++        }
++        verdict(&rows)
++    });
++    let (base_sha, base_from) = t.base.clone().unwrap_or_default();
++    let benchmarks: Vec<Value> = rows
++        .iter()
++        .map(|r| {
++            json!({
++                "name": r.name, "head": r.head, "base": r.base,
++                "change_percent": r.change_percent(), "verdict": r.verdict(),
++            })
++        })
++        .collect();
++    let adrs: Vec<Value> = (t.adrs.as_deref().unwrap_or_default().iter())
++        .map(|a| {
++            let owners = a.owners.as_deref().is_some_and(accepted);
++            json!({ "path": a.path, "accepted": accepted(&a.text), "owners_accepted": owners })
++        })
++        .collect();
++    extra.insert(
++        "bench".into(),
++        json!({
++            "head": t.head, "base": base_sha, "base_from": base_from, "same": t.same,
++            "on_main": t.on_main, "origin_main": t.upstream,
++            "limit_percent": LIMIT_PERCENT, "added_adrs": adrs, "benchmarks": benchmarks,
++        }),
++    );
++    extra
++}
++
++/// What the verdict trusts, read before any of the head's code runs, since
++/// that code could rewrite refs and files: `HEAD` and `origin/main` as
++/// SHAs, whether the run is for `main`, the base, and the added ADRs with
++/// their `origin/main` copies read by that SHA.
++struct Trusted {
++    head: String,
++    on_main: bool,
++    upstream: Option<String>,
++    base: Result<(String, String), String>,
++    same: bool,
++    adrs: Result<Vec<Adr>, String>,
++}
++
++fn trusted(root: &Path, base_arg: Option<&str>) -> Trusted {
++    let head = bench_git::commit(root, "HEAD").unwrap_or_default();
++    let github_ref = std::env::var("GITHUB_REF").ok();
++    let on_main = bench_git::on_main(root, github_ref.as_deref());
++    let upstream = bench_git::commit(root, "origin/main").ok();
++    let event = std::env::var("ENG_BENCH_BASE").ok();
++    let request = bench_git::request(base_arg, event.as_deref());
++    let base = bench_git::resolve(root, &request, on_main);
++    let same = base.as_ref().is_ok_and(|(sha, _)| *sha == head) && !bench_git::dirty(root);
++    let adrs = match &base {
++        Ok((sha, _)) => push_adrs(root, sha, &head, on_main, upstream.as_deref()),
++        Err(e) => Err(e.clone()),
++    };
++    Trusted {
++        head,
++        on_main,
++        upstream,
++        base,
++        same,
++        adrs,
++    }
++}
++
++#[cfg(test)]
++#[path = "bench_tests.rs"]
++mod tests;
+diff --git a/xtask/src/bench_adr.rs b/xtask/src/bench_adr.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..061b7ba562e0618cbdc5c80eaa0bd84363220da3
+--- /dev/null
++++ b/xtask/src/bench_adr.rs
+@@ -0,0 +1,95 @@
++//! The bench job's exception (`bench.rs`): a performance ADR the push adds
++//! excuses a benchmark it names, once the owner has accepted it.
++//!
++//! An agent's push can write an ADR's status line and the names in it, so
++//! the excuse is read only from text an agent cannot have written. The ADR
++//! must be new in the push (absent from its base). On a run for `main`,
++//! which only the owner pushes (ADR-0018), the file as pushed counts;
++//! elsewhere only `origin/main`'s copy does, and only when the pushed file
++//! is byte for byte that copy: its status and the benchmark's name are read
++//! from it. Off `main`, an ADR whose pushed text alone is Accepted and names
++//! the benchmark (self-accepted, or an accepted one edited to name it)
++//! leaves the benchmark excused once the owner accepts it on `main`, and
++//! the `bench` step pending. `bench.rs` reads all of it before any of the
++//! head's code runs.
++
++use std::path::Path;
++
++use crate::bench_git;
++
++/// An ADR the push adds (`bench_git::added_adrs`): its text as pushed, and
++/// the text the owner stands behind (`owners`): the pushed one on a run for
++/// `main`; elsewhere `origin/main`'s copy, if the pushed file is that copy.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct Adr {
++    pub path: String,
++    pub text: String,
++    pub owners: Option<String>,
++}
++
++/// What the push's added ADRs say for a flagged benchmark.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum Excuse {
++    /// An ADR the owner accepted names it: it passes.
++    Accepted(String),
++    /// An ADR this push marked Accepted, off `main`, names it: pending
++    /// until the owner accepts it on `main`.
++    Unconfirmed(String),
++    /// Only ADRs not marked Accepted name it: it fails.
++    NotAccepted(String),
++}
++
++/// The ADRs added between the commits `base` and `head`, with `owners` set
++/// as [`Adr`] says: `on_main` is `bench_git::on_main`'s answer, `upstream`
++/// the commit `origin/main` named when the job started.
++pub fn push_adrs(
++    root: &Path,
++    base: &str,
++    head: &str,
++    on_main: bool,
++    upstream: Option<&str>,
++) -> Result<Vec<Adr>, String> {
++    let added = bench_git::added_adrs(root, base, head)?;
++    Ok(added
++        .into_iter()
++        .map(|(path, text)| {
++            let owners = if on_main {
++                Some(text.clone())
++            } else {
++                let copy = upstream.and_then(|sha| bench_git::blob(root, sha, &path));
++                copy.filter(|copy| *copy == text)
++            };
++            Adr { path, text, owners }
++        })
++        .collect())
++}
++
++/// Whether an ADR's status line, its first `- **Status:**` line, reads
++/// Accepted (perhaps with more after it, as ADR-0014's does).
++pub fn accepted(text: &str) -> bool {
++    let status = text.lines().find_map(|l| l.strip_prefix("- **Status:**"));
++    status.is_some_and(|s| {
++        let after = s.trim_start().strip_prefix("Accepted");
++        after.is_some_and(|rest| !rest.starts_with(char::is_alphanumeric))
++    })
++}
++
++/// Whether an ADR's text names `benchmark`: in backticks, exactly.
++pub fn names_benchmark(text: &str, benchmark: &str) -> bool {
++    text.contains(&format!("`{benchmark}`"))
++}
++
++/// The excuse `adrs` give `name`: an ADR whose owner's text is Accepted and
++/// names it; else one whose pushed text alone does (pending); else one
++/// whose pushed text names it unaccepted (failed).
++pub fn excuse(adrs: &[Adr], name: &str) -> Option<Excuse> {
++    let says = |text: &str| accepted(text) && names_benchmark(text, name);
++    if let Some(adr) = adrs.iter().find(|a| a.owners.as_deref().is_some_and(says)) {
++        return Some(Excuse::Accepted(adr.path.clone()));
++    }
++    if let Some(adr) = adrs.iter().find(|a| says(&a.text)) {
++        return Some(Excuse::Unconfirmed(adr.path.clone()));
++    }
++    let naming = adrs.iter().find(|a| names_benchmark(&a.text, name));
++    naming.map(|a| Excuse::NotAccepted(a.path.clone()))
++}
+diff --git a/xtask/src/bench_git.rs b/xtask/src/bench_git.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..ad2d6b09afac9c7f389d4597d6a086651c9b6603
+--- /dev/null
++++ b/xtask/src/bench_git.rs
+@@ -0,0 +1,182 @@
++//! The bench job's git side (`bench.rs`): which commit is the base, the
++//! ADRs the push adds, and the base's checkout.
++
++use std::fs;
++use std::path::Path;
++use std::process::Command;
++
++/// Where performance ADRs live: `docs/adr/NNNN-*.md`.
++pub const ADRS: &str = "docs/adr/";
++
++/// Where the base comes from.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum Request {
++    Given(String),
++    Event(String),
++    MergeBase,
++}
++
++/// Which base to look for: `--base`, else the push's `before`, unless it is
++/// empty or all zeros (a new branch), else a merge base with `main`.
++pub fn request(arg: Option<&str>, event: Option<&str>) -> Request {
++    if let Some(rev) = arg {
++        return Request::Given(rev.to_string());
++    }
++    match event.map(str::trim) {
++        Some(sha) if !sha.is_empty() && !sha.bytes().all(|b| b == b'0') => {
++            Request::Event(sha.to_string())
++        }
++        _ => Request::MergeBase,
++    }
++}
++
++/// `git <args>` in `dir`: its stdout as it is, or its stderr.
++fn raw(dir: &Path, args: &[&str]) -> Result<String, String> {
++    let out = Command::new("git")
++        .arg("-C")
++        .arg(dir)
++        .args(args)
++        .output()
++        .map_err(|e| format!("git: {e}"))?;
++    if out.status.success() {
++        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
++    } else {
++        Err(format!(
++            "git {}: {}",
++            args.join(" "),
++            String::from_utf8_lossy(&out.stderr).trim()
++        ))
++    }
++}
++
++/// `git <args>` in `dir`: its trimmed stdout, or its stderr.
++pub fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
++    raw(dir, args).map(|s| s.trim().to_string())
++}
++
++/// The commit `rev` names, as a full SHA.
++pub fn commit(dir: &Path, rev: &str) -> Result<String, String> {
++    let spec = format!("{rev}^{{commit}}");
++    git(dir, &["rev-parse", "--verify", "--quiet", &spec])
++}
++
++/// `path`'s bytes in the commit `sha`'s tree, exactly, if it has the file.
++pub fn blob(root: &Path, sha: &str, path: &str) -> Option<String> {
++    raw(root, &["cat-file", "-p", &format!("{sha}:{path}")]).ok()
++}
++
++/// Whether this run is for `main`, which only the owner pushes (ADR-0018):
++/// `github_ref` (CI's `GITHUB_REF`) is `refs/heads/main`, or, off CI, the
++/// branch checked out is `main`.
++pub fn on_main(root: &Path, github_ref: Option<&str>) -> bool {
++    match github_ref {
++        Some(r) => r == "refs/heads/main",
++        None => {
++            git(root, &["symbolic-ref", "--quiet", "--short", "HEAD"]).is_ok_and(|b| b == "main")
++        }
++    }
++}
++
++/// Whether tracked files differ from `HEAD` in the working tree at `root`.
++pub fn dirty(root: &Path) -> bool {
++    !git(root, &["status", "--porcelain", "--untracked-files=no"]).is_ok_and(|s| s.is_empty())
++}
++
++/// The base commit for `request`, and where it came from. Off `main`
++/// (`on_main` false) the push's `before` is the branch's own previous tip,
++/// so the base is the merge base of `HEAD` with `origin/main`: a second push
++/// cannot hide a regression the first brought. On `main`, a `before` the
++/// clone lacks, or that is not an ancestor of `HEAD` (a force-push), gives
++/// way to that merge base too. `--base` is taken as given.
++pub fn resolve(root: &Path, request: &Request, on_main: bool) -> Result<(String, String), String> {
++    let merge_base = |note: &str| -> Result<(String, String), String> {
++        let main = ["origin/main", "main"]
++            .into_iter()
++            .find(|m| commit(root, m).is_ok())
++            .ok_or("[E-BENCH] no origin/main or main to take a merge base with; pass --base REV")?;
++        let sha = git(root, &["merge-base", "HEAD", main])?;
++        Ok((sha, format!("{note}the merge base of HEAD with {main}")))
++    };
++    match request {
++        Request::Given(rev) => commit(root, rev)
++            .map(|sha| (sha, format!("--base {rev}")))
++            .map_err(|_| format!("[E-BENCH] --base {rev} is not a commit here")),
++        Request::Event(_) if !on_main => merge_base("off main, not the push's before: "),
++        Request::Event(sha) => match commit(root, sha) {
++            Ok(full) if git(root, &["merge-base", "--is-ancestor", &full, "HEAD"]).is_ok() => {
++                Ok((full, "the push's before (ENG_BENCH_BASE)".into()))
++            }
++            Ok(_) => merge_base(&format!("{sha} is not an ancestor of HEAD; ")),
++            Err(_) => merge_base(&format!("{sha} is not in this clone; ")),
++        },
++        Request::MergeBase => merge_base(""),
++    }
++}
++
++/// Whether `path` names an ADR: `docs/adr/NNNN-<title>.md`.
++pub fn is_adr_file(path: &str) -> bool {
++    let Some(name) = path.strip_prefix(ADRS) else {
++        return false;
++    };
++    let b = name.as_bytes();
++    !name.contains('/')
++        && name.len() > "0000-.md".len()
++        && b[..4].iter().all(u8::is_ascii_digit)
++        && b[4] == b'-'
++        && name.ends_with(".md")
++}
++
++/// The ADRs (`docs/adr/NNNN-*.md`) added between the commits `base` and
++/// `head`, absent from `base`, each with its bytes at `head`. Other files
++/// there do not count, nor a renamed or changed ADR.
++pub fn added_adrs(root: &Path, base: &str, head: &str) -> Result<Vec<(String, String)>, String> {
++    let names = git(
++        root,
++        &[
++            "diff",
++            "--name-only",
++            "--diff-filter=A",
++            "--find-renames",
++            "-z",
++            base,
++            head,
++            "--",
++            ADRS,
++        ],
++    )?;
++    names
++        .split('\0')
++        .filter(|path| is_adr_file(path) && blob(root, base, path).is_none())
++        .map(|path| {
++            let text =
++                blob(root, head, path).ok_or(format!("[E-BENCH] {head}:{path} unreadable"))?;
++            Ok((path.to_string(), text))
++        })
++        .collect()
++}
++
++/// Runs `f` in a detached worktree of `sha` at `target/bench/tree`, removed
++/// again afterwards. Its checkout runs no hooks.
++pub fn in_worktree<T>(
++    root: &Path,
++    sha: &str,
++    f: impl FnOnce(&Path) -> Result<T, String>,
++) -> Result<T, String> {
++    let dir = root.join("target/bench/tree");
++    let path = dir.to_string_lossy().into_owned();
++    let _ = git(root, &["worktree", "remove", "--force", &path]);
++    let _ = fs::remove_dir_all(&dir);
++    git(root, &["worktree", "prune"])?;
++    let hooks = "core.hooksPath=/dev/null";
++    let add = [
++        "-c", hooks, "worktree", "add", "--detach", "--force", &path, sha,
++    ];
++    git(root, &add)?;
++    let result = f(&dir);
++    let _ = git(root, &["worktree", "remove", "--force", &path]);
++    result
++}
++
++#[cfg(test)]
++#[path = "bench_git_tests.rs"]
++mod tests;
+diff --git a/xtask/src/bench_git_tests.rs b/xtask/src/bench_git_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..b59297c2a32085c74c975e5d44179d4e25695e5f
+--- /dev/null
++++ b/xtask/src/bench_git_tests.rs
+@@ -0,0 +1,266 @@
++//! The bench job's git side (`bench_git.rs`): which files are ADRs, the
++//! choice of base, the ADRs a push adds and whose acceptance counts
++//! (`bench_adr.rs`), from temporary repositories.
++
++use std::fs;
++use std::path::{Path, PathBuf};
++use std::process::Command;
++use std::sync::atomic::{AtomicU32, Ordering};
++
++use super::*;
++use crate::bench_adr::{Excuse, excuse, names_benchmark, push_adrs};
++
++/// An ADR's text, with `status`, naming each of `named` in backticks.
++fn adr_text(status: &str, named: &[&str]) -> String {
++    let names: Vec<String> = named.iter().map(|n| format!("`{n}`")).collect();
++    format!(
++        "# ADR-0099: Slower\n\n- **Status:** {status}\n- **Date:** 2026-11-07\n\nSlower: {}.\n",
++        names.join(", ")
++    )
++}
++#[test]
++fn only_numbered_markdown_files_in_docs_adr_are_adrs() {
++    for yes in ["docs/adr/0025-perf.md", "docs/adr/0100-a-b.md"] {
++        assert!(is_adr_file(yes), "{yes}");
++    }
++    for no in [
++        "docs/adr/0025-perf.txt",
++        "docs/adr/README.md",
++        "docs/adr/025-perf.md",
++        "docs/adr/0025perf.md",
++        "docs/adr/0025-.md",
++        "docs/adr/old/0025-perf.md",
++        "docs/0025-perf.md",
++        "docs/adr/",
++    ] {
++        assert!(!is_adr_file(no), "{no}");
++    }
++}
++
++#[test]
++fn the_base_is_the_argument_then_the_push_then_a_merge_base() {
++    let sha = "0123456789abcdef0123456789abcdef01234567";
++    let zeros = "0000000000000000000000000000000000000000";
++    assert_eq!(request(Some("v1"), Some(sha)), Request::Given("v1".into()));
++    assert_eq!(request(None, Some(sha)), Request::Event(sha.into()));
++    assert_eq!(
++        request(None, Some(&format!(" {sha}\n"))),
++        Request::Event(sha.into())
++    );
++    for new_branch in [Some(zeros), Some(""), Some("  "), None] {
++        assert_eq!(
++            request(None, new_branch),
++            Request::MergeBase,
++            "{new_branch:?}"
++        );
++    }
++}
++
++/// How an added, Accepted ADR naming `a::slow` is judged, from a
++/// repository: on a push to `main`; off it, when `origin/main` already has
++/// it, byte for byte; when the push marked it Accepted itself; when
++/// `origin/main` has it Accepted but the push edited it to name `a::slow`;
++/// and when the pushed file differs from `origin/main`'s by one byte.
++#[test]
++fn only_the_owners_acceptance_excuses() {
++    let dir = repo();
++    let fork = git(&dir, &["rev-parse", "HEAD"]);
++    let slow = adr_text("Accepted", &["a::slow"]);
++    // `origin/main` has 0096 and 0098 as the branch will, 0097 naming
++    // `a::other` only.
++    commit(&dir, "docs/adr/0096-spaced.md", &slow);
++    let other = adr_text("Accepted", &["a::other"]);
++    commit(&dir, "docs/adr/0097-edited.md", &other);
++    commit(&dir, "docs/adr/0098-upstream.md", &slow);
++    let upstream = git(&dir, &["rev-parse", "HEAD"]);
++    // The agent branch adds all four, each naming `a::slow`.
++    git(&dir, &["checkout", "-q", "-b", "agent/x", &fork]);
++    commit(&dir, "docs/adr/0096-spaced.md", &format!("{slow}\n"));
++    commit(&dir, "docs/adr/0097-edited.md", &slow);
++    commit(&dir, "docs/adr/0098-upstream.md", &slow);
++    let head = commit(&dir, "docs/adr/0099-mine.md", &slow);
++    let judged = |on_main: bool| -> Vec<Option<Excuse>> {
++        let adrs = push_adrs(&dir, &fork, &head, on_main, Some(&upstream)).unwrap();
++        assert_eq!(adrs.len(), 4);
++        adrs.iter()
++            .map(|a| excuse(std::slice::from_ref(a), "a::slow"))
++            .collect()
++    };
++    let (yes, wait) = (Excuse::Accepted, Excuse::Unconfirmed);
++    let path = |p: &str| format!("docs/adr/{p}.md");
++    assert_eq!(
++        judged(false),
++        [
++            Some(wait(path("0096-spaced"))),
++            Some(wait(path("0097-edited"))),
++            Some(yes(path("0098-upstream"))),
++            Some(wait(path("0099-mine"))),
++        ],
++        "off main, only origin/main's identical copy counts"
++    );
++    assert_eq!(
++        judged(true).into_iter().flatten().collect::<Vec<_>>(),
++        ["0096-spaced", "0097-edited", "0098-upstream", "0099-mine"].map(|p| yes(path(p))),
++        "a push to main is the owner's"
++    );
++    let adrs = push_adrs(&dir, &fork, &head, false, Some(&upstream)).unwrap();
++    assert_eq!(
++        excuse(&adrs, "a::other"),
++        None,
++        "not what the pushed 0097 names"
++    );
++    // An ADR already in the base excuses nothing, even on main: from
++    // origin/main's commit only 0099 is new.
++    let new = push_adrs(&dir, &upstream, &head, true, Some(&upstream)).unwrap();
++    let paths: Vec<&str> = new.iter().map(|a| a.path.as_str()).collect();
++    assert_eq!(paths, [path("0099-mine")]);
++    // Which runs are for main: CI's ref, else the branch checked out.
++    assert!(on_main(&dir, Some("refs/heads/main")));
++    for other in [
++        "refs/heads/agent/x",
++        "refs/pull/7/merge",
++        "refs/heads/main2",
++    ] {
++        assert!(!on_main(&dir, Some(other)), "{other}");
++    }
++    assert!(!on_main(&dir, None), "agent/x is checked out");
++    git(&dir, &["checkout", "-q", "main"]);
++    assert!(on_main(&dir, None));
++    let _ = fs::remove_dir_all(&dir);
++}
++
++fn git(dir: &Path, args: &[&str]) -> String {
++    let out = Command::new("git")
++        .arg("-C")
++        .arg(dir)
++        .args(["-c", "user.name=t", "-c", "user.email=t@t"])
++        .args(["-c", "commit.gpgsign=false"])
++        .args(args)
++        .output()
++        .unwrap();
++    assert!(
++        out.status.success(),
++        "git {args:?}: {}",
++        String::from_utf8_lossy(&out.stderr)
++    );
++    String::from_utf8_lossy(&out.stdout).trim().to_string()
++}
++
++/// A repository on `main` with one commit holding an ADR.
++fn repo() -> PathBuf {
++    static NEXT: AtomicU32 = AtomicU32::new(0);
++    let n = NEXT.fetch_add(1, Ordering::Relaxed);
++    let dir = std::env::temp_dir().join(format!("xtask-bench-{}-{n}", std::process::id()));
++    let _ = fs::remove_dir_all(&dir);
++    fs::create_dir_all(dir.join("docs/adr/old")).unwrap();
++    // `-b`: git's default branch depends on the machine (Xcode's git: main).
++    git(&dir, &["init", "-q", "-b", "main"]);
++    commit(&dir, "docs/adr/0001-old.md", "# Old\n`a::old`\n");
++    dir
++}
++
++fn commit(dir: &Path, file: &str, text: &str) -> String {
++    fs::write(dir.join(file), text).unwrap();
++    git(dir, &["add", "-A"]);
++    git(dir, &["commit", "-q", "-m", file]);
++    git(dir, &["rev-parse", "HEAD"])
++}
++
++#[test]
++fn the_added_adrs_are_the_numbered_files_added_in_the_range() {
++    let dir = repo();
++    let base = git(&dir, &["rev-parse", "HEAD"]);
++    commit(
++        &dir,
++        "docs/adr/0001-old.md",
++        "# Old\n`a::old` `a::changed`\n",
++    );
++    commit(&dir, "docs/adr/0099-perf.md", "# Perf\nSlower: `a::new`.\n");
++    commit(&dir, "docs/adr/0100-perf.txt", "`a::new`\n");
++    commit(&dir, "docs/adr/old/0101-perf.md", "`a::new`\n");
++    commit(&dir, "notes.md", "`a::notes`\n");
++    let adrs = added_adrs(&dir, &base, "HEAD").unwrap();
++    let paths: Vec<&str> = adrs.iter().map(|(p, _)| p.as_str()).collect();
++    assert_eq!(
++        paths,
++        ["docs/adr/0099-perf.md"],
++        "changed and other files do not count"
++    );
++    assert!(names_benchmark(&adrs[0].1, "a::new"));
++    assert!(added_adrs(&dir, "HEAD", "HEAD").unwrap().is_empty());
++    assert!(!dirty(&dir));
++    fs::write(dir.join("notes.md"), "changed\n").unwrap();
++    assert!(dirty(&dir), "a changed tracked file");
++    let _ = fs::remove_dir_all(&dir);
++}
++
++/// On `main`: the push's `before` when it is an ancestor of `HEAD`, else
++/// the merge base. `resolve` runs on whatever is checked out; `on_main` is
++/// given, as CI's `GITHUB_REF` gives it.
++#[test]
++fn on_main_the_base_is_the_before_unless_it_is_off_the_branch() {
++    let dir = repo();
++    let fork = git(&dir, &["rev-parse", "HEAD"]);
++    let moved = commit(&dir, "docs/adr/0002-main.md", "main moved on\n");
++    git(&dir, &["checkout", "-q", "-b", "agent/x", &fork]);
++    let tip = commit(&dir, "work.md", "the branch\n");
++    let (sha, from) = resolve(&dir, &Request::MergeBase, true).unwrap();
++    assert_eq!(sha, fork);
++    assert_eq!(from, "the merge base of HEAD with main");
++    let absent = "0123456789abcdef0123456789abcdef01234567";
++    let (sha, from) = resolve(&dir, &Request::Event(absent.into()), true).unwrap();
++    assert_eq!(sha, fork);
++    assert!(
++        from.starts_with(&format!("{absent} is not in this clone; ")),
++        "{from}"
++    );
++    // A force-push: the old tip is here but not under HEAD.
++    let (sha, from) = resolve(&dir, &Request::Event(moved.clone()), true).unwrap();
++    assert_eq!(sha, fork);
++    assert!(
++        from.starts_with(&format!("{moved} is not an ancestor of HEAD; ")),
++        "{from}"
++    );
++    let (sha, from) = resolve(&dir, &Request::Event(fork.clone()), true).unwrap();
++    assert_eq!(
++        (sha.as_str(), from.as_str()),
++        (fork.as_str(), "the push's before (ENG_BENCH_BASE)")
++    );
++    assert_eq!(
++        resolve(&dir, &Request::Given("HEAD".into()), true)
++            .unwrap()
++            .0,
++        tip
++    );
++    assert!(resolve(&dir, &Request::Given("nothing".into()), true).is_err());
++    let _ = fs::remove_dir_all(&dir);
++}
++
++/// Off `main` the push's `before` is the branch's own last tip, so the base
++/// is always the merge base with `origin/main`: a second push that leaves
++/// a regression in place is still compared with main.
++#[test]
++fn off_main_the_base_is_the_merge_base_with_origin_main() {
++    let dir = repo();
++    let fork = git(&dir, &["rev-parse", "HEAD"]);
++    commit(&dir, "docs/adr/0002-main.md", "main moved on\n");
++    git(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
++    git(&dir, &["checkout", "-q", "-b", "agent/x", &fork]);
++    let first = commit(&dir, "slow.md", "the regression\n");
++    commit(&dir, "more.md", "a second push\n");
++    let (sha, from) = resolve(&dir, &Request::Event(first.clone()), false).unwrap();
++    assert_eq!(sha, fork, "not the first push's tip {first}");
++    assert_eq!(
++        from,
++        "off main, not the push's before: the merge base of HEAD with origin/main"
++    );
++    assert_eq!(resolve(&dir, &Request::MergeBase, false).unwrap().0, fork);
++    assert_eq!(
++        resolve(&dir, &Request::Given(first.clone()), false)
++            .unwrap()
++            .0,
++        first,
++        "--base is taken as given"
++    );
++    let _ = fs::remove_dir_all(&dir);
++}
+diff --git a/xtask/src/bench_tests.jsonl b/xtask/src/bench_tests.jsonl
+new file mode 100644
+index 0000000000000000000000000000000000000000..45cb8115eb150bf5b686afceb3566ea1fd8440fb
+--- /dev/null
++++ b/xtask/src/bench_tests.jsonl
+@@ -0,0 +1,3 @@
++{"baselines":[],"benchmark_file":"crates/eng-bench/benches/sim/main.rs","function_name":"room","group":"tick","id":"walk","kind":"LibraryBenchmark","module_path":"sim::tick::room","version":"7","profiles":[{"tool":"Callgrind","data":{"total":{"metrics":{"Ir":{"values":{"new":17912}},"EstimatedCycles":{"values":{"new":24785}}},"regressions":[]}}}]}
++sim::build::room_build
++{"baselines":[],"benchmark_file":"crates/eng-bench/benches/sim/main.rs","function_name":"room_build","group":"build","kind":"LibraryBenchmark","module_path":"sim::build::room_build","version":"7","profiles":[{"tool":"Callgrind","data":{"total":{"metrics":{"Ir":{"values":{"new":229056}},"EstimatedCycles":{"values":{"new":373128}}},"regressions":[]}}}]}
+diff --git a/xtask/src/bench_tests.rs b/xtask/src/bench_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..4a94b308039c796ca94de44bed1fcc89dfaeb29e
+--- /dev/null
++++ b/xtask/src/bench_tests.rs
+@@ -0,0 +1,374 @@
++//! The bench job's rules (`bench.rs`, `bench_adr.rs`): reading gungraun's
++//! summaries, the 5% limit, the owner-accepted ADR exception, when the job
++//! is pending, and the workflow that runs it. The git side, from temporary
++//! repositories, is `bench_git_tests.rs`.
++
++use std::fs;
++use std::path::Path;
++
++use super::*;
++use crate::bench_adr::{Adr, Excuse, accepted, excuse, names_benchmark};
++
++fn count(name: &str, instructions: u64) -> Count {
++    Count {
++        name: name.into(),
++        instructions,
++    }
++}
++
++const PERF: &str = "docs/adr/0099-perf.md";
++
++/// An ADR's text, with `status`, naming each of `named` in backticks.
++fn adr_text(status: &str, named: &[&str]) -> String {
++    let names: Vec<String> = named.iter().map(|n| format!("`{n}`")).collect();
++    format!(
++        "# ADR-0099: Slower\n\n- **Status:** {status}\n- **Date:** 2026-11-07\n\nSlower: {}.\n",
++        names.join(", ")
++    )
++}
++
++/// An added ADR at `path` whose text is the owner's (`owners`), as on a
++/// push to `main`.
++fn adr(path: &str, status: &str, named: &[&str]) -> Adr {
++    let text = adr_text(status, named);
++    Adr {
++        path: path.into(),
++        owners: Some(text.clone()),
++        text,
++    }
++}
++
++fn accepted_naming(named: &[&str]) -> Vec<Adr> {
++    vec![adr(PERF, "Accepted", named)]
++}
++
++/// The verdict's detail, which must be a pass.
++fn passed(rows: &[Row]) -> String {
++    match verdict(rows) {
++        Ok(Done::Pass(detail)) => detail,
++        other => panic!("not a pass: {other:?}"),
++    }
++}
++
++#[test]
++fn the_limit_is_five_percent_in_integers() {
++    assert!(!over_limit(105, 100), "exactly 5% passes");
++    assert!(over_limit(106, 100));
++    assert!(!over_limit(2_100_000, 2_000_000));
++    assert!(over_limit(2_100_001, 2_000_000), "one instruction over");
++    assert!(!over_limit(0, 0));
++    assert!(over_limit(1, 0), "anything over a zero count");
++    assert!(!over_limit(u64::MAX, u64::MAX), "no overflow");
++}
++
++#[test]
++fn a_slower_benchmark_fails_unless_an_accepted_adr_names_it() {
++    let base = [count("a::slow", 1000), count("a::same", 1000)];
++    let head = [count("a::slow", 1051), count("a::same", 1050)];
++    let rows = compare(&head, &base, &[]);
++    assert!(rows[0].flagged && rows[0].excuse.is_none());
++    assert!(!rows[1].flagged);
++    let error = verdict(&rows).unwrap_err();
++    assert!(
++        error.contains("[E-BENCH]") && error.contains("a::slow"),
++        "{error}"
++    );
++    assert!(!error.contains("a::same,"), "{error}");
++    assert!(
++        error.contains("a::slow: 1000 -> 1051 (+5.10%), over"),
++        "{error}"
++    );
++    assert!(warnings(&rows).is_empty());
++
++    let rows = compare(&head, &base, &accepted_naming(&["a::slow"]));
++    assert_eq!(rows[0].excuse, Some(Excuse::Accepted(PERF.into())));
++    let detail = passed(&rows);
++    assert!(
++        detail.contains("a::slow: 1000 -> 1051 (+5.10%), over, excused by docs/adr/0099-perf.md"),
++        "{detail}"
++    );
++    assert!(
++        detail.contains("a::same: 1000 -> 1050 (+5.00%), within"),
++        "{detail}"
++    );
++    let warned = "[W-BENCH-EXCUSED] a::slow +5.10% excused by docs/adr/0099-perf.md";
++    assert_eq!(warnings(&rows), [warned]);
++    assert!(
++        detail.ends_with(warned),
++        "the excuse is the detail's last line: {detail}"
++    );
++}
++
++#[test]
++fn a_proposed_adr_does_not_excuse_and_says_the_owner_must_accept_it() {
++    let rows = compare(
++        &[count("a::slow", 2000)],
++        &[count("a::slow", 1000)],
++        &[adr(PERF, "Proposed", &["a::slow"])],
++    );
++    assert_eq!(rows[0].excuse, Some(Excuse::NotAccepted(PERF.into())));
++    let error = verdict(&rows).unwrap_err();
++    assert!(
++        error.contains(
++            "docs/adr/0099-perf.md names it but is not Accepted: the owner must accept it"
++        ),
++        "{error}"
++    );
++    assert!(warnings(&rows).is_empty());
++    let both = [
++        adr("docs/adr/0098-draft.md", "Proposed", &["a::slow"]),
++        adr(PERF, "Accepted", &["a::slow"]),
++    ];
++    assert_eq!(
++        excuse(&both, "a::slow"),
++        Some(Excuse::Accepted(PERF.into()))
++    );
++}
++
++/// Off `main`, an ADR the push marked Accepted itself excuses nothing yet:
++/// the step is pending until the owner accepts it on `main`.
++#[test]
++fn a_self_accepted_adr_off_main_leaves_the_step_pending() {
++    let base = [count("a::slow", 1000), count("a::fine", 10)];
++    let head = [count("a::slow", 2000), count("a::fine", 10)];
++    let mine = Adr {
++        owners: None,
++        ..adr(PERF, "Accepted", &["a::slow"])
++    };
++    let rows = compare(&head, &base, std::slice::from_ref(&mine));
++    assert_eq!(rows[0].excuse, Some(Excuse::Unconfirmed(PERF.into())));
++    // Accepted on origin/main without the name, the name added by the push.
++    let edited = Adr {
++        owners: Some(adr_text("Accepted", &["a::other"])),
++        ..mine.clone()
++    };
++    assert_eq!(
++        excuse(std::slice::from_ref(&edited), "a::slow"),
++        Some(Excuse::Unconfirmed(PERF.into()))
++    );
++    assert_eq!(
++        excuse(&[edited], "a::other"),
++        Some(Excuse::Accepted(PERF.into())),
++        "what origin/main's copy names"
++    );
++    let warned = "[W-BENCH-EXCUSED] a::slow +100.00% excused once the owner accepts \
++                  docs/adr/0099-perf.md on main";
++    assert_eq!(warnings(&rows), [warned]);
++    match verdict(&rows) {
++        Ok(Done::Pending(detail)) => {
++            assert!(
++                detail.contains("a::slow excused once the owner accepts"),
++                "{detail}"
++            );
++            assert!(detail.ends_with(warned), "{detail}");
++        }
++        other => panic!("not pending: {other:?}"),
++    }
++    // A failure elsewhere still fails the step.
++    let worse = [count("a::slow", 2000), count("a::fine", 20)];
++    assert!(verdict(&compare(&worse, &base, &[mine])).is_err());
++}
++
++#[test]
++fn the_status_line_must_read_accepted() {
++    let status = |line: &str| format!("# ADR-0099: X\n\n{line}\n- **Date:** 2026-11-07\n");
++    assert!(accepted(&status("- **Status:** Accepted")));
++    assert!(accepted(&status(
++        "- **Status:** Accepted; its push rule is amended by ADR-0018 (2026-11-01)"
++    )));
++    assert!(accepted(&status("- **Status:**  Accepted (the owner, G4)")));
++    for no in [
++        "- **Status:** Proposed",
++        "- **Status:** Superseded by ADR-0030",
++        "- **Status:** Acceptedish",
++        "- **Status:** Not Accepted",
++        "Status: Accepted",
++        "",
++    ] {
++        assert!(!accepted(&status(no)), "{no:?}");
++    }
++    let later = "# X\n\n- **Status:** Proposed\n\n- **Status:** Accepted\n";
++    assert!(!accepted(later), "the first status line counts");
++}
++
++#[test]
++fn an_adr_excuses_only_what_is_flagged() {
++    let rows = compare(
++        &[count("a::fast", 10)],
++        &[count("a::fast", 20)],
++        &accepted_naming(&["a::fast"]),
++    );
++    assert_eq!(rows[0].excuse, None);
++    assert!(passed(&rows).contains("(-50.00%), within"));
++    assert!(warnings(&rows).is_empty());
++}
++
++#[test]
++fn new_benchmarks_pass_and_removed_ones_fail_unless_named() {
++    let base = [count("a::kept", 7), count("a::gone", 9)];
++    let head = [count("a::new", 3), count("a::kept", 7)];
++    let rows = compare(&head, &base, &[]);
++    let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
++    assert_eq!(
++        names,
++        ["a::new", "a::kept", "a::gone"],
++        "head order, then the base's"
++    );
++    assert_eq!((rows[0].head, rows[0].base), (Some(3), None));
++    assert!(!rows[0].flagged);
++    assert_eq!((rows[2].head, rows[2].base), (None, Some(9)));
++    let error = verdict(&rows).unwrap_err();
++    assert!(error.contains("a::gone: 9 -> -, removed"), "{error}");
++    assert!(error.contains("a::new: - -> 3, new"), "{error}");
++    let rows = compare(&head, &base, &accepted_naming(&["a::gone"]));
++    passed(&rows);
++    assert_eq!(
++        warnings(&rows),
++        ["[W-BENCH-EXCUSED] a::gone removed excused by docs/adr/0099-perf.md"]
++    );
++}
++
++#[test]
++fn a_base_without_benchmarks_makes_every_one_new() {
++    let rows = compare(&[count("a::b", 5)], &[], &[]);
++    let detail = passed(&rows);
++    assert!(
++        detail.starts_with("1 benchmarks, none more than 5% over"),
++        "{detail}"
++    );
++    assert!(detail.contains("a::b: - -> 5, new"), "{detail}");
++}
++
++#[test]
++fn an_adr_names_a_benchmark_only_in_backticks_and_whole() {
++    let text = "Slower `sim::tick::room::walk` and sim::build::room_build, for the new grid.";
++    assert!(names_benchmark(text, "sim::tick::room::walk"));
++    assert!(
++        !names_benchmark(text, "sim::build::room_build"),
++        "not in backticks"
++    );
++    assert!(!names_benchmark(text, "sim::tick::room"), "a prefix");
++    assert!(!names_benchmark(text, "tick::room::walk"), "a suffix");
++}
++
++#[test]
++fn it_is_pending_off_linux_and_without_the_tools() {
++    let valgrind = Some("valgrind-3.22.0");
++    let runner = Some("gungraun-runner 0.20.0");
++    assert_eq!(missing("linux", valgrind, runner), None);
++    let mac = missing("macos", valgrind, runner).unwrap();
++    assert!(mac.contains("Linux") && mac.contains("macos"), "{mac}");
++    let no_valgrind = missing("linux", None, runner).unwrap();
++    assert!(
++        no_valgrind.contains("valgrind is not installed"),
++        "{no_valgrind}"
++    );
++    let no_runner = missing("linux", valgrind, None).unwrap();
++    assert!(
++        no_runner.contains("cargo install --locked gungraun-runner@0.20.0"),
++        "{no_runner}"
++    );
++    let old = missing("linux", valgrind, Some("gungraun-runner 0.19.1")).unwrap();
++    assert!(old.contains("0.19.1") && old.contains("--force"), "{old}");
++    assert!(missing("linux", valgrind, Some("gungraun-runner 0.20.0.1")).is_some());
++}
++
++#[test]
++fn the_command_line_takes_only_a_base() {
++    assert_eq!(parse(&[]), Ok(None));
++    assert_eq!(parse(&["--base", "abc"]), Ok(Some("abc".into())));
++    for bad in [
++        &["--base"][..],
++        &["abc"],
++        &["--base", "--x"],
++        &["--base", "a", "b"],
++    ] {
++        assert!(parse(bad).is_err(), "{bad:?}");
++    }
++}
++
++/// Two summaries as gungraun 0.20.0 printed them with
++/// `GUNGRAUN_OUTPUT_FORMAT=json` in T17's Docker run (Linux x64) of the
++/// final layout, each cut to its names and two of its metrics; one with an
++/// `id` and one without, and a line of other output between.
++const SUMMARIES: &str = include_str!("bench_tests.jsonl");
++
++#[test]
++fn counts_come_from_gungraun_json_lines() {
++    let counts = parse_counts(SUMMARIES).unwrap();
++    let names: Vec<&str> = counts.iter().map(|c| c.name.as_str()).collect();
++    assert_eq!(names, ["sim::tick::room::walk", "sim::build::room_build"]);
++    assert!(counts.iter().all(|c| c.instructions > 1000), "{counts:?}");
++    let old = r#"{"module_path":"a::b","profiles":[{"tool":"Callgrind","data":{"total":{"metrics":{"Ir":{"values":{"new":7,"old":9}}}}}}]}"#;
++    assert_eq!(
++        parse_counts(old).unwrap(),
++        [count("a::b", 7)],
++        "this run's count, not gungraun's previous one"
++    );
++}
++
++#[test]
++fn a_summary_without_a_count_or_a_repeated_name_is_an_error() {
++    let first = SUMMARIES.lines().find(|l| l.starts_with('{')).unwrap();
++    let twice = format!("{first}\n{first}\n");
++    let error = parse_counts(&twice).unwrap_err();
++    assert!(
++        error.contains("two benchmarks are named sim::tick::room::walk"),
++        "{error}"
++    );
++    let empty = r#"{"module_path": "a::b", "id": "c", "profiles": []}"#;
++    let error = parse_counts(empty).unwrap_err();
++    assert!(error.contains("a::b::c: no callgrind Ir"), "{error}");
++    assert_eq!(parse_counts("running 0 tests\n{not json\n"), Ok(Vec::new()));
++}
++
++/// The workflow's job runs on pushes and pull requests only, installs the
++/// runner of eng-bench's gungraun, fetches the history the base needs and
++/// passes the push's `before`; the summary collects its report, and the
++/// gate lets it be skipped only where its `if` skips it
++/// (`t17-workflow-bench.patch`, beside this one).
++#[test]
++fn the_workflow_and_the_workspace_agree_with_the_job() {
++    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
++        .parent()
++        .expect("xtask sits in the repo root");
++    let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap();
++    let job = |name: &str| {
++        workflow
++            .split(&format!("\n  {name}:\n"))
++            .nth(1)
++            .and_then(|rest| rest.split("\n\n  ").next())
++            .unwrap_or_else(|| panic!("ci.yml has a {name} job"))
++            .to_string()
++    };
++    let bench = job("bench");
++    for wanted in [
++        "if: github.event_name == 'push' || github.event_name == 'pull_request'",
++        "runs-on: ubuntu-24.04",
++        "fetch-depth: 0",
++        "apt-get install -y -qq valgrind",
++        &format!("cargo install --locked gungraun-runner@{RUNNER_VERSION}"),
++        "ENG_BENCH_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}",
++        "run: cargo xtask ci --job bench",
++        "name: report-bench",
++    ] {
++        assert!(bench.contains(wanted), "the bench job has no `{wanted}`");
++    }
++    for name in ["summary", "ci"] {
++        let needs = job(name);
++        let list = needs
++            .split("needs: [")
++            .nth(1)
++            .and_then(|r| r.split(']').next());
++        assert!(
++            list.is_some_and(|l| l.split(", ").any(|j| j == "bench")),
++            "{name} does not wait for bench"
++        );
++    }
++    assert!(job("ci").contains("BENCH: ${{ needs.bench.result }}"));
++    let manifest = fs::read_to_string(root.join("Cargo.toml")).unwrap();
++    assert!(
++        manifest.contains(&format!("\ngungraun = \"={RUNNER_VERSION}\"\n")),
++        "the workspace's gungraun is not {RUNNER_VERSION}"
++    );
++}
+diff --git a/xtask/src/ci.rs b/xtask/src/ci.rs
+index 27de6902583dab2676c3af16e89dce78535b9ea3..032dfcfdca43a4fc1109c0d4fe8c0e0524a45b64 100644
+--- a/xtask/src/ci.rs
++++ b/xtask/src/ci.rs
+@@ -9,12 +9,14 @@ use std::process::Command;
+ use std::time::Instant;
+ 
+ use crate::util::{self, Steps};
+-use crate::{arch, ci_durations, ci_native, ci_report, ci_verdicts, docs, replay, selftest, size};
++use crate::{
++    arch, bench, ci_durations, ci_native, ci_report, ci_verdicts, docs, replay, selftest, size,
++};
+ 
+ /// The jobs `cargo xtask ci --job` runs, as its error and the usage text
+ /// (`main.rs`) list them.
+-pub const JOBS: [&str; 8] = [
+-    "lint", "test", "riscv", "wasm", "selftest", "native", "summary", "all",
++pub const JOBS: [&str; 9] = [
++    "lint", "test", "riscv", "wasm", "selftest", "native", "bench", "summary", "all",
+ ];
+ 
+ pub const RISCV: &str = "riscv64gc-unknown-linux-gnu";
+@@ -218,6 +220,10 @@ pub fn job(name: &str) -> Result<String, String> {
+             ci_native::steps(&root, &mut steps);
+             return ci_report::finish(&root, name, steps, started, ci_native::extra(&root));
+         }
++        "bench" => {
++            let extra = bench::steps_into(&root, None, &mut steps);
++            return ci_report::finish(&root, name, steps, started, extra);
++        }
+         "summary" => summary(&root, &mut steps),
+         "all" => {
+             lint(&root, &mut steps);
+diff --git a/xtask/src/main.rs b/xtask/src/main.rs
+index 0dc409da5819a062d86d8e76aea06b2e41f0ee2b..9edf82ebc49d60cff67cbe684ee0bc84ab1e218b 100644
+--- a/xtask/src/main.rs
++++ b/xtask/src/main.rs
+@@ -8,6 +8,9 @@
+ mod acceptance;
+ mod arch;
+ mod arch_scan;
++mod bench;
++mod bench_adr;
++mod bench_git;
+ mod ci;
+ mod ci_durations;
+ mod ci_native;
+@@ -40,7 +43,7 @@ use std::process::ExitCode;
+ 
+ const USAGE: &str = "\
+ cargo xtask quick                      fmt, clippy, arch, size, docs, tests, replays
+-cargo xtask ci --job <job>             a CI job: lint test riscv wasm selftest native summary all
++cargo xtask ci --job <job>             a CI job: lint test riscv wasm selftest native bench summary all
+ cargo xtask arch-check                 layering, core-set purity, crate-root attributes
+ cargo xtask size-check                 warn over 500 lines, fail over 1000
+ cargo xtask docs-check                 AGENTS.md at most 150 lines, no CLAUDE.md
+@@ -48,6 +51,7 @@ cargo xtask replay [--regen] [--target T] [--out DIR]
+                                        run the testbed scenarios, compare hash streams
+ cargo xtask compare-hashes DIR DIR...  cross-architecture equality of hash streams
+ cargo xtask selftest [CASE]            deliberate violations must fail
++cargo xtask bench [--base REV]         instruction counts: the head against the push's base (Linux)
+ cargo xtask acceptance DIR             compute acceptance `passes` from CI job reports
+ cargo xtask oracle-check --base REV --head REV
+                                        CI: protected changes need the owner
+@@ -83,6 +87,8 @@ fn main() -> ExitCode {
+         ["selftest", rest @ ..] => {
+             selftest::cases(rest).and_then(|cases| run_lock::run(|| selftest::main(&cases)))
+         }
++        ["bench", rest @ ..] => bench::parse(rest)
++            .and_then(|base| run_lock::run(|| bench::run(&util::root()?, base.as_deref()))),
+         ["acceptance", dir] => util::root().and_then(|root| acceptance::compute(&root, dir)),
+         ["oracle-check", "--base", base, "--head", head] => oracle::check(base, head),
+         ["push", rest @ ..] => push::main(rest),

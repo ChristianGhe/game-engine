@@ -60,7 +60,7 @@ mod view;
 
 use std::process::ExitCode;
 
-use eng_cli::{Exit, GameDef, PlayRun};
+use eng_cli::{Exit, GameDef, GameMaps, PlayRun};
 use eng_platform_api::{Platform, PlatformError};
 use eng_platform_winit::WinitPlatform;
 
@@ -68,7 +68,8 @@ pub use clock::{Due, MAX_TICKS_PER_WAKE, TickClock};
 
 use crate::frame::Frames;
 
-/// Runs the probe with the process arguments, `play` included.
+/// Runs the probe with the process arguments, `play` included, for a game
+/// with one map.
 pub fn main(game: &GameDef) -> ExitCode {
     eng_cli::main_with_play(game, &play_in_window)
 }
@@ -76,6 +77,17 @@ pub fn main(game: &GameDef) -> ExitCode {
 /// Runs the probe with explicit arguments (without the program name).
 pub fn run_args(game: &GameDef, args: &[String]) -> Exit {
     eng_cli::run_args_with_play(game, args, &play_in_window)
+}
+
+/// [`main`] for a game with `maps`: `--map NAME` picks one, the first
+/// ([`GameDef::build`]) by default (ADR-0023).
+pub fn main_with_maps(game: &GameDef, maps: &GameMaps) -> ExitCode {
+    eng_cli::main_with_maps(game, maps, Some(&play_in_window))
+}
+
+/// [`main_with_maps`] with explicit arguments (without the program name).
+pub fn run_args_with_maps(game: &GameDef, maps: &GameMaps, args: &[String]) -> Exit {
+    eng_cli::run_args_with_maps(game, maps, args, Some(&play_in_window))
 }
 
 /// `play` in a window: the desktop platform, titled with the game's name.

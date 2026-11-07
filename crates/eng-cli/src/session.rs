@@ -10,7 +10,7 @@ use eng_session::{Client, Server, SessionError};
 use eng_sim::{RestoreError, Sim};
 
 use crate::GameDef;
-use crate::run::build_sim;
+use crate::maps::MapChoice;
 
 /// The in-process session: the server owns the authoritative sim, and the
 /// client, player 0's, restores every snapshot into a sim of its own.
@@ -20,14 +20,15 @@ pub(crate) struct Session {
 }
 
 impl Session {
-    /// A server and player 0's client, past the handshake. The other slots
-    /// have no client, so the server idles them. Also returns
-    /// `[E-SNAPSHOT-SIZE]` if the first snapshot does not fit a datagram.
-    pub fn start(game: &GameDef, players: u8, seed: u64) -> (Self, Option<String>) {
+    /// A server and player 0's client, both built from `map`, past the
+    /// handshake. The other slots have no client, so the server idles them.
+    /// Also returns `[E-SNAPSHOT-SIZE]` if the first snapshot does not fit a
+    /// datagram.
+    pub fn start(game: &GameDef, map: MapChoice, players: u8, seed: u64) -> (Self, Option<String>) {
         let net = MemoryNetwork::new();
-        let mut server = Server::new(build_sim(game, players, seed), net.endpoint());
+        let mut server = Server::new(map.build(game, players, seed), net.endpoint());
         let client = Client::connect(
-            build_sim(game, players, seed),
+            map.build(game, players, seed),
             net.endpoint(),
             server.local_id(),
         );

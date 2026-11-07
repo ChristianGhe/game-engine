@@ -1,19 +1,20 @@
 //! The JSON report and the short console summary.
 
-use eng_input::TickHash;
+use eng_input::{Bindings, InputScript, TickHash};
 use eng_math::Fnv1a64;
-use eng_schema_json::JsonValue;
+use eng_schema_json::{Authored, JsonValue};
 use eng_sim::Sim;
 
 use crate::args::RunArgs;
-use crate::assertions::{Status, Tracker};
-use crate::budgets::BudgetTracker;
+use crate::assertions::{AssertionFile, Status, Tracker};
+use crate::budgets::{BudgetFile, BudgetTracker};
 use crate::capture::CaptureSummary;
 use crate::{Exit, GameDef, version};
 
 /// The report's format. Version 2 carries the version stamp's `build`
 /// object; version 1 (rung 1a) had a smaller one. Keys are added within a
-/// version, as the `gpu` object and the `[gpu]` budgets were in rung 1b;
+/// version, as the `gpu` object and the `[gpu]` budgets were in rung 1b,
+/// and `map`, `sim_data_hash` and `files_read` in rung 2 (ADR-0023);
 /// readers look keys up by name (`docs/ARCHITECTURE.md`, "The report").
 pub(crate) const REPORT_VERSION: u64 = 2;
 
@@ -27,8 +28,30 @@ pub(crate) fn stream_digest(hashes: &[TickHash]) -> u64 {
     h.finish()
 }
 
+/// The format version of each file a run read, keyed as `--version
+/// --json`'s `formats` names them, plus `bindings` (`play --bindings`).
+/// Each reader accepts only its own version (no file format has a
+/// migration yet), so a file that loaded was read at that version.
+pub(crate) fn files_read(a: &RunArgs) -> JsonValue {
+    let bindings = a.play.as_ref().and_then(|p| p.bindings.as_ref());
+    let files = [
+        (a.input.is_some(), "input_script", InputScript::VERSION),
+        (a.assert.is_some(), "assertions", AssertionFile::VERSION),
+        (a.budgets.is_some(), "budgets", BudgetFile::VERSION),
+        (bindings.is_some(), "bindings", Bindings::FILE_VERSION),
+    ];
+    JsonValue::object(
+        files
+            .into_iter()
+            .filter(|(read, _, _)| *read)
+            .map(|(_, name, version)| (name, JsonValue::U64(version.into()))),
+    )
+}
+
 pub(crate) struct RunSummary<'a> {
     pub game: &'a GameDef,
+    /// The map's name (`--map`, or the game's first).
+    pub map: &'static str,
     pub args: &'a RunArgs,
     pub sim: &'a Sim,
     pub hashes: &'a [TickHash],
@@ -121,6 +144,7 @@ impl RunSummary<'_> {
             ("game", JsonValue::str(self.game.name)),
             ("build", version::build_json(self.game)),
             ("platform", JsonValue::str(self.platform)),
+            ("map", JsonValue::str(self.map)),
             ("seed", JsonValue::U64(self.args.seed)),
             ("players", JsonValue::U64(self.args.players.into())),
             ("tick_rate", JsonValue::U64(self.game.tick_rate.into())),
@@ -128,6 +152,7 @@ impl RunSummary<'_> {
             ("ticks_run", JsonValue::U64(self.sim.tick().0)),
             ("dropped_ticks", JsonValue::U64(self.dropped_ticks)),
             ("sim_protocol", JsonValue::hex(self.sim.protocol_version())),
+            ("sim_data_hash", JsonValue::hex(self.sim.sim_data_hash())),
             ("systems", JsonValue::Array(systems)),
             ("hash_every", JsonValue::U64(self.args.hash_every)),
             ("hashes_recorded", JsonValue::U64(self.hashes.len() as u64)),
@@ -149,6 +174,7 @@ impl RunSummary<'_> {
             ),
             ("assertions", JsonValue::Array(assertions)),
             ("budgets", JsonValue::object(budgets)),
+            ("files_read", files_read(self.args)),
             (
                 "gpu",
                 self.frames.map_or(JsonValue::Null, |f| self.gpu_json(f)),
@@ -280,6 +306,14 @@ impl RunSummary<'_> {
                 self.sim.protocol_version()
             ),
         ];
+        // A map without sim data (the dot's) keeps 1b's lines.
+        if self.sim.has_sim_data() {
+            lines.push(format!(
+                "map {}, sim data {:#018x}",
+                self.map,
+                self.sim.sim_data_hash()
+            ));
+        }
         let failed: Vec<&Tracker> = self.trackers.iter().filter(|t| !t.ok()).collect();
         if !self.trackers.is_empty() {
             lines.push(format!(

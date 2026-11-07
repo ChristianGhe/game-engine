@@ -17,6 +17,7 @@ pub(crate) const USAGE: &str = "\
 <game> --version [--json]
 <game> help
 
+run, dump-world, shot, video and play take [--map NAME]: the game's first map by default.
 exit codes: 0 ok, 10 assertion failed, 11 desync, 12 panic, 13 budget exceeded, 64 usage";
 
 /// Keeps per-tick timings and recordings within memory.
@@ -58,6 +59,8 @@ pub(crate) struct CaptureArgs {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct RunArgs {
+    /// `--map`: the map's name; `None` is the game's first map.
+    pub map: Option<String>,
     pub ticks: u64,
     pub seed: u64,
     pub players: u8,
@@ -198,6 +201,7 @@ fn parse_run(flags: &mut Flags<'_>, mode: Mode) -> Result<RunArgs, String> {
             "--ticks" if !at_a_tick => ticks = Some(flags.number(flag)?),
             "--at-tick" if at_a_tick => at_tick = Some(flags.number(flag)?),
             "--out" if !run && !play => out = Some(flags.path(flag)?),
+            "--map" => a.map = Some(flags.value(flag)?.to_string()),
             "--seed" => a.seed = flags.number(flag)?,
             "--players" if !play => a.players = flags.number(flag)?,
             "--input" => a.input = Some(flags.path(flag)?),

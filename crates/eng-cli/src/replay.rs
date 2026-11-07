@@ -1,14 +1,24 @@
 //! `replay verify` and `replay dump`.
+//!
+//! `replay verify` replays on the map whose sim-data hash is the
+//! recording's (ADR-0023): a 1b recording, hash 0, on the game's first map.
+//! No map with that hash exits 64 with `[E-RECORDING-BUILD]`, as another
+//! build's protocol, commits or compiler do.
 
 use std::fs;
 use std::path::Path;
 
 use eng_core::Tick;
-use eng_input::{Recording, read_recording};
+use eng_input::{RECORDING_VERSION, Recording, RecordingHeader, read_recording};
 use eng_schema_json::JsonValue;
+use eng_sim::Sim;
 
-use crate::run::{build_sim, hash, write_file};
+use crate::maps::{GameMaps, MapChoice};
+use crate::run::{hash, write_file};
 use crate::{ENGINE_SHA, Exit, GameDef, RUSTC_VERSION, exit, log, report, version};
+
+const BUILD_ONLY: &str =
+    "[E-RECORDING-BUILD] recordings are valid only for the build that made them";
 
 fn load(game: &GameDef, path: &Path) -> Result<Recording, Exit> {
     let bytes = fs::read(path)
@@ -21,7 +31,43 @@ fn load(game: &GameDef, path: &Path) -> Result<Recording, Exit> {
     Ok(recording)
 }
 
-pub(crate) fn verify(game: &GameDef, path: &Path, report_path: Option<&Path>) -> Exit {
+/// The map whose sim-data hash is the recording's, built at tick 0 for its
+/// session. The error is the `[E-RECORDING-BUILD]` line.
+///
+/// # Panics
+/// With `[E-MAP]` if the game's maps break the rules (`GameMaps::check`):
+/// then a hash would not name one map.
+pub(crate) fn pick_map(
+    game: &GameDef,
+    maps: &GameMaps,
+    h: &RecordingHeader,
+) -> Result<(MapChoice, Sim), String> {
+    let built = maps
+        .build_all(game, h.players, h.seed)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let hashes: Vec<String> = built
+        .iter()
+        .map(|(map, sim)| format!("{} {:#018x}", map.name(), sim.sim_data_hash()))
+        .collect();
+    built
+        .into_iter()
+        .find(|(_, sim)| sim.sim_data_hash() == h.sim_data_hash)
+        .ok_or_else(|| {
+            format!(
+                "{BUILD_ONLY}: sim_data_hash recorded {:#018x}, and no map of this build has \
+                 it ({})",
+                h.sim_data_hash,
+                hashes.join(", ")
+            )
+        })
+}
+
+pub(crate) fn verify(
+    game: &GameDef,
+    maps: &GameMaps,
+    path: &Path,
+    report_path: Option<&Path>,
+) -> Exit {
     let recording = match load(game, path) {
         Ok(r) => r,
         Err(exit) => return exit,
@@ -33,7 +79,11 @@ pub(crate) fn verify(game: &GameDef, path: &Path, report_path: Option<&Path>) ->
             &format!("[E-RECORDING] {} is a {} recording", path.display(), h.game),
         );
     }
-    let mut sim = build_sim(game, h.players, h.seed);
+    let (map, mut sim) = match pick_map(game, maps, h) {
+        Ok(picked) => picked,
+        Err(message) => return exit::usage(game.name, &message),
+    };
+    exit::note_tick(sim.tick());
     // In Level 1 a recording is valid only for the exact build in its header.
     let checks = [
         (
@@ -64,10 +114,7 @@ pub(crate) fn verify(game: &GameDef, path: &Path, report_path: Option<&Path>) ->
     if !mismatches.is_empty() {
         return exit::usage(
             game.name,
-            &format!(
-                "[E-RECORDING-BUILD] recordings are valid only for the build that made them: {}",
-                mismatches.join("; ")
-            ),
+            &format!("{BUILD_ONLY}: {}", mismatches.join("; ")),
         );
     }
 
@@ -103,6 +150,13 @@ pub(crate) fn verify(game: &GameDef, path: &Path, report_path: Option<&Path>) ->
         checked,
         sim.protocol_version()
     )];
+    if sim.has_sim_data() {
+        lines.push(format!(
+            "map {}, sim data {:#018x}",
+            map.name(),
+            sim.sim_data_hash()
+        ));
+    }
     if let Some((tick, recorded, replayed)) = divergence {
         lines.push(format!(
             "[E-DESYNC] first divergence at {tick}: recorded {recorded:#018x}, replayed {replayed:#018x}"
@@ -121,7 +175,14 @@ pub(crate) fn verify(game: &GameDef, path: &Path, report_path: Option<&Path>) ->
             ("command", JsonValue::str("replay verify")),
             ("game", JsonValue::str(game.name)),
             ("build", version::build_json(game)),
+            ("map", JsonValue::str(map.name())),
+            ("sim_protocol", JsonValue::hex(sim.protocol_version())),
+            ("sim_data_hash", JsonValue::hex(sim.sim_data_hash())),
             ("recording", JsonValue::str(path.display().to_string())),
+            (
+                "files_read",
+                JsonValue::object([("recording", JsonValue::U64(RECORDING_VERSION.into()))]),
+            ),
             ("ticks", JsonValue::U64(recording.ticks())),
             ("hashes_checked", JsonValue::U64(checked)),
             (

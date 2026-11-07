@@ -6,9 +6,13 @@
 //!   in sparse sets; iteration follows dense order, which is part of the state.
 //! - Systems are plain functions (see `eng-sim`). Structural changes made
 //!   while iterating go through [`Deferred`] and apply at the stage's sync point.
-//! - The whole world can be encoded canonically ([`World::visit_state`]),
+//! - The per-tick state can be encoded canonically ([`World::visit_state`]),
 //!   restored ([`World::decode_state`]) and dumped for agents
 //!   ([`World::visit_dump`]).
+//! - Constant resources ([`World::insert_constant`]) are sim data (ADR-0023):
+//!   registered like resources, read by systems, never changed once the
+//!   sim is built, and outside the per-tick state, so hashes and snapshots
+//!   leave them out ([`World::visit_constants`] walks them).
 #![no_std]
 #![forbid(unsafe_code)]
 

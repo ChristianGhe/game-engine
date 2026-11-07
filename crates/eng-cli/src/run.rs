@@ -20,6 +20,7 @@ use crate::args::RunArgs;
 use crate::assertions::{self, Tracker};
 use crate::budgets::BudgetTracker;
 use crate::capture::Capture;
+use crate::maps::{BuildFn, MapChoice};
 use crate::session::{Session, TickStop, command_for};
 use crate::ticker::{Flow, Ticker};
 use crate::{ENGINE_SHA, Exit, GameDef, RUSTC_VERSION, exit, log, report, version};
@@ -48,15 +49,16 @@ pub(crate) fn hash(sim: &Sim) -> u64 {
         .unwrap_or_else(|bad| panic!("[E-NAN] {bad} at {}", sim.tick()))
 }
 
-/// Builds the sim at tick 0 and tells the panic hook its seed and tick.
-pub(crate) fn build_sim(game: &GameDef, players: u8, seed: u64) -> Sim {
+/// Builds a map's sim at tick 0 with `build` (`GameDef::build` for the
+/// first map) and tells the panic hook its seed and tick.
+pub(crate) fn build_sim(game: &GameDef, build: BuildFn, players: u8, seed: u64) -> Sim {
     exit::note_seed(seed);
     let config = SimConfig {
         tick_rate: game.tick_rate,
         players,
         seed,
     };
-    let sim = (game.build)(config).unwrap_or_else(|e| panic!("[E-SCHEDULE] {e}"));
+    let sim = build(config).unwrap_or_else(|e| panic!("[E-SCHEDULE] {e}"));
     exit::note_tick(sim.tick());
     sim
 }
@@ -135,7 +137,7 @@ fn write_events(out: &mut impl Write, sim: &Sim) -> Result<u64, String> {
     Ok(count)
 }
 
-pub(crate) fn run(game: &GameDef, a: &RunArgs) -> Exit {
+pub(crate) fn run(game: &GameDef, map: MapChoice, a: &RunArgs) -> Exit {
     let mut inputs = match load_inputs(a) {
         Ok(inputs) => inputs,
         Err(message) => return exit::usage(game.name, &message),
@@ -151,7 +153,7 @@ pub(crate) fn run(game: &GameDef, a: &RunArgs) -> Exit {
         },
         None => None,
     };
-    let (mut session, too_large) = Session::start(game, a.players, a.seed);
+    let (mut session, too_large) = Session::start(game, map, a.players, a.seed);
     // After the session, so a panic while the GPU opens has the seed, and
     // before the first tick, so a missing adapter costs no run.
     let mut capture = match &a.capture {
@@ -256,13 +258,15 @@ pub(crate) fn run(game: &GameDef, a: &RunArgs) -> Exit {
 
     let stopped = inputs.budgets.exceeded.is_some();
     let frames = capture.as_ref().map(Capture::summary);
-    let outputs = write_outputs(game, a, sim, &hashes, recorded, events_out, stopped)
+    let outputs = flush_events(events_out)
+        .and_then(|()| write_outputs(game, map, a, sim, &hashes, recorded, stopped))
         .and_then(|()| write_frames(a, sim, capture));
     if let Err(message) = outputs {
         return exit::usage(game.name, &message);
     }
     let summary = report::RunSummary {
         game,
+        map: map.name(),
         args: a,
         sim,
         hashes: &hashes,
@@ -287,22 +291,27 @@ pub(crate) fn run(game: &GameDef, a: &RunArgs) -> Exit {
     exit
 }
 
+/// Finishes `--events`' file.
+fn flush_events(events_out: Option<BufWriter<File>>) -> Result<(), String> {
+    match events_out {
+        Some(mut out) => out.flush().map_err(|e| format!("writing events: {e}")),
+        None => Ok(()),
+    }
+}
+
 /// Writes the requested files. `stopped`: a budget stopped the run early,
 /// so the summary explains a missing dump (exit 13).
 pub(crate) fn write_outputs(
     game: &GameDef,
+    map: MapChoice,
     a: &RunArgs,
     sim: &Sim,
     hashes: &[TickHash],
     recorded: Vec<PlayerCommand>,
-    events_out: Option<BufWriter<File>>,
     stopped: bool,
 ) -> Result<(), String> {
-    if let Some(mut out) = events_out {
-        out.flush().map_err(|e| format!("writing events: {e}"))?;
-    }
     if let Some(path) = &a.hashes {
-        write_file(path, hash_stream(game, a, sim, hashes).as_bytes())?;
+        write_file(path, hash_stream(game, map, a, sim, hashes).as_bytes())?;
     }
     if let Some(path) = &a.record {
         let recording = Recording {
@@ -312,7 +321,7 @@ pub(crate) fn write_outputs(
                 game_sha: version::game_sha(game).to_string(),
                 rustc: RUSTC_VERSION.to_string(),
                 sim_protocol: sim.protocol_version(),
-                sim_data_hash: 0,
+                sim_data_hash: sim.sim_data_hash(),
                 seed: a.seed,
                 players: a.players,
                 tick_rate: game.tick_rate,
@@ -333,13 +342,25 @@ pub(crate) fn write_outputs(
                 sim.tick()
             ));
         }
-        let doc = JsonValue::object([
+        let mut doc = vec![
             ("game", JsonValue::str(game.name)),
             ("tick", JsonValue::U64(sim.tick().0)),
             ("sim_protocol", JsonValue::hex(sim.protocol_version())),
             ("world", dump(sim)),
-        ]);
-        write_file(path, doc.to_pretty().as_bytes())?;
+        ];
+        // Only a map with sim data adds these, so the dot's dumps keep their
+        // bytes and pointers (ADR-0023).
+        if sim.has_sim_data() {
+            doc.extend([
+                ("map", JsonValue::str(map.name())),
+                ("sim_data_hash", JsonValue::hex(sim.sim_data_hash())),
+                (
+                    "constants",
+                    JsonValue::from_walk(&|v| sim.world().visit_constants(v)),
+                ),
+            ]);
+        }
+        write_file(path, JsonValue::object(doc).to_pretty().as_bytes())?;
     }
     Ok(())
 }
@@ -360,9 +381,19 @@ fn write_frames(a: &RunArgs, sim: &Sim, capture: Option<Capture>) -> Result<(), 
 pub(crate) const HASH_STREAM_VERSION: u64 = 1;
 
 /// The committed text form of a hash stream: a header, then `tick hash`.
-fn hash_stream(game: &GameDef, a: &RunArgs, sim: &Sim, hashes: &[TickHash]) -> String {
+/// A map with sim data ends the header's second line with
+/// ` map=<name> sim_data=0x<16 hex>`, so `compare-hashes` holds the sim
+/// data equal across targets too (ADR-0023). A map without keeps 1b's
+/// header byte for byte.
+pub(crate) fn hash_stream(
+    game: &GameDef,
+    map: MapChoice,
+    a: &RunArgs,
+    sim: &Sim,
+    hashes: &[TickHash],
+) -> String {
     let mut out = format!(
-        "# eng hash stream v{HASH_STREAM_VERSION}\n# game={} seed={} players={} tick_rate={} hash_every={} sim_protocol={:#018x}\n",
+        "# eng hash stream v{HASH_STREAM_VERSION}\n# game={} seed={} players={} tick_rate={} hash_every={} sim_protocol={:#018x}",
         game.name,
         a.seed,
         a.players,
@@ -370,6 +401,14 @@ fn hash_stream(game: &GameDef, a: &RunArgs, sim: &Sim, hashes: &[TickHash]) -> S
         a.hash_every,
         sim.protocol_version()
     );
+    if sim.has_sim_data() {
+        out.push_str(&format!(
+            " map={} sim_data={:#018x}",
+            map.name(),
+            sim.sim_data_hash()
+        ));
+    }
+    out.push('\n');
     for h in hashes {
         out.push_str(&format!("{} {:#018x}\n", h.tick.0, h.hash));
     }

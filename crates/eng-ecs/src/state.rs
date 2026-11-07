@@ -1,4 +1,5 @@
-//! The world's canonical form (hashed, snapshotted) and its dump for agents.
+//! The world's canonical form (hashed, snapshotted), its dump for agents,
+//! and the constant resources (sim data), which are neither.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -11,9 +12,11 @@ use eng_schema_core::{DecodeError, Reader, Schema, Visitor};
 use crate::World;
 
 impl World {
-    /// Walks the canonical form: the entity allocator, then resources,
-    /// components (dense order) and this tick's events, each section in
-    /// stable-name order. The state hash is FNV-1a-64 over its encoding.
+    /// Walks the canonical form of the per-tick state: the entity allocator,
+    /// then resources, components (dense order) and this tick's events,
+    /// each section in stable-name order. The state hash is FNV-1a-64 over
+    /// its encoding. Constant resources are not part of it
+    /// ([`World::visit_constants`]).
     pub fn visit_state(&self, v: &mut dyn Visitor) {
         v.begin_struct("eng.ecs.World");
         v.field("entities");
@@ -61,6 +64,20 @@ impl World {
         v.end_seq();
         v.field("events");
         self.visit_events(v);
+        v.end_struct();
+    }
+
+    /// Walks the constant resources (sim data) as `{ <name>: value }`, in
+    /// stable-name order. Its canonical encoding is their values in that
+    /// order (the encoder writes no names): what `eng-sim` hashes into the
+    /// sim-data hash. Not part of [`World::visit_state`] or
+    /// [`World::visit_dump`].
+    pub fn visit_constants(&self, v: &mut dyn Visitor) {
+        v.begin_struct("eng.ecs.Constants");
+        for (name, value) in &self.constants {
+            v.field(name);
+            value.visit(v);
+        }
         v.end_struct();
     }
 

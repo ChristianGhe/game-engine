@@ -104,15 +104,28 @@ impl SimBuilder {
         self
     }
 
+    /// Resolves the system order, applies deferred changes, checks the
+    /// constant resources (sim data) finite and seals them, and computes
+    /// the protocol version and the sim-data hash.
+    ///
+    /// # Panics
+    /// If a constant resource holds a NaN or an infinity (`[E-NAN]`): it is
+    /// checked once, here, since it cannot change afterwards.
     pub fn build(mut self) -> Result<Sim, ScheduleError> {
         let systems = resolve(self.systems)?;
         self.world.apply_deferred();
+        if let Some(bad) = find_non_finite(&|v| self.world.visit_constants(v)) {
+            panic!("[E-NAN] in the sim data (constant resources): {bad}");
+        }
+        self.world.seal_constants();
         let protocol = protocol_version(&self.world, &systems, &self.config);
+        let sim_data_hash = sim_data_hash(&self.world);
         Ok(Sim {
             world: self.world,
             systems,
             config: self.config,
             protocol,
+            sim_data_hash,
         })
     }
 }
@@ -123,6 +136,7 @@ pub struct Sim {
     systems: Vec<System>,
     config: SimConfig,
     protocol: u64,
+    sim_data_hash: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,8 +221,24 @@ impl Sim {
 
     /// Hash of the registered schemas, the resolved system order and the
     /// tick rate. Recordings and hash streams are valid only for one value.
+    /// The constant resources' names and schemas are in it (a `constants`
+    /// section, only when there are any); their content is
+    /// [`Sim::sim_data_hash`].
     pub fn protocol_version(&self) -> u64 {
         self.protocol
+    }
+
+    /// FNV-1a-64 over the constant resources' canonical encoding (their
+    /// values in stable-name order, [`World::visit_constants`]), computed
+    /// when the sim is built; 0 for a sim without constant resources
+    /// (ADR-0023). Recordings carry it in their header's `sim_data_hash`.
+    pub fn sim_data_hash(&self) -> u64 {
+        self.sim_data_hash
+    }
+
+    /// Whether the sim has sim data: at least one constant resource.
+    pub fn has_sim_data(&self) -> bool {
+        self.world.constant_count() > 0
     }
 
     /// The resolved order, stage by stage.
@@ -251,8 +281,9 @@ impl Sim {
         Ok(())
     }
 
-    /// FNV-1a-64 over the canonical encoding of the whole world. Fails with
-    /// the entity and field path if any float is NaN or infinite.
+    /// FNV-1a-64 over the canonical encoding of the per-tick state (the
+    /// world without its constant resources). Fails with the entity and
+    /// field path if any float is NaN or infinite.
     pub fn state_hash(&self) -> Result<u64, NonFinite> {
         if let Some(bad) = find_non_finite(&|v| self.world.visit_dump(v)) {
             return Err(bad);
@@ -262,7 +293,7 @@ impl Sim {
         Ok(hash.finish())
     }
 
-    /// The world's canonical encoding.
+    /// The canonical encoding of the per-tick state (no constant resources).
     pub fn state_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         self.world.visit_state(&mut Encoder::new(&mut out));
@@ -276,7 +307,8 @@ impl Sim {
         counter.0
     }
 
-    /// The protocol version (u64, little-endian) followed by the state.
+    /// The protocol version (u64, little-endian) followed by the per-tick
+    /// state. The constant resources are not in it: both ends build them.
     pub fn snapshot(&self) -> Vec<u8> {
         let mut out = Vec::from(self.protocol.to_le_bytes());
         self.world.visit_state(&mut Encoder::new(&mut out));
@@ -339,11 +371,18 @@ fn protocol_version(world: &World, systems: &[System], config: &SimConfig) -> u6
     let mut h = Fnv1a64::new();
     put_str(&mut h, "eng.sim.protocol.v1");
     h.write(&config.tick_rate.to_le_bytes());
-    let kinds: [(&str, Vec<&str>); 3] = [
+    let mut kinds: Vec<(&str, Vec<&str>)> = Vec::from([
         ("components", world.component_names().collect()),
         ("resources", world.resource_names().collect()),
         ("events", world.event_names().collect()),
-    ];
+    ]);
+    // Only a world with constant resources gets the section, so a world
+    // without them hashes exactly as before they existed (ADR-0023). Their
+    // schemas are in the registry with every other type's.
+    let constants: Vec<&str> = world.constant_names().collect();
+    if !constants.is_empty() {
+        kinds.push(("constants", constants));
+    }
     for (label, names) in kinds {
         put_str(&mut h, label);
         h.write(&(names.len() as u64).to_le_bytes());
@@ -358,4 +397,14 @@ fn protocol_version(world: &World, systems: &[System], config: &SimConfig) -> u6
         put_str(&mut h, system.name());
     }
     h.finish()
+}
+
+/// [`Sim::sim_data_hash`]: 0 without constant resources.
+fn sim_data_hash(world: &World) -> u64 {
+    if world.constant_count() == 0 {
+        return 0;
+    }
+    let mut hash = Fnv1a64::new();
+    world.visit_constants(&mut Encoder::new(&mut hash));
+    hash.finish()
 }

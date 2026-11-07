@@ -1,0 +1,79 @@
+diff --git a/xtask/src/replay.rs b/xtask/src/replay.rs
+index 736c1d732389d41d003968fc0ae9f283631520e7..1b1495015fa32d0f971bcd71460ccfa306680868 100644
+--- a/xtask/src/replay.rs
++++ b/xtask/src/replay.rs
+@@ -6,6 +6,11 @@
+ //! Committed streams are change detectors, not oracles (spec 6.4): a
+ //! simulation-changing PR regenerates them with `--regen` and the reviewer
+ //! approves. Cross-architecture equality (`compare-hashes`) is always required.
++//!
++//! A scenario may name its map (`map = "room"`), which the run gets as
++//! `--map`; without one it runs on the game's first map, as every 1b
++//! scenario does (rung 2 plan, decision 1; ADR-0023). A map with sim data
++//! names it in its stream's header, so the comparisons cover it too.
+ 
+ use std::collections::BTreeMap;
+ use std::fs;
+@@ -31,12 +36,24 @@ struct Manifest {
+ #[serde(deny_unknown_fields)]
+ struct Scenario {
+     name: String,
++    /// The map, given to the run as `--map`; `None` is the game's first.
++    map: Option<String>,
+     input: String,
+     assert: Option<String>,
+     ticks: u64,
+     seeds: Vec<u64>,
+ }
+ 
++impl Scenario {
++    /// `--map NAME` for a scenario that names its map, else nothing.
++    fn map_args(&self) -> Vec<&str> {
++        match &self.map {
++            Some(map) => vec!["--map", map],
++            None => Vec::new(),
++        }
++    }
++}
++
+ #[derive(Default)]
+ pub struct Options {
+     pub regen: bool,
+@@ -166,6 +183,7 @@ pub fn run(root: &Path, opts: &Options) -> Result<String, String> {
+                     "--seed",
+                     &seed.to_string(),
+                 ])
++                .args(sc.map_args())
+                 .arg("--input")
+                 .arg(scenarios.join(&sc.input))
+                 .arg("--budgets")
+@@ -305,3 +323,29 @@ pub fn compare_dirs(root: &Path, dirs: &[&str]) -> Result<String, String> {
+         Err(diffs.join("\n"))
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn a_scenario_may_name_its_map() {
++        let manifest: Manifest = toml::from_str(
++            "version = 1\n\
++             [[scenario]]\nname = \"dots\"\ninput = \"a.toml\"\nticks = 1\nseeds = [1]\n\
++             [[scenario]]\nname = \"room\"\nmap = \"room\"\ninput = \"b.toml\"\nticks = 1\n\
++             seeds = [1]\n",
++        )
++        .unwrap();
++        assert!(manifest.scenario[0].map_args().is_empty());
++        assert_eq!(manifest.scenario[1].map_args(), ["--map", "room"]);
++    }
++
++    #[test]
++    fn the_committed_manifest_parses() {
++        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
++        let text = fs::read_to_string(root.join(SCENARIOS).join("scenarios.toml")).unwrap();
++        let manifest: Manifest = toml::from_str(&text).unwrap();
++        assert!(!manifest.scenario.is_empty());
++    }
++}

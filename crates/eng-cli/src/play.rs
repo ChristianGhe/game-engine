@@ -25,7 +25,8 @@ use eng_sim::Sim;
 use crate::args::{self, Command, RunArgs};
 use crate::budgets::BudgetTracker;
 use crate::capture::CaptureSummary;
-use crate::run::{build_sim, fail, hash, load_inputs, read_text, write_file, write_outputs};
+use crate::maps::{self, GameMaps, MapChoice};
+use crate::run::{fail, hash, load_inputs, read_text, write_file, write_outputs};
 use crate::session::{Session, TickStop, command_for};
 use crate::{Exit, GameDef, TopDownFrame, exit, log, report};
 
@@ -67,6 +68,7 @@ pub struct PlayGpu {
 /// files will hold.
 pub struct PlayRun<'g> {
     game: &'g GameDef,
+    map: MapChoice,
     args: RunArgs,
     bindings: Bindings,
     session: Session,
@@ -86,17 +88,33 @@ pub struct PlayRun<'g> {
 
 impl<'g> PlayRun<'g> {
     /// Parses a `play` command line (`args[0]` is `"play"`), loads its files
-    /// and starts the session at tick 0. A usage error is printed with
+    /// and starts the session at tick 0 on the game's only map
+    /// ([`GameMaps::FIRST_ONLY`]). A usage error is printed with
     /// `[E-USAGE]` and returned as [`Exit::Usage`].
     pub fn start(game: &'g GameDef, args: &[String]) -> Result<Self, Exit> {
+        Self::start_with_maps(game, &GameMaps::FIRST_ONLY, args)
+    }
+
+    /// [`PlayRun::start`] for a game with `maps`: `--map` picks one, the
+    /// first by default; an unknown name is a usage error (`[E-MAP]`).
+    pub fn start_with_maps(
+        game: &'g GameDef,
+        maps: &GameMaps,
+        args: &[String],
+    ) -> Result<Self, Exit> {
         match args::parse(args) {
-            Ok(Command::Run(a)) if a.play.is_some() => Self::new(game, *a),
+            Ok(Command::Run(a)) if a.play.is_some() => {
+                match maps::select(game, maps, a.map.as_deref()) {
+                    Ok(map) => Self::new(game, map, *a),
+                    Err(message) => Err(exit::usage(game.name, &message)),
+                }
+            }
             Ok(_) => Err(exit::usage(game.name, "not a play command line")),
             Err(message) => Err(exit::usage(game.name, &message)),
         }
     }
 
-    pub(crate) fn new(game: &'g GameDef, a: RunArgs) -> Result<Self, Exit> {
+    pub(crate) fn new(game: &'g GameDef, map: MapChoice, a: RunArgs) -> Result<Self, Exit> {
         let flags = a.play.clone().unwrap_or_default();
         let inputs = load_inputs(&a).map_err(|message| exit::usage(game.name, &message))?;
         let bindings = match &flags.bindings {
@@ -106,8 +124,8 @@ impl<'g> PlayRun<'g> {
             None => Ok(Bindings::default()),
         }
         .map_err(|message| exit::usage(game.name, &message))?;
-        let (session, too_large) = Session::start(game, a.players, a.seed);
-        let previous = build_sim(game, a.players, a.seed);
+        let (session, too_large) = Session::start(game, map, a.players, a.seed);
+        let previous = map.build(game, a.players, a.seed);
         let mut budgets = inputs.budgets;
         if let Some(message) = too_large {
             budgets.exceeded.get_or_insert(message);
@@ -125,6 +143,7 @@ impl<'g> PlayRun<'g> {
         let done = budgets.exceeded.is_some() || a.ticks == 0;
         Ok(Self {
             game,
+            map,
             args: a,
             bindings,
             session,
@@ -142,6 +161,11 @@ impl<'g> PlayRun<'g> {
 
     pub fn game(&self) -> &'g GameDef {
         self.game
+    }
+
+    /// The name of the map the run plays (`--map`, or the game's first).
+    pub fn map(&self) -> &'static str {
+        self.map.name()
     }
 
     /// The bindings live input reads: `--bindings`, or the defaults (WASD,
@@ -282,6 +306,7 @@ impl<'g> PlayRun<'g> {
     pub fn finish(self, stats: PlayStats) -> Exit {
         let Self {
             game,
+            map,
             args,
             session,
             hashes,
@@ -303,7 +328,7 @@ impl<'g> PlayRun<'g> {
         } else {
             Exit::Ok
         };
-        if let Err(message) = write_outputs(game, &args, sim, &hashes, recorded, None, stopped) {
+        if let Err(message) = write_outputs(game, map, &args, sim, &hashes, recorded, stopped) {
             return exit::usage(game.name, &message);
         }
         let frames = stats.gpu.map(|gpu| CaptureSummary {
@@ -316,6 +341,7 @@ impl<'g> PlayRun<'g> {
         });
         let summary = report::RunSummary {
             game,
+            map: map.name(),
             args: &args,
             sim,
             hashes: &hashes,

@@ -14,9 +14,11 @@
 //!   strings read `unknown`, and `dirty` and `source_date_epoch` read
 //!   `null`. An empty variable counts as unset, and a malformed
 //!   `ENG_DIRTY` or `SOURCE_DATE_EPOCH` fails the build;
-//! - the simulation, built with 1 player and seed 0 (the protocol version
-//!   depends on neither): tick rate, protocol version, system order and
-//!   schema versions;
+//! - the simulation of the game's first map (`GameDef::build`; ADR-0023),
+//!   built with 1 player and seed 0 (the protocol version depends on
+//!   neither): tick rate, protocol version, system order and schema
+//!   versions. Other maps' protocols and sim data are in their runs'
+//!   reports and hash-stream headers;
 //! - the versions of seven of the probe's file formats (not yet the
 //!   bindings file).
 
@@ -234,7 +236,8 @@ pub(crate) fn stamp_line(game: &GameDef, sim: &Sim) -> String {
 
 /// Prints the stamp and returns [`Exit::Ok`].
 pub(crate) fn print(game: &GameDef, json: bool) -> Exit {
-    let sim = run::build_sim(game, 1, 0);
+    // The first map only (ADR-0023): `GameDef::build`.
+    let sim = run::build_sim(game, game.build, 1, 0);
     if json {
         println!("{}", stamp_json(game, &sim).to_pretty());
     } else {
@@ -253,8 +256,10 @@ fn short_sha(sha: &str) -> &str {
 }
 
 /// Every named schema the world encodes, in (name, version) order: the
-/// registered components, resources and events, and the named types inside
-/// them (`nested`). A name with two versions shows up twice.
+/// registered components, resources, events and constant resources, and
+/// the named types inside them (`nested`). A name with two versions shows
+/// up twice. The stamp's sim is the first map's, which has no constant
+/// resources in the testbed (ADR-0023).
 fn schemas(sim: &Sim) -> JsonValue {
     let world = sim.world();
     let registered: Vec<(&'static str, &'static str, &TypeDesc)> = world
@@ -262,7 +267,8 @@ fn schemas(sim: &Sim) -> JsonValue {
         .map(|n| (n, "component"))
         .chain(world.resource_names().map(|n| (n, "resource")))
         .chain(world.event_names().map(|n| (n, "event")))
-        // `World` puts every component, resource and event in its registry.
+        .chain(world.constant_names().map(|n| (n, "constant")))
+        // `World` puts every registered type in its registry.
         .filter_map(|(name, kind)| Some((name, kind, world.registry().get(name)?)))
         .collect();
     let mut found: BTreeMap<(&'static str, u32), &'static str> = BTreeMap::new();

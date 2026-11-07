@@ -17,6 +17,14 @@ static GAME: eng_cli::GameDef = eng_cli::GameDef {
     view_yaw: 0x4000,
 };
 
+/// The testbed's maps (rung 2 plan, decision 1): `dots`, the dot room
+/// `GAME.build` builds, with no sim data. `--map` defaults to it, so every
+/// 1b command line means what it did.
+static MAPS: eng_cli::GameMaps = eng_cli::GameMaps {
+    first: "dots",
+    more: &[],
+};
+
 fn main() -> ExitCode {
-    eng_app::main(&GAME)
+    eng_app::main_with_maps(&GAME, &MAPS)
 }

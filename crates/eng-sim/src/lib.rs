@@ -5,7 +5,9 @@
 //!   constraints are resolved by a topological sort with name tie-breaks;
 //!   registration order never matters.
 //! - Deferred structural changes apply at the end of each stage.
-//! - The state hash is FNV-1a-64 over the world's canonical encoding.
+//! - The state hash is FNV-1a-64 over the canonical encoding of the world's
+//!   per-tick state. Constant resources (sim data, ADR-0023) are outside
+//!   it and outside snapshots; [`Sim::sim_data_hash`] covers them once.
 //! - The resolved system order and every registered schema are hashed into
 //!   the [simulation protocol version](Sim::protocol_version), so an
 //!   unannounced change shows up in every hash stream header.

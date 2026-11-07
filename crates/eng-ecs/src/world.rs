@@ -15,17 +15,30 @@ pub(crate) enum Kind {
     Component,
     Resource,
     Event,
+    Constant,
 }
 
-/// Entities, components, resources and event queues.
+/// Entities, components, resources, event queues and constant resources.
 ///
 /// Registration mistakes (an unregistered type, a type registered as two
 /// kinds, two types sharing a stable name) are programming errors and panic.
+///
+/// Constant resources are sim data (ADR-0023): values the simulation reads
+/// every tick and never changes, such as a map's geometry. They are
+/// registered like resources, under their schema's stable name, but they
+/// are not part of the per-tick state: [`World::visit_state`],
+/// [`World::visit_dump`] and [`World::decode_state`] leave them out, so
+/// state hashes and snapshots do not carry them. Systems read them through
+/// [`World::constant`]; there is no mutable access, and once
+/// [`World::seal_constants`] has run (`eng-sim` calls it when the sim is
+/// built) inserting one panics.
 pub struct World {
     pub(crate) ids: GenAllocator,
     pub(crate) components: BTreeMap<&'static str, Box<dyn ErasedStorage>>,
     pub(crate) resources: BTreeMap<&'static str, Box<dyn ErasedValue>>,
     pub(crate) events: BTreeMap<&'static str, Box<dyn ErasedValue>>,
+    pub(crate) constants: BTreeMap<&'static str, Box<dyn ErasedValue>>,
+    constants_sealed: bool,
     kinds: BTreeMap<TypeId, (Kind, &'static str)>,
     registry: TypeRegistry,
     pub(crate) deferred: Vec<Command>,
@@ -44,6 +57,8 @@ impl World {
             components: BTreeMap::new(),
             resources: BTreeMap::new(),
             events: BTreeMap::new(),
+            constants: BTreeMap::new(),
+            constants_sealed: false,
             kinds: BTreeMap::new(),
             registry: TypeRegistry::new(),
             deferred: Vec::new(),
@@ -64,7 +79,8 @@ impl World {
         }
         let taken = self.components.contains_key(T::NAME)
             || self.resources.contains_key(T::NAME)
-            || self.events.contains_key(T::NAME);
+            || self.events.contains_key(T::NAME)
+            || self.constants.contains_key(T::NAME);
         assert!(
             !taken,
             "[E-SCHEMA] stable name {:?} is already used by another type",
@@ -108,6 +124,57 @@ impl World {
         }
     }
 
+    /// Inserts a constant resource (sim data), registering it on first use;
+    /// later calls, until the constants are sealed, replace its value.
+    ///
+    /// # Panics
+    /// After [`World::seal_constants`] (`[E-SIM-DATA]`), and on the
+    /// registration mistakes above.
+    pub fn insert_constant<T: Schema + 'static>(&mut self, value: T) {
+        assert!(
+            !self.constants_sealed,
+            "[E-SIM-DATA] constant {} inserted after the sim was built: sim data is fixed \
+             when the sim is built",
+            T::NAME
+        );
+        if self.register::<T>(Kind::Constant) {
+            self.constants
+                .insert(T::NAME, Box::new(ResourceSlot(value)));
+        } else {
+            let name = self.name_of::<T>(Kind::Constant);
+            let slot: &mut ResourceSlot<T> = self
+                .constants
+                .get_mut(name)
+                .expect("registered")
+                .as_any_mut()
+                .downcast_mut()
+                .expect("constant type matches its registration");
+            slot.0 = value;
+        }
+    }
+
+    /// A constant resource. There is no mutable access: sim data never
+    /// changes while the sim runs.
+    pub fn constant<T: Schema + 'static>(&self) -> &T {
+        let name = self.name_of::<T>(Kind::Constant);
+        let slot: &ResourceSlot<T> = self.constants[name]
+            .as_any()
+            .downcast_ref()
+            .expect("constant type matches its registration");
+        &slot.0
+    }
+
+    /// Fixes the constant resources: from now on [`World::insert_constant`]
+    /// panics. `eng-sim`'s `SimBuilder::build` calls it.
+    pub fn seal_constants(&mut self) {
+        self.constants_sealed = true;
+    }
+
+    /// Whether [`World::seal_constants`] has run.
+    pub fn constants_sealed(&self) -> bool {
+        self.constants_sealed
+    }
+
     pub fn registry(&self) -> &TypeRegistry {
         &self.registry
     }
@@ -123,6 +190,16 @@ impl World {
 
     pub fn event_names(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.events.keys().copied()
+    }
+
+    /// Constant resource names, in name order.
+    pub fn constant_names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.constants.keys().copied()
+    }
+
+    /// How many constant resources there are: 0 for a world without sim data.
+    pub fn constant_count(&self) -> usize {
+        self.constants.len()
     }
 
     // --- Entities -------------------------------------------------------

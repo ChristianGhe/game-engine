@@ -181,6 +181,10 @@ impl fmt::Display for BindingsError {
 impl std::error::Error for BindingsError {}
 
 impl Bindings {
+    /// The bindings file's format version, the only one
+    /// [`Bindings::parse`] reads (a run's report lists it in `files_read`).
+    pub const FILE_VERSION: u32 = <BindingsFile as Authored>::VERSION;
+
     /// Nothing bound.
     pub const fn empty() -> Self {
         Self {

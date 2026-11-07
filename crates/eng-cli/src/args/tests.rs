@@ -220,3 +220,34 @@ fn rejects_bad_usage() {
         assert!(parse(&args(bad)).is_err(), "{bad:?} should be refused");
     }
 }
+
+#[test]
+fn every_command_that_runs_a_sim_takes_a_map() {
+    for line in [
+        "run --headless --ticks 5",
+        "dump-world --at-tick 5 --out w.json",
+        "shot --at-tick 5 --out s.png",
+        "video --ticks 5 --out v.apng",
+        "play --ticks 5",
+    ] {
+        let Command::Run(without) = parse(&args(line)).unwrap() else {
+            panic!("{line}: expected a run");
+        };
+        assert_eq!(without.map, None, "{line}: the first map by default");
+        let with = format!("{line} --map room");
+        let Command::Run(with) = parse(&args(&with)).unwrap() else {
+            panic!("{with}: expected a run");
+        };
+        assert_eq!(with.map.as_deref(), Some("room"), "{line}");
+        assert_eq!(with.command(), without.command());
+        assert!(
+            parse(&args(&format!("{line} --map"))).is_err(),
+            "{line} --map"
+        );
+    }
+    // `replay verify` picks the map by the recording's hash; the stamp is
+    // the first map's.
+    for bad in ["replay verify r.rec --map room", "--version --map room"] {
+        assert!(parse(&args(bad)).is_err(), "{bad:?} should be refused");
+    }
+}

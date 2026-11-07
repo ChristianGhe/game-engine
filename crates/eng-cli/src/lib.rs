@@ -17,6 +17,16 @@
 //! <game> --version [--json]
 //! ```
 //!
+//! `run`, `dump-world`, `shot`, `video` and `play` also take `--map NAME`:
+//! a game names its maps in a [`GameMaps`] beside its [`GameDef`], the first
+//! being [`GameDef::build`] and the default (rung 2 plan, decision 1;
+//! ADR-0023). An unknown name exits 64 with `[E-MAP]`. A map with sim data
+//! (constant resources) puts its name and sim-data hash in the hash
+//! stream's header and in `dump-world`'s file; every run's report names its
+//! `map`, `sim_protocol` and `sim_data_hash`, and `files_read` gives the
+//! format version of each file it read. Recordings carry the sim-data hash
+//! in their header, and `replay verify` replays on the map it names.
+//!
 //! `run`, `dump-world`, `shot` and `video` go through `eng-session` like
 //! every other mode: a server and player 0's client in-process over Memory,
 //! every message encoded to bytes. `replay verify` steps the sim directly
@@ -63,6 +73,7 @@ mod capture;
 mod exit;
 mod image_file;
 mod log;
+mod maps;
 mod play;
 mod replay;
 mod report;
@@ -77,6 +88,7 @@ use eng_render::TopDownScene;
 use eng_sim::{ScheduleError, Sim, SimConfig};
 
 pub use exit::Exit;
+pub use maps::{BuildFn, DEFAULT_MAP, GameMap, GameMaps};
 pub use play::{PlayGpu, PlayRun, PlayStats, Step};
 pub use version::{ENGINE_SHA, ENGINE_VERSION, PROFILE, RUSTC_VERSION, TARGET, UNKNOWN};
 
@@ -120,31 +132,44 @@ pub struct TopDownFrame<'a> {
 /// What runs `play`: eng-app's frame loop, given the run eng-cli built.
 pub type Play<'a> = &'a dyn Fn(PlayRun<'_>) -> Exit;
 
-/// Runs the probe with the process arguments. `play` exits 64 here: a game
-/// gets its window through eng-app ([`main_with_play`]).
+/// Runs the probe with the process arguments, for a game with one map
+/// ([`GameMaps::FIRST_ONLY`]). `play` exits 64 here: a game gets its
+/// window through eng-app ([`main_with_play`]).
 pub fn main(game: &GameDef) -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    run_args(game, &args).into()
+    main_with_maps(game, &GameMaps::FIRST_ONLY, None)
 }
 
 /// Runs the probe with explicit arguments (without the program name).
 pub fn run_args(game: &GameDef, args: &[String]) -> Exit {
-    run_command(game, args, None)
+    run_args_with_maps(game, &GameMaps::FIRST_ONLY, args, None)
 }
 
 /// [`main`] with `play`: eng-cli parses the command line, installs the
 /// panic hook and builds the [`PlayRun`], and `play` runs it in a window.
 pub fn main_with_play(game: &GameDef, play: Play<'_>) -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    run_args_with_play(game, &args, play).into()
+    main_with_maps(game, &GameMaps::FIRST_ONLY, Some(play))
 }
 
 /// [`run_args`] with `play`, as [`main_with_play`].
 pub fn run_args_with_play(game: &GameDef, args: &[String], play: Play<'_>) -> Exit {
-    run_command(game, args, Some(play))
+    run_args_with_maps(game, &GameMaps::FIRST_ONLY, args, Some(play))
 }
 
-fn run_command(game: &GameDef, args: &[String], play: Option<Play<'_>>) -> Exit {
+/// [`main`] for a game with `maps` (ADR-0023): `--map` picks one, and
+/// `replay verify` the one a recording's sim-data hash names. With
+/// `play`, as [`main_with_play`]; without, `play` exits 64.
+pub fn main_with_maps(game: &GameDef, maps: &GameMaps, play: Option<Play<'_>>) -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    run_args_with_maps(game, maps, &args, play).into()
+}
+
+/// [`main_with_maps`] with explicit arguments (without the program name).
+pub fn run_args_with_maps(
+    game: &GameDef,
+    maps: &GameMaps,
+    args: &[String],
+    play: Option<Play<'_>>,
+) -> Exit {
     exit::install_panic_hook(game);
     exit::begin(args);
     let command = match args::parse(args) {
@@ -153,29 +178,46 @@ fn run_command(game: &GameDef, args: &[String], play: Option<Play<'_>>) -> Exit 
     };
     log::open(game.name, command.name());
     log::line("info", &format!("start: {} {}", game.name, args.join(" ")));
+    dispatch(game, maps, command, play)
+}
+
+/// Runs a parsed command. Unit tests call it without the panic hook and
+/// the log file.
+fn dispatch(
+    game: &GameDef,
+    maps: &GameMaps,
+    command: args::Command,
+    play: Option<Play<'_>>,
+) -> Exit {
     match command {
         args::Command::Version { json } => version::print(game, json),
         args::Command::Help => {
             println!("{}", args::USAGE.replace("<game>", game.name));
             Exit::Ok
         }
-        args::Command::Run(run_args) if run_args.play.is_some() => match play {
-            Some(play) => match PlayRun::new(game, *run_args) {
-                Ok(run) => play(run),
-                Err(exit) => exit,
-            },
-            None => exit::usage(
-                game.name,
-                &format!(
-                    "play needs a window, and {} links only the probe; a game gets one \
-                     through eng-app",
-                    game.name
+        args::Command::Run(run_args) => {
+            let map = match maps::select(game, maps, run_args.map.as_deref()) {
+                Ok(map) => map,
+                Err(message) => return exit::usage(game.name, &message),
+            };
+            match (run_args.play.is_some(), play) {
+                (false, _) => run::run(game, map, &run_args),
+                (true, Some(play)) => match PlayRun::new(game, map, *run_args) {
+                    Ok(run) => play(run),
+                    Err(exit) => exit,
+                },
+                (true, None) => exit::usage(
+                    game.name,
+                    &format!(
+                        "play needs a window, and {} links only the probe; a game gets one \
+                         through eng-app",
+                        game.name
+                    ),
                 ),
-            ),
-        },
-        args::Command::Run(run_args) => run::run(game, &run_args),
+            }
+        }
         args::Command::ReplayVerify { recording, report } => {
-            replay::verify(game, &recording, report.as_deref())
+            replay::verify(game, maps, &recording, report.as_deref())
         }
         args::Command::ReplayDump { recording, out } => {
             replay::dump(game, &recording, out.as_deref())

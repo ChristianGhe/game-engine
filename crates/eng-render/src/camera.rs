@@ -29,6 +29,25 @@ use eng_math::{BAngle, Real, Vec3, WorldPos, sin_cos_f64};
 
 use crate::RenderError;
 
+/// The near plane's distance for first-person views, in meters (rung 2,
+/// T9). The plan left it open; the hull bounds it from above:
+/// - **No wall is cut open.** The room's hull is 0.5 m wide, so the eye
+///   stays at least 0.25 m from any wall's plane (more off the axes: a box
+///   touches an angled wall with a corner). The near rectangle's farthest
+///   corner is `near * sqrt(1 + ty^2 * (1 + aspect^2))` from the eye, `ty`
+///   the tangent of half the vertical field of view. At 0.1 m it stays
+///   inside 0.25 m while `ty^2 * (1 + aspect^2)` is at most 5.25: a 90°
+///   vertical field of view up to an aspect of 2.06 (16:9, 121° across,
+///   but not 21:9), or up to 126° across at 16:9. A ceiling at the hull's
+///   top would sit 0.15 m above the eye (1.6 m of 1.75 m), which holds
+///   while the same sum is at most 1.25 (88° across at 16:9); the room's
+///   lowest ceiling, the alcove's 2.5 m, keeps far more.
+/// - **Nothing is lost by going lower.** With reversed-Z in `Depth32Float`
+///   the precision is nearly the same at every distance, so a smaller near
+///   plane costs no depth precision worth having; it only clips what comes
+///   closer than it, and rung 2 draws nothing that close (no view model).
+pub const NEAR_PLANE: Real = 0.1;
+
 /// A first-person camera: an eye in the world, its heading and elevation,
 /// and its lens.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -75,12 +94,15 @@ pub struct Clip {
 }
 
 /// A camera made ready for one image's aspect ratio: the eye, for the f64
-/// subtraction, and the matrix that takes camera-relative offsets to clip
-/// space.
+/// subtraction, the matrix that takes camera-relative offsets to clip
+/// space, and the rays back out through the image.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ViewProj {
     eye: WorldPos,
     matrix: Mat4,
+    /// What one unit of clip-space x, then y, adds to a ray of forward
+    /// length 1: the right axis times `aspect / f`, the up axis over `f`.
+    rays: [Vec3; 2],
 }
 
 impl Mat4 {
@@ -214,9 +236,17 @@ impl FirstPersonCamera {
                 ),
             });
         }
+        let ray = |axis: [f64; 3], scale: f64| {
+            Vec3::new(
+                (axis[0] / scale) as Real,
+                (axis[1] / scale) as Real,
+                (axis[2] / scale) as Real,
+            )
+        };
         Ok(ViewProj {
             eye: self.eye,
             matrix,
+            rays: [ray(right, across), ray(up, focal)],
         })
     }
 
@@ -259,6 +289,34 @@ impl ViewProj {
     pub fn project_offset(&self, offset: Vec3) -> Clip {
         let [x, y, z, w] = self.matrix.mul_vec4([offset.x, offset.y, offset.z, 1.0]);
         Clip { x, y, z, w }
+    }
+
+    /// The camera's forward axis in world coordinates: the matrix's last
+    /// row.
+    pub fn forward(&self) -> Vec3 {
+        let [x, y, z, _] = self.matrix.row(3);
+        Vec3::new(x, y, z)
+    }
+
+    /// The near plane's distance, as the camera gave it.
+    pub fn near(&self) -> Real {
+        self.matrix.row(2)[3]
+    }
+
+    /// The ray from the eye through normalized device coordinates (`x`,
+    /// `y`), in world axes, scaled so that its part along the forward axis
+    /// is 1: the point `t` meters along it lies `t` meters ahead, at depth
+    /// `near / t`, and projects back to (`x`, `y`). The sky pass builds
+    /// the same ray from the per-frame uniform.
+    pub fn ray(&self, x: Real, y: Real) -> Vec3 {
+        let [across, up] = self.rays;
+        self.forward() + across * x + up * y
+    }
+
+    /// The two rays [`ViewProj::ray`] adds to the forward axis per unit of
+    /// `x` and of `y`.
+    pub(crate) fn ray_steps(&self) -> [Vec3; 2] {
+        self.rays
     }
 }
 

@@ -85,7 +85,9 @@
 //!   output (`Rgba8UnormSrgb`) of one size, and the transient textures that
 //!   graphs' pools draw into, made on the first frame that needs them and
 //!   reused by every later one ([`Targets::transient_textures`]). [`Targets::read_output`] reads
-//!   the output back as an [`Image`], RGBA8 as stored, rows top first.
+//!   the output back as an [`Image`], RGBA8 as stored, rows top first, and
+//!   [`Targets::read_transient`] what a graph's last frame left in one of
+//!   its transients, such as rung 2's depth and `info`, as [`Texels`].
 //!   [`Targets::with_offscreen_surface`] adds a texture in the surface's
 //!   format, `Bgra8UnormSrgb`, standing in for a window's: a
 //!   [`Target::Surface`] graph then renders whole, and
@@ -122,6 +124,7 @@ mod instanced;
 mod layout;
 mod mesh;
 mod pass;
+mod readback;
 mod report;
 mod scene;
 mod screen;
@@ -141,6 +144,7 @@ pub use instanced::{Attribute, InstancedDesc, InstancedPipeline};
 pub use layout::MAX_COLOUR_TARGETS;
 pub use mesh::{MeshDesc, MeshDraw, MeshPipeline};
 pub use pass::{FrameInput, LinearRgba, Pass, PassRecorder};
+pub use readback::Texels;
 pub use report::{Backend, Capabilities, DeviceType, GpuReport};
 pub use scene::{
     ColourTag, InstanceRecord, MAX_TEXTURE_LAYERS, Material, Scene, SceneDesc, SceneTexture,

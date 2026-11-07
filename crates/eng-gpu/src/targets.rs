@@ -72,11 +72,17 @@ pub struct Targets {
     /// Pass timing, off until [`Targets::time_passes`], and the last
     /// frame's times.
     timing: Mutex<Timing>,
+    /// The pool plan of the last frame rendered into these targets, if it
+    /// was submitted: which transient its textures hold, for
+    /// [`Targets::read_transient`].
+    drawn: Mutex<Option<Plan>>,
 }
 
 /// One texture of the targets' pool, for transients of one kind.
 struct Pooled {
     kind: Kind,
+    /// Kept for [`Targets::read_transient`], which copies it back.
+    texture: wgpu::Texture,
     view: wgpu::TextureView,
 }
 
@@ -86,6 +92,18 @@ type Kind = (Format, u32, bool);
 
 fn kind(texture: &PooledTexture) -> Kind {
     (texture.format, texture.divisor, texture.sampled)
+}
+
+/// The kind of texture `index` of `plan`, and how many of that kind come
+/// before it there: the n-th of a kind in a plan is the n-th in the pool.
+fn nth_of_kind(plan: &Plan, index: usize) -> (Kind, usize) {
+    let textures = plan.textures();
+    let kind = kind(&textures[index]);
+    let nth = textures[..index]
+        .iter()
+        .filter(|t| self::kind(t) == kind)
+        .count();
+    (kind, nth)
 }
 
 impl Targets {
@@ -158,6 +176,7 @@ impl Targets {
             }),
             pool: Mutex::new(Vec::new()),
             timing: Mutex::new(Timing::default()),
+            drawn: Mutex::new(None),
         })
     }
 
@@ -227,6 +246,13 @@ impl Targets {
         self.timing.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// The pool plan of the last frame submitted into these targets: `None`
+    /// before the first, and from the start of a frame until it is
+    /// submitted, so that a frame that fails leaves none.
+    pub(crate) fn drawn(&self) -> MutexGuard<'_, Option<Plan>> {
+        self.drawn.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// A view of each texture in `plan`, in its order, making those the pool
     /// lacks.
     pub(crate) fn pooled(
@@ -237,11 +263,7 @@ impl Targets {
         let mut pool = self.pool.lock().unwrap_or_else(PoisonError::into_inner);
         let mut views = Vec::with_capacity(plan.textures().len());
         for (index, texture) in plan.textures().iter().enumerate() {
-            let kind = kind(texture);
-            let nth = plan.textures()[..index]
-                .iter()
-                .filter(|t| self::kind(t) == kind)
-                .count();
+            let (kind, nth) = nth_of_kind(plan, index);
             let found = pool.iter().filter(|p| p.kind == kind).nth(nth);
             let view = match found {
                 Some(pooled) => pooled.view.clone(),
@@ -250,11 +272,16 @@ impl Targets {
                         "transient {:?} 1/{} #{nth}",
                         texture.format, texture.divisor
                     );
-                    let view = gpu
-                        .scoped(|| self.transient(gpu, texture, &label))
+                    let (made, view) = gpu
+                        .scoped(|| {
+                            let made = self.transient(gpu, texture, &label);
+                            let view = labelled_view(&made, &label);
+                            (made, view)
+                        })
                         .map_err(GpuError::Wgpu)?;
                     pool.push(Pooled {
                         kind,
+                        texture: made,
                         view: view.clone(),
                     });
                     view
@@ -265,16 +292,27 @@ impl Targets {
         Ok(views)
     }
 
+    /// The pool's texture for texture `index` of `plan`, if a frame has
+    /// made it: the one [`Targets::pooled`] gives.
+    pub(crate) fn pooled_texture(&self, plan: &Plan, index: usize) -> Option<wgpu::Texture> {
+        let (kind, nth) = nth_of_kind(plan, index);
+        let pool = self.pool.lock().unwrap_or_else(PoisonError::into_inner);
+        pool.iter()
+            .filter(|p| p.kind == kind)
+            .nth(nth)
+            .map(|pooled| pooled.texture.clone())
+    }
+
     /// A new texture for `texture`'s transients: their format, the targets'
-    /// size divided by the divisor and rounded up, drawn into, and read if
-    /// they are.
-    fn transient(&self, gpu: &Gpu, texture: &PooledTexture, label: &str) -> wgpu::TextureView {
+    /// size divided by the divisor and rounded up, drawn into, read if they
+    /// are, and copied from by [`Targets::read_transient`].
+    fn transient(&self, gpu: &Gpu, texture: &PooledTexture, label: &str) -> wgpu::Texture {
         let side = |pixels: u32| pixels.div_ceil(texture.divisor);
-        let mut usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
+        let mut usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
         if texture.sampled {
             usage |= wgpu::TextureUsages::TEXTURE_BINDING;
         }
-        let made = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size: wgpu::Extent3d {
                 width: side(self.width),
@@ -287,8 +325,7 @@ impl Targets {
             format: transient_format(texture.format),
             usage,
             view_formats: &[],
-        });
-        labelled_view(&made, label)
+        })
     }
 
     /// Copies the output back to the CPU, waiting for the GPU to finish the

@@ -42,7 +42,9 @@ pub struct SceneTexture<'a> {
 }
 
 /// One entry of a scene's material table. A draw names a material by its
-/// index there, through its [`InstanceRecord::material`].
+/// index there, through its [`InstanceRecord::material`] or, as the
+/// shader chooses, per vertex (eng-render's world chunks do, and leave the
+/// record's at 0).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Material {
     /// The material's texture: an index into [`SceneDesc::textures`].

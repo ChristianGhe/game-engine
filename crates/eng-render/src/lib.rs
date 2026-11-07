@@ -1,9 +1,10 @@
 //! The render passes (spec 6.7, 6.13): rung 1b's top-down view (kept later
 //! as the automap and debug view), tone mapping, the present blit, and
-//! per-frame counters, on eng-gpu's fixed graph. Nothing here feeds back
-//! into the simulation: a game's extraction builds a [`TopDownScene`] from
-//! the simulation's state, interpolating if it wants, and the renderer reads
-//! only that.
+//! per-frame counters, on eng-gpu's fixed graph, and rung 2's first-person
+//! view on its sorted graph (below). Nothing here feeds back into the
+//! simulation: a game's extraction builds a [`TopDownScene`] (or a
+//! [`FirstPersonScene`]) from the simulation's state, interpolating if it
+//! wants, and the renderer reads only that.
 //!
 //! - **[`TopDownScene`]**: a [`TopDownCamera`], a background colour and
 //!   [`Shape`]s, rectangles and discs in world space, drawn in order. The
@@ -43,12 +44,23 @@
 //!   has one, limits `shot` and `video` frames (`budgets.toml` has one;
 //!   acceptance feature `gpu-report-budgets`).
 //!
-//! Rung 2's first-person pipeline (`render-retro`) starts with its CPU
-//! parts, which no pass uses yet (plan queue item Q4):
+//! Rung 2's first-person pipeline (`render-retro`, ADR-0020), beside the
+//! top-down view and sharing nothing with it but the clamp and blit shaders:
+//! - **[`FirstPersonRenderer`]** (task T9) draws a [`GpuWorld`] as a
+//!   [`FirstPersonScene`] sees it, through eng-gpu's sorted graph: `opaque`
+//!   draws the world's [`Chunk`]s, each placed by one instance record of
+//!   its origin minus the eye taken in f64, into linear albedo, reversed-Z
+//!   depth (`near / distance ahead`, 0 where nothing was drawn) and `info`
+//!   ([`Info`]: region, [`SurfaceClass`] and object id in two `u32`s);
+//!   `light` is albedo as it is until T10; `sky` draws the [`Sky`] where
+//!   the depth is 0; then rung 1b's clamp into the output. Its
+//!   [`FirstPersonRenderer::read_depth`] and
+//!   [`FirstPersonRenderer::read_info`] read those targets back.
 //! - **[`FirstPersonCamera`]**: an f64 eye, [`BAngle`](eng_math::BAngle)
-//!   yaw and pitch and a vertical field of view, made ready for an aspect
-//!   ratio as a [`ViewProj`]: positions subtracted from the eye in f64,
-//!   then a reversed-Z perspective with an infinite far plane.
+//!   yaw and pitch, a vertical field of view and a near plane
+//!   ([`NEAR_PLANE`], 0.1 m), made ready for an aspect ratio as a
+//!   [`ViewProj`]: positions subtracted from the eye in f64, then a
+//!   reversed-Z perspective with an infinite far plane.
 //! - **[`sprite_rotation`]**: which of a thing's 8 rotations the viewer
 //!   sees, by plan decision 4's integer rule, and [`RotationSheet`]'s
 //!   mirror flags for sheets that draw only 5.
@@ -61,14 +73,19 @@
 
 mod camera;
 mod error;
+mod first_person;
 mod palette;
 mod renderer;
 mod scene;
 mod sprite_rot;
 
-pub use camera::{Clip, FirstPersonCamera, Mat4, ViewBasis, ViewProj};
-pub use eng_gpu::FrameCounters;
+pub use camera::{Clip, FirstPersonCamera, Mat4, NEAR_PLANE, ViewBasis, ViewProj};
+pub use eng_gpu::{ColourTag, FrameCounters, Material, SceneTexture, Texels, TextureSlot};
 pub use error::RenderError;
+pub use first_person::{
+    Chunk, FirstPersonRenderer, FirstPersonScene, GpuWorld, Info, Sky, SurfaceClass, WorldMesh,
+    WorldVertex,
+};
 pub use palette::{
     BAYER_4X4, LUT_CELLS, LUT_SIDE, MAX_PALETTE_COLOURS, Oklab, PaletteError, PaletteLut, Srgb8,
     bayer, bayer4_offset, lut_cell_centre, srgb_to_linear,

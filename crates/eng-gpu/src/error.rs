@@ -38,6 +38,12 @@ pub enum GpuError {
     Surface(String),
     /// A scene that its layout cannot hold ([`crate::Gpu::scene`]). `[E-GPU]`
     Scene { label: String, message: String },
+    /// A transient that [`crate::Targets::read_transient`] cannot read back
+    /// from the graph and targets it was given. `[E-GPU]`
+    Readback {
+        transient: &'static str,
+        message: String,
+    },
 }
 
 impl fmt::Display for GpuError {
@@ -69,6 +75,9 @@ impl fmt::Display for GpuError {
             Self::NoSurface => f.write_str("[E-GPU] the targets have no surface to present into"),
             Self::Surface(message) => write!(f, "[E-GPU] {message}"),
             Self::Scene { label, message } => write!(f, "[E-GPU] scene `{label}`: {message}"),
+            Self::Readback { transient, message } => {
+                write!(f, "[E-GPU] reading back `{transient}`: {message}")
+            }
         }
     }
 }

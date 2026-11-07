@@ -84,6 +84,15 @@ impl Format {
     pub const fn is_depth(self) -> bool {
         matches!(self, Self::Depth32Float)
     }
+
+    /// The bytes of one texel as the GPU stores it, and as
+    /// [`crate::Texels`] holds it.
+    pub const fn texel_bytes(self) -> u32 {
+        match self {
+            Self::Rgba16Float | Self::Rg32Uint => 8,
+            Self::Rgba8UnormSrgb | Self::Depth32Float => 4,
+        }
+    }
 }
 
 /// A transient texture, declared where passes read and write it as

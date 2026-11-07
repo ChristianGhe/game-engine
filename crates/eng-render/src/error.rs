@@ -11,8 +11,10 @@ pub enum RenderError {
     Gpu(GpuError),
     /// The scene cannot be drawn: a value that is not finite, a rectangle
     /// inside out, a camera that shows nothing, or a disc too large for
-    /// f32 clip space. `shape` is the shape's index in
-    /// [`crate::TopDownScene::shapes`], if a shape is at fault. `[E-SCENE]`
+    /// f32 clip space; or a first-person world or scene that cannot be
+    /// drawn, its message naming the chunk at fault. `shape` is the shape's
+    /// index in [`crate::TopDownScene::shapes`], if a shape is at fault.
+    /// `[E-SCENE]`
     Scene {
         shape: Option<usize>,
         problem: String,

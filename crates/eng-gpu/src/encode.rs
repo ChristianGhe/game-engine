@@ -36,6 +36,8 @@ impl Graph {
         // leaves none of the last frame's.
         let mut timing = targets.timing();
         timing.forget();
+        // Likewise which transients the pool holds, until this frame is in.
+        *targets.drawn() = None;
         if passes.len() != self.declared.len() {
             return Err(GraphError::PassCount {
                 expected: self.declared.len(),
@@ -189,11 +191,13 @@ impl Graph {
             }
             (frame.counters, groups)
         });
-        encoded.map_err(|e| {
+        let encoded = encoded.map_err(|e| {
             // wgpu refused the frame: it leaves no times either.
             timing.forget();
             GpuError::Wgpu(e)
-        })
+        })?;
+        *targets.drawn() = Some(self.plan.clone());
+        Ok(encoded)
     }
 }
 

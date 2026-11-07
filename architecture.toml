@@ -20,12 +20,16 @@ allowed_patches = []
 [core_third_party]
 libm = { version = "0.2.16", features = ["arch", "default", "force-soft-floats"] }
 
-# Floor crates and the single engine crate allowed to depend on each.
+# Crates with one user, and the single engine crate allowed to depend on
+# each: floor crates, and the GCMouse shim with its bindings (rung 2,
+# decision 11, ADR-0021).
 [floor]
 wgpu = "eng-gpu"
 winit = "eng-platform-winit"
 gilrs = "eng-platform-winit"
 cpal = "eng-audio-cpal"
+objc2-game-controller = "eng-platform-gcmouse"
+eng-platform-gcmouse = "eng-platform-winit"
 
 # Every workspace crate must be listed. `core = true` means: #![no_std] and
 # #![forbid(unsafe_code)] at the crate root, only core-set dependencies,
@@ -76,9 +80,12 @@ layer = "L1"
 layer = "L1"
 same_layer = ["eng-platform-api"]
 
+[crates.eng-platform-gcmouse]
+layer = "L1"
+
 [crates.eng-platform-winit]
 layer = "L1"
-same_layer = ["eng-platform-api"]
+same_layer = ["eng-platform-api", "eng-platform-gcmouse"]
 
 [crates.eng-sim]
 layer = "L2"
@@ -88,6 +95,11 @@ core = true
 layer = "L2"
 core = true
 
+[crates.eng-collision-grid]
+layer = "L2"
+core = true
+same_layer = ["eng-collision-api"]
+
 [crates.kit-fps]
 layer = "L2"
 core = true
@@ -96,7 +108,7 @@ same_layer = ["eng-collision-api"]
 [crates.game-testbed-sim]
 layer = "L2"
 core = true
-same_layer = ["eng-sim", "eng-collision-api", "kit-fps"]
+same_layer = ["eng-sim", "eng-collision-api", "kit-fps", "eng-collision-grid"]
 
 [crates.eng-session]
 layer = "L2"
@@ -117,8 +129,15 @@ layer = "L4"
 layer = "L4"
 same_layer = ["eng-cli"]
 
-[crates.game-testbed]
+[crates.game-testbed-client]
 layer = "game"
 
+[crates.game-testbed]
+layer = "game"
+same_layer = ["game-testbed-client"]
+
 [crates.xtask]
+layer = "tool"
+
+[crates.eng-bench]
 layer = "tool"

@@ -32,6 +32,10 @@ eng-session = { path = "crates/eng-session" }
 eng-gpu = { path = "crates/eng-gpu" }
 eng-render = { path = "crates/eng-render" }
 eng-app = { path = "crates/eng-app" }
+eng-collision-grid = { path = "crates/eng-collision-grid" }
+game-testbed-client = { path = "crates/game-testbed-client" }
+eng-bench = { path = "crates/eng-bench" }
+eng-platform-gcmouse = { path = "crates/eng-platform-gcmouse" }
 
 # Third-party crates. New entries need the owner's approval (deny.toml allow-list).
 # `force-soft-floats` keeps libm's `arch` code off even when another crate
@@ -104,4 +108,6 @@ overflow-checks = true
 [profile.release.package.eng-net-wire]
 overflow-checks = true
 [profile.release.package.eng-session]
+overflow-checks = true
+[profile.release.package.eng-collision-grid]
 overflow-checks = true

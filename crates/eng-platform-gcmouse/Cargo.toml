@@ -1,0 +1,13 @@
+[package]
+name = "eng-platform-gcmouse"
+description = "The GCMouse shim: raw mouse deltas on macOS from the Game Controller framework, for the winit platform. Empty elsewhere."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

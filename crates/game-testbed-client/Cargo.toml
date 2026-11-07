@@ -1,0 +1,13 @@
+[package]
+name = "game-testbed-client"
+description = "The testbed's presentation: top-down and first-person extraction, region looks, and textures, sprites and palette made by code."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

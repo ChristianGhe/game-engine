@@ -62,6 +62,9 @@ deny = [
     "wgpu", "wgpu-core", "wgpu-hal", "wgpu-types", "winit",
     "eng-platform-api", "eng-platform-winit", "eng-gpu", "eng-app",
   ] },
+  # The Game Controller bindings stay inside the GCMouse shim, the one crate
+  # whose `unsafe` calls them (rung 2, decision 11, ADR-0021).
+  { crate = "objc2-game-controller", wrappers = ["eng-platform-gcmouse"] },
   # Unmaintained (spec 6.8).
   { crate = "laminar" },
   { crate = "bincode" },
@@ -80,6 +83,11 @@ deny = [
 # every target above. wgpu, winit and raw-window-handle are also in `deny`
 # with their wrappers, and cargo-deny refuses the same spec in both lists, so
 # here they are written `name:*` (any release version).
+# Batch 3, approved by the owner at gate G3 for rung 2 ("Crate batch 3" in
+# docs/rungs/2/plan.md): gungraun and its dependencies (eng-bench's
+# instruction counts, a dev-dependency on Linux only) and
+# objc2-game-controller (the GCMouse shim, macOS only; `name:*` for its
+# wrapper ban, as above).
 allow = [
   "autocfg",
   "bitflags",
@@ -255,6 +263,24 @@ allow = [
   "xkeysym",
   "zerocopy",
   "zerocopy-derive",
+  # Batch 3 (rung 2).
+  "bincode-next",
+  "derive_more",
+  "derive_more-impl",
+  "either-or-both",
+  "gungraun",
+  "gungraun-common",
+  "gungraun-macros",
+  "gungraun-runner",
+  "objc2-game-controller:*",
+  "pastey",
+  "proc-macro-error-attr3",
+  "proc-macro-error3",
+  "rapidhash",
+  "rustc_version",
+  "rustversion",
+  "semver",
+  "unty-next",
 ]
 
 [sources]

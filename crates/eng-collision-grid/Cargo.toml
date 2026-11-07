@@ -1,0 +1,13 @@
+[package]
+name = "eng-collision-grid"
+description = "Level 1's collision: a uniform grid over static walls and slabs, with deterministic box sweeps."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

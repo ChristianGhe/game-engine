@@ -11,14 +11,21 @@ commit that changes what it describes.
 L0  eng-schema-core ▶ eng-derive;  eng-math, eng-core ▶ eng-schema-core   (core set)
 L1  eng-ecs  eng-net-transport  eng-net-wire                                (core set)
     eng-input ▶ eng-schema-json, eng-platform-api                           (std)
-    eng-platform-headless, eng-platform-winit ▶ eng-platform-api            (std)
+    eng-platform-headless ▶ eng-platform-api                                (std)
+    eng-platform-winit ▶ eng-platform-api, eng-platform-gcmouse*            (std)
 L2  eng-sim  eng-collision-api;  kit-fps ▶ eng-collision-api                (core set)
-    game-testbed-sim ▶ eng-sim, eng-collision-api, kit-fps                  (core set)
+    eng-collision-grid* ▶ eng-collision-api                                 (core set)
+    game-testbed-sim ▶ eng-sim, eng-collision-api, kit-fps,                 (core set)
+                       eng-collision-grid*
     eng-session ▶ eng-sim                                                   (core set)
 L3  eng-render ▶ eng-gpu                                                    (std)
 L4  eng-app ▶ eng-cli                                                       (std)
-game  game-testbed (binary)        tool  xtask
+game  game-testbed (binary) ▶ game-testbed-client*
+tool  xtask  eng-bench*
 ```
+
+\* Rung 2 crates, empty skeletons until their tasks in
+`docs/rungs/2/plan.md` (T5, T12, T14, T17).
 
 A crate depends only on lower layers, or on the same-layer crates its
 `same_layer` lists in `architecture.toml`, drawn above as `A ▶ B` (A
@@ -44,11 +51,14 @@ codec, transport and session loops: `#![no_std]`,
 `#![forbid(unsafe_code)]`, only `libm` as a third-party dependency (plus
 `eng-derive`'s build-time `syn`/`quote`), overflow checks in release.
 `cargo xtask arch-check` enforces all of it over the transitive
-dependency closure, and the floor rule: only eng-gpu imports wgpu, only
-eng-platform-winit winit. eng-math gives libm `force-soft-floats`, so
-libm's `arch` code stays off even in builds where wgpu's shader compiler
-turns the feature on. The core set also builds for
-`wasm32-unknown-unknown` and is tested on RISC-V under QEMU.
+dependency closure. It also enforces the floor rule, which names the one
+crate that may depend on each of a few crates: only eng-gpu may depend on
+wgpu; only eng-platform-winit on winit and on the GCMouse shim,
+eng-platform-gcmouse; and only the shim on objc2-game-controller.
+eng-math gives libm `force-soft-floats`, so libm's `arch` code stays off
+even in builds where wgpu's shader compiler turns the feature on. The core
+set also builds for `wasm32-unknown-unknown` and is tested on RISC-V under
+QEMU.
 
 L3 starts in rung 1b with GPU and render; audio and UI come later.
 

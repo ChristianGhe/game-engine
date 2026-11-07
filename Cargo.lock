@@ -401,6 +401,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "eng-bench"
+version = "0.1.0"
+
+[[package]]
 name = "eng-cli"
 version = "0.1.0"
 dependencies = [
@@ -428,6 +432,10 @@ dependencies = [
  "eng-schema-core",
  "proptest",
 ]
+
+[[package]]
+name = "eng-collision-grid"
+version = "0.1.0"
 
 [[package]]
 name = "eng-core"
@@ -503,6 +511,10 @@ version = "0.1.0"
 dependencies = [
  "raw-window-handle",
 ]
+
+[[package]]
+name = "eng-platform-gcmouse"
+version = "0.1.0"
 
 [[package]]
 name = "eng-platform-headless"
@@ -693,6 +705,10 @@ dependencies = [
  "serde_json",
  "toml",
 ]
+
+[[package]]
+name = "game-testbed-client"
+version = "0.1.0"
 
 [[package]]
 name = "game-testbed-sim"

@@ -16,26 +16,37 @@
 //! A map that breaks a rule is a bug in the game: it panics with `[E-MAP]`
 //! (exit 12) where the probe meets it, and [`GameMaps::check`] lets a
 //! game's tests find it first.
+//!
+//! Each map also names its view ([`MapView`], rung 2's T12): the first map
+//! is drawn by [`GameDef::top_down`]; another names its own, which `shot`
+//! and `video` draw, or none, which they refuse.
 
 use eng_sim::{ScheduleError, Sim, SimConfig};
 
+use crate::view::MapView;
 use crate::{GameDef, run};
 
 /// What builds a map's simulation for a session: [`GameDef::build`]'s type.
 pub type BuildFn = fn(SimConfig) -> Result<Sim, ScheduleError>;
 
-/// One of a game's maps after its first: its name for `--map` and its
-/// build function. Its sim must have sim data.
+/// One of a game's maps after its first: its name for `--map`, its build
+/// function and its view. Its sim must have sim data.
 #[derive(Debug, Clone, Copy)]
 pub struct GameMap {
     pub name: &'static str,
     pub build: BuildFn,
+    /// What `shot` and `video` draw of it. The first map's is
+    /// [`MapView::TopDown`], [`GameDef::top_down`].
+    pub view: MapView,
 }
 
 /// A game's maps, beside its [`GameDef`] (whose fields stay as they are).
 ///
 /// ```text
-/// static MAPS: GameMaps = GameMaps { first: "dots", more: &[GameMap { name: "room", build: room::build }] };
+/// static MAPS: GameMaps = GameMaps {
+///     first: "dots",
+///     more: &[GameMap { name: "room", build: room::build, view: MapView::FirstPerson(ROOM) }],
+/// };
 /// fn main() -> ExitCode { eng_app::main_with_maps(&GAME, &MAPS) }
 /// ```
 #[derive(Debug, Clone, Copy)]
@@ -60,11 +71,13 @@ impl GameMaps {
         more: &[],
     };
 
-    /// The first map: [`GameDef::build`] under [`GameMaps::first`].
+    /// The first map: [`GameDef::build`] under [`GameMaps::first`], drawn
+    /// by [`GameDef::top_down`].
     pub fn first(&self, game: &GameDef) -> GameMap {
         GameMap {
             name: self.first,
             build: game.build,
+            view: MapView::TopDown,
         }
     }
 
@@ -171,18 +184,24 @@ impl MapChoice {
         sim
     }
 
-    /// Why `shot`, `video` or `play` cannot show this map, if they cannot:
-    /// [`GameDef::top_down`] draws the first map only, until the
-    /// first-person views (rung 2, T15 and T16). A usage error, exit 64,
-    /// refused before a GPU or a window opens.
+    /// The map's view.
+    pub fn view(&self) -> MapView {
+        self.map.view
+    }
+
+    /// Why `shot` or `video` cannot draw this map, if they cannot: it has
+    /// no view ([`MapView::None`]). A usage error, exit 64, refused before
+    /// a GPU opens.
     pub fn no_view(&self, game: &GameDef) -> Option<String> {
-        (self.map.name != self.first).then(|| {
-            format!(
-                "[E-USAGE] [E-MAP] {}'s map {:?} has no view yet (GameDef::top_down draws {} \
-                 only)",
-                game.name, self.map.name, self.first
-            )
-        })
+        self.map.view.refusal(game, self.map.name)
+    }
+
+    /// Why `play`'s window cannot show this map yet, if it cannot: it
+    /// draws [`GameDef::top_down`] only, until the first-person window
+    /// (rung 2, T15). A usage error, exit 64, refused before a window
+    /// opens.
+    pub fn no_window_view(&self, game: &GameDef) -> Option<String> {
+        self.map.view.window_refusal(game, self.map.name)
     }
 
     fn check(&self, game: &GameDef, sim: &Sim) -> Result<(), String> {

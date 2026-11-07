@@ -25,20 +25,25 @@
 //! stream's header and in `dump-world`'s file; every run's report names its
 //! `map`, `sim_protocol` and `sim_data_hash`, and `files_read` gives the
 //! format version of each file it read. Recordings carry the sim-data hash
-//! in their header, and `replay verify` replays on the map it names. Only
-//! the first map has a view yet ([`GameDef::top_down`]), so `shot`, `video`
-//! and `play` refuse another before a GPU or window opens (exit 64,
-//! `[E-MAP]`), until the first-person views (rung 2, T15 and T16).
+//! in their header, and `replay verify` replays on the map it names. Each
+//! map names its view ([`MapView`]): the first map's is
+//! [`GameDef::top_down`], and another's may be first person
+//! ([`FirstPersonView`], rung 2's T12) or none. `shot` and `video` refuse a
+//! map with none, and `play`, whose window draws the top-down view only
+//! until rung 2's T15, one that is not top down, before a GPU or window
+//! opens (exit 64, `[E-MAP]`).
 //!
 //! `run`, `dump-world`, `shot` and `video` go through `eng-session` like
 //! every other mode: a server and player 0's client in-process over Memory,
 //! every message encoded to bytes. `replay verify` steps the sim directly
 //! from the recorded commands, the ones the server applied.
 //!
-//! `shot` and `video` run like `run` and render the game's top-down view
-//! ([`GameDef::top_down`]) offscreen through eng-render, from a tick's state
-//! at alpha 1, so the pictures are exact. `shot` writes the frame at its
-//! tick as a PNG; `video` writes tick 0 and every K-th tick after it (the
+//! `shot` and `video` run like `run` and render the map's view (the top-down
+//! [`GameDef::top_down`], or a [`FirstPersonView`]) offscreen through
+//! eng-render, from a tick's state at alpha 1, so the pictures are exact.
+//! A first-person view loads its world once, before the first frame, and
+//! the game's scene picks the camera. `shot` writes the frame at its tick
+//! as a PNG; `video` writes tick 0 and every K-th tick after it (the
 //! last multiple of K not past N) as an animated PNG (the proof video,
 //! spec 7.1), each frame shown for K ticks. The files hold 8-bit sRGB RGBA
 //! and nothing else: the same pixels give the same bytes. Their reports
@@ -84,6 +89,7 @@ mod run;
 mod session;
 mod ticker;
 mod version;
+mod view;
 
 use std::process::ExitCode;
 
@@ -94,6 +100,7 @@ pub use exit::Exit;
 pub use maps::{BuildFn, DEFAULT_MAP, GameMap, GameMaps};
 pub use play::{PlayGpu, PlayRun, PlayStats, Step};
 pub use version::{ENGINE_SHA, ENGINE_VERSION, PROFILE, RUSTC_VERSION, TARGET, UNKNOWN};
+pub use view::{FirstPersonFrame, FirstPersonView, FirstPersonWorld, MapView, WorldTexture};
 
 /// What a game binary tells the probe about itself.
 pub struct GameDef {

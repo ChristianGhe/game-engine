@@ -138,7 +138,7 @@ fn write_events(out: &mut impl Write, sim: &Sim) -> Result<u64, String> {
 }
 
 pub(crate) fn run(game: &GameDef, map: MapChoice, a: &RunArgs) -> Exit {
-    // Before anything runs or opens: only the first map has a view yet.
+    // Before anything runs or opens: a map without a view draws nothing.
     if let Some(message) = a.capture.as_ref().and_then(|_| map.no_view(game)) {
         return fail(Exit::Usage, &message);
     }
@@ -159,9 +159,10 @@ pub(crate) fn run(game: &GameDef, map: MapChoice, a: &RunArgs) -> Exit {
     };
     let (mut session, too_large) = Session::start(game, map, a.players, a.seed);
     // After the session, so a panic while the GPU opens has the seed, and
-    // before the first tick, so a missing adapter costs no run.
+    // before the first tick, so a missing adapter costs no run. A
+    // first-person world is built from the sim at tick 0.
     let mut capture = match &a.capture {
-        Some(args) => match Capture::open(game, args, a.ticks) {
+        Some(args) => match Capture::open(game, map.view(), session.sim(), args, a.ticks) {
             Ok(capture) => Some(capture),
             Err(message) => return fail(Exit::Usage, &message),
         },

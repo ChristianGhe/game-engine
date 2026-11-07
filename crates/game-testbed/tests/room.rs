@@ -3,9 +3,11 @@
 //! reports, hash-stream headers and dumps; `replay verify` picks it by the
 //! recording's sim-data hash; and its committed input scripts end where its
 //! scenarios' assertions (`docs/rungs/2/patches/room-scenarios.patch`, at
-//! G5) say. Until the first-person views (T15, T16), `shot`, `video` and
-//! `play` refuse the room before a GPU or window opens. The sim's side is
-//! `game-testbed-sim/tests/{room,sim_data}.rs`.
+//! G5) say. `shot` and `video` draw it in first person (T12; without an
+//! adapter those tests skip, unless `ENG_REQUIRE_GPU=1`), and until the
+//! first-person window (T15) `play` refuses it before a window opens. The
+//! sim's side is `game-testbed-sim/tests/{room,sim_data}.rs`, the view's
+//! `game-testbed-client`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -138,30 +140,16 @@ fn the_room_names_its_sim_data_in_recordings_reports_and_stream_headers() {
     assert_eq!(verified["sim_data_hash"], hex.as_str());
 }
 
-/// The top-down view draws the dots only, so the room's views are refused
-/// as usage errors, before the GPU or the window: no adapter or display is
-/// needed, no file is written and nothing panics. T15 and T16 lift this.
+/// `play`'s window draws the top-down view only, so it refuses the room as
+/// a usage error, before the window: no display is needed, no file is
+/// written and nothing panics. T15 lifts this.
 #[test]
-fn shot_video_and_play_refuse_the_room_until_it_has_a_view() {
-    let cases: [&[&str]; 3] = [
-        &[
-            "shot",
-            "--at-tick",
-            "5",
-            "--out",
-            "s.png",
-            "--report",
-            "r.json",
-        ],
-        &[
-            "video", "--ticks", "5", "--out", "v.apng", "--report", "r.json",
-        ],
-        &[
-            "play", "--ticks", "5", "--hashes", "h.txt", "--report", "r.json", "--record", "r.rec",
-        ],
-    ];
-    let expected = "[E-USAGE] [E-MAP] game-testbed's map \"room\" has no view yet \
-                    (GameDef::top_down draws dots only)\n";
+fn play_refuses_the_room_until_its_window_draws_first_person() {
+    let cases: [&[&str]; 1] = [&[
+        "play", "--ticks", "5", "--hashes", "h.txt", "--report", "r.json", "--record", "r.rec",
+    ]];
+    let expected = "[E-USAGE] [E-MAP] game-testbed's map \"room\" has a first-person view, \
+                    which play cannot show yet (its window draws GameDef::top_down only)\n";
     for args in cases {
         let dir = scratch(&format!("no-view-{}", args[0]));
         let mut args = args.to_vec();
@@ -295,4 +283,130 @@ fn the_rooms_scripts_end_where_their_scenarios_say() {
             );
         }
     }
+}
+
+/// Runs a command that renders. `None` if there is no adapter and CI does
+/// not require one.
+fn render(dir: &Path, args: &[&str]) -> Option<Output> {
+    let out = probe(dir, args);
+    let no_adapter = out.status.code() == Some(64) && text(&out).contains("[E-NO-ADAPTER]");
+    if no_adapter && std::env::var("ENG_REQUIRE_GPU").as_deref() != Ok("1") {
+        eprintln!("skipped: {}", text(&out));
+        return None;
+    }
+    Some(out)
+}
+
+/// Every frame of a PNG or APNG, as RGBA8, with its size.
+fn frames(path: &Path) -> Vec<(u32, u32, Vec<u8>)> {
+    let bytes = std::fs::read(path).unwrap();
+    let mut reader = png::Decoder::new(std::io::Cursor::new(&bytes[..]))
+        .read_info()
+        .unwrap();
+    let count = reader.info().animation_control.map_or(1, |a| a.num_frames);
+    (0..count)
+        .map(|_| {
+            let mut rgba8 = vec![0; reader.output_buffer_size().unwrap()];
+            let info = reader.next_frame(&mut rgba8).unwrap();
+            assert_eq!(
+                (info.color_type, info.bit_depth),
+                (png::ColorType::Rgba, png::BitDepth::Eight)
+            );
+            (info.width, info.height, rgba8)
+        })
+        .collect()
+}
+
+/// The room's palette, `game-testbed-client/palettes/room.gpl`, as sRGB
+/// codes.
+fn palette() -> std::collections::BTreeSet<[u8; 3]> {
+    let text =
+        std::fs::read_to_string(testbed("../game-testbed-client/palettes/room.gpl")).unwrap();
+    text.lines()
+        .filter_map(|line| {
+            let codes: Vec<u8> = line
+                .split_whitespace()
+                .take(3)
+                .map_while(|w| w.parse().ok())
+                .collect();
+            <[u8; 3]>::try_from(codes).ok()
+        })
+        .collect()
+}
+
+/// `shot --map room` draws the room in first person from player 0's eye,
+/// every look feature on: each pixel a colour of the room's palette, and
+/// the frame's counters those of the first-person graph (for `budgets.toml`'s
+/// coming `[gpu.first_person]`, T16 and T21): 7 draws (one chunk, the
+/// sprites, light, sky, fog, the tone map and the palette), 7 pipelines, 15
+/// bind groups, and the 624-byte uniform plus 16 bytes for the chunk and 32
+/// for each of the 3 sprites. `video` draws it too. What the pixels show is
+/// `game-testbed-client`'s `tests/room_gpu.rs`.
+#[test]
+fn shot_and_video_draw_the_room_in_first_person() {
+    let dir = scratch("first-person");
+    let shot = [
+        "shot",
+        "--map",
+        "room",
+        "--at-tick",
+        "60",
+        "--out",
+        "room.png",
+        "--report",
+        "r.json",
+    ];
+    let Some(out) = render(&dir, &shot) else {
+        return;
+    };
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let report = read_json(&dir.join("r.json"));
+    assert_eq!(report["map"], "room");
+    let per_frame = &report["gpu"]["per_frame"];
+    let counters = [
+        "draws",
+        "pipeline_switches",
+        "bind_group_switches",
+        "upload_bytes",
+    ]
+    .map(|key| per_frame[key].as_u64().unwrap());
+    assert_eq!(counters, [7, 7, 15, 624 + 16 + 3 * 32]);
+    let pictures = frames(&dir.join("room.png"));
+    let (width, height, rgba8) = &pictures[0];
+    assert_eq!((*width, *height), (320, 240));
+    let palette = palette();
+    assert_eq!(palette.len(), 256);
+    let colours: std::collections::BTreeSet<[u8; 3]> = rgba8
+        .chunks(4)
+        .map(|p| {
+            assert_eq!(p[3], 255);
+            [p[0], p[1], p[2]]
+        })
+        .collect();
+    assert!(
+        colours.is_subset(&palette),
+        "{:?}",
+        colours.difference(&palette)
+    );
+    assert!(colours.len() >= 40, "{} colours", colours.len());
+
+    let video = [
+        "video",
+        "--map",
+        "room",
+        "--ticks",
+        "120",
+        "--every",
+        "60",
+        "--out",
+        "room.apng",
+    ];
+    let out = render(&dir, &video).expect("an adapter, as for the shot");
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let pictures = frames(&dir.join("room.apng"));
+    assert_eq!(pictures.len(), 3);
+    // The second frame is the shot's tick.
+    assert_eq!(pictures[1].2, *rgba8);
+    // The marker turns between them.
+    assert_ne!(pictures[0].2, pictures[1].2);
 }

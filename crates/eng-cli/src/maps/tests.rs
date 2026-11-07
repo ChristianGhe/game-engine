@@ -15,6 +15,7 @@ use eng_schema_core::Schema;
 use eng_sim::{ScheduleError, Sim, SimBuilder, SimConfig, Stage, System, SystemFn, TickInputs};
 
 use super::{GameMap, GameMaps, select};
+use crate::view::MapView;
 use crate::{Exit, GameDef, PlayRun, PlayStats, Step, UNKNOWN, args, dispatch, replay};
 
 #[derive(Debug, Clone, Copy, PartialEq, Schema)]
@@ -107,10 +108,12 @@ static MAPS: GameMaps = GameMaps {
         GameMap {
             name: "walls",
             build: walled,
+            view: MapView::None,
         },
         GameMap {
             name: "short",
             build: short,
+            view: MapView::None,
         },
     ],
 };
@@ -166,6 +169,7 @@ fn only_the_first_map_may_lack_sim_data() {
         more: &[GameMap {
             name: "bare",
             build: plain,
+            view: MapView::None,
         }],
     };
     let err = maps.check(&GAME, 1, 0).unwrap_err();
@@ -193,6 +197,7 @@ fn running_a_later_map_without_sim_data_panics() {
         more: &[GameMap {
             name: "bare",
             build: plain,
+            view: MapView::None,
         }],
     };
     let map = select(&GAME, &BARE, Some("bare")).unwrap();
@@ -207,10 +212,12 @@ fn no_two_maps_share_a_sim_data_hash_or_a_name() {
             GameMap {
                 name: "walls",
                 build: walled,
+                view: MapView::None,
             },
             GameMap {
                 name: "walls-too",
                 build: walled_too,
+                view: MapView::None,
             },
         ],
     };
@@ -228,6 +235,7 @@ fn no_two_maps_share_a_sim_data_hash_or_a_name() {
         more: &[GameMap {
             name: "walls",
             build: walled,
+            view: MapView::None,
         }],
     };
     let err = same_name.check(&GAME, 1, 0).unwrap_err();
@@ -446,4 +454,44 @@ fn play_runs_the_map_it_is_given() {
     // Without maps, the game's build is its only map.
     let run = PlayRun::start(&GAME, &["play".to_string()]).unwrap();
     assert_eq!(run.map(), crate::DEFAULT_MAP);
+}
+
+/// A later map names its view (rung 2, T12): `shot` and `video` refuse one
+/// with none before a GPU opens; `play` refuses one in first person, as its
+/// window draws the top-down view only (`view.rs` has the messages).
+#[test]
+fn a_map_is_refused_where_its_view_cannot_be_drawn() {
+    let dir = scratch("no-view");
+    for line in [
+        "shot --at-tick 1 --out {dir}/s.png",
+        "video --ticks 2 --out {dir}/v.apng",
+    ] {
+        let line = format!("{line} --map walls");
+        assert_eq!(probe(&dir, &line), Exit::Usage, "{line}");
+    }
+    assert!(!dir.join("s.png").exists() && !dir.join("v.apng").exists());
+    let walls = select(&GAME, &MAPS, Some("walls")).unwrap();
+    assert!(walls.no_view(&GAME).is_some() && walls.no_window_view(&GAME).is_some());
+    let plain = select(&GAME, &MAPS, None).unwrap();
+    assert_eq!(
+        (plain.no_view(&GAME), plain.no_window_view(&GAME)),
+        (None, None)
+    );
+    static SEEN: GameMaps = GameMaps {
+        first: "plain",
+        more: &[GameMap {
+            name: "walls",
+            build: walled,
+            view: crate::view::tests::FIRST_PERSON,
+        }],
+    };
+    let seen = select(&GAME, &SEEN, Some("walls")).unwrap();
+    assert_eq!(seen.no_view(&GAME), None);
+    let line = ["play", "--ticks", "1", "--map", "walls"].map(String::from);
+    let run = PlayRun::start_with_maps(&GAME, &SEEN, &line).unwrap();
+    assert!(matches!(run.view(), MapView::FirstPerson(_)));
+    assert!(
+        run.view_refusal()
+            .is_some_and(|m| m.contains("has a first-person view"))
+    );
 }

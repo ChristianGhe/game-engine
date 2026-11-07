@@ -753,16 +753,14 @@ version = "0.1.0"
 dependencies = [
  "eng-app",
  "eng-cli",
- "eng-collision-api",
  "eng-core",
  "eng-input",
- "eng-math",
  "eng-platform-api",
  "eng-platform-headless",
  "eng-platform-winit",
- "eng-render",
  "eng-schema-json",
  "eng-sim",
+ "game-testbed-client",
  "game-testbed-sim",
  "kit-fps",
  "nv-flip",
@@ -775,6 +773,19 @@ dependencies = [
 [[package]]
 name = "game-testbed-client"
 version = "0.1.0"
+dependencies = [
+ "eng-cli",
+ "eng-collision-api",
+ "eng-collision-grid",
+ "eng-core",
+ "eng-gpu",
+ "eng-math",
+ "eng-render",
+ "eng-sim",
+ "game-testbed-sim",
+ "kit-fps",
+ "toml",
+]
 
 [[package]]
 name = "game-testbed-sim"

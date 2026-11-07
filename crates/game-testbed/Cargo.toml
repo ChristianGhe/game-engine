@@ -10,23 +10,21 @@ publish.workspace = true
 [dependencies]
 eng-app.workspace = true
 eng-cli.workspace = true
-eng-collision-api.workspace = true
-eng-core.workspace = true
-eng-math.workspace = true
-eng-render.workspace = true
+game-testbed-client.workspace = true
 game-testbed-sim.workspace = true
-kit-fps.workspace = true
 
 [lints]
 workspace = true
 
 [dev-dependencies]
+eng-core.workspace = true
 eng-input.workspace = true
 eng-platform-api.workspace = true
 eng-platform-headless.workspace = true
 eng-platform-winit.workspace = true
 eng-schema-json.workspace = true
 eng-sim.workspace = true
+kit-fps.workspace = true
 nv-flip.workspace = true
 png.workspace = true
 serde.workspace = true

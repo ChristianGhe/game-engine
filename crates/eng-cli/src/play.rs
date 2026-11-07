@@ -169,11 +169,16 @@ impl<'g> PlayRun<'g> {
     }
 
     /// The usage error (`[E-USAGE] [E-MAP]`) for a map a window cannot show
-    /// yet: [`GameDef::top_down`] draws the game's first map only, until
-    /// the first-person views (rung 2, T15 and T16). `None` for the first
-    /// map.
+    /// yet: the window draws [`GameDef::top_down`] only, so it refuses a
+    /// map whose view ([`crate::MapView`]) is first-person or none, until
+    /// the first-person window (rung 2, T15). `None` for the first map.
     pub fn view_refusal(&self) -> Option<String> {
-        self.map.no_view(self.game)
+        self.map.no_window_view(self.game)
+    }
+
+    /// The view of the map the run plays ([`crate::GameMap::view`]).
+    pub fn view(&self) -> crate::MapView {
+        self.map.view()
     }
 
     /// The bindings live input reads: `--bindings`, or the defaults (WASD,

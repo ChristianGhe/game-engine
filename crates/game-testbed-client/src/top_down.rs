@@ -50,7 +50,7 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
 }
 
 /// The top-down view of one frame.
-pub(crate) fn scene(frame: &TopDownFrame<'_>) -> TopDownScene {
+pub fn scene(frame: &TopDownFrame<'_>) -> TopDownScene {
     let world = frame.current.world();
     let room = *world.resource::<BoxRoom>();
     let radius = world.resource::<MoveConfig>().hull.half_extents.x;

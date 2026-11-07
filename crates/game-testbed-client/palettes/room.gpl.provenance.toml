@@ -1,0 +1,18 @@
+# Provenance sidecar for room.gpl (spec 6.11, "Provenance ledger"; rung 2
+# plan, decision 8): the repo's first non-code asset.
+version = 1
+
+asset = "room.gpl"
+# What it is and what it is from: written by a script in the repo, from
+# ramps of shades the script lists; no image, model or other palette went in.
+source = "generated"
+description = "The testbed room's 256-colour palette in GIMP's .gpl format: black, then ramps for greys, the room's materials, its things, sky and fog."
+made_by = "Claude (Opus 5.5), an AI agent, as rung 2 task T12, writing the script and running it"
+tool = "crates/game-testbed-client/palettes/room_gpl.py, run with Python 3 (3.9.6 on macOS); integer arithmetic only, so any Python 3 writes the same bytes"
+regenerate = "python3 room_gpl.py > room.gpl; python3 room_gpl.py --check room.gpl"
+# Not Doom's palette, which is id Software's work: spec 11 asks for tropes.
+licence = "MIT OR Apache-2.0, the repository's"
+licence_date = "2026-11-07"
+human_edits = "none"
+reviewer = "none yet: the owner looks at the room at gate G7"
+status = "placeholder"

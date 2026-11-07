@@ -8,6 +8,19 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+eng-cli.workspace = true
+eng-collision-api.workspace = true
+eng-collision-grid.workspace = true
+eng-core.workspace = true
+eng-math.workspace = true
+eng-render.workspace = true
+eng-sim.workspace = true
+game-testbed-sim.workspace = true
+kit-fps.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+eng-gpu.workspace = true
+toml.workspace = true

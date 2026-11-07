@@ -112,16 +112,28 @@ fn each_pass_that_runs_is_timed_once_timing_is_on() {
     assert_eq!(first.transient_textures, 0);
     // Asked again, the same frame's times.
     assert_eq!(stats(&gpu, &targets), first);
-    // The times are measurements: real, so not all 0, and never more than
-    // the frame could take.
+    // The times are measurements. A pair the GPU did not write is `None`
+    // (Metal under load once left a start unwritten, which read as 3.9e15
+    // ns), never a number no frame could take; and over a few timed frames
+    // some pass is measured, so timing is not all zeros or all `None`.
     eprintln!("pass times: {:?}", first.pass_times);
-    if let Some(times) = &first.pass_times {
-        assert!(times.iter().any(|t| t.nanoseconds > 0), "{times:?}");
+    let mut measured = false;
+    for frame in 0..4 {
+        if frame > 0 {
+            render(&gpu, &graph, &targets, &mut dyn_passes);
+        }
+        let Some(times) = stats(&gpu, &targets).pass_times else {
+            continue;
+        };
         assert!(
-            times.iter().all(|t| t.nanoseconds < 60_000_000_000),
+            times
+                .iter()
+                .all(|t| t.nanoseconds.is_none_or(|ns| ns < 60_000_000_000)),
             "{times:?}"
         );
+        measured |= times.iter().any(|t| t.nanoseconds.is_some_and(|ns| ns > 0));
     }
+    assert_eq!(measured, timestamps, "{:?}", first.pass_times);
 }
 
 #[test]

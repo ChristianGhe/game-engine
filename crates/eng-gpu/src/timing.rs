@@ -29,8 +29,19 @@ pub struct PassTime {
     /// The pass's name.
     pub pass: &'static str,
     /// From the GPU's timestamp at the pass's start to the one at its end,
-    /// in nanoseconds.
-    pub nanoseconds: u64,
+    /// in nanoseconds; `None` when the pair is not a measurement (a
+    /// timestamp the GPU left unwritten, or an end before its start), which
+    /// a report writes as null.
+    pub nanoseconds: Option<u64>,
+}
+
+/// The time between a pass's two timestamps, or `None` when they are not a
+/// measurement: a timestamp of 0, which the GPU left unwritten, or an end
+/// before its start. Metal under load has been seen to leave a pass's start
+/// unwritten while writing its end, which without this check reads as the
+/// GPU clock's whole age (about 45 days on one Mac).
+pub(crate) fn pass_nanoseconds(begin: u64, end: u64, period: f32) -> Option<u64> {
+    (begin != 0 && end >= begin).then(|| nanoseconds(end - begin, period))
 }
 
 /// What the last frame rendered into a [`crate::Targets`] measured beyond
@@ -292,7 +303,7 @@ fn read_times(
         .zip(stamps.as_chunks::<2>().0)
         .map(|(&pass, [begin, end])| PassTime {
             pass,
-            nanoseconds: nanoseconds(end.saturating_sub(*begin), period),
+            nanoseconds: pass_nanoseconds(*begin, *end, period),
         })
         .collect())
 }
@@ -305,7 +316,19 @@ pub(crate) fn nanoseconds(ticks: u64, period: f32) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::nanoseconds;
+    use super::{nanoseconds, pass_nanoseconds};
+
+    #[test]
+    fn a_pair_that_is_not_a_measurement_has_no_time() {
+        // The start left unwritten, with a real end: the failure seen on
+        // Metal, which once read as 3.9e15 ns.
+        assert_eq!(pass_nanoseconds(0, 3_955_064_264_700_375, 1.0), None);
+        assert_eq!(pass_nanoseconds(5_000, 0, 1.0), None);
+        assert_eq!(pass_nanoseconds(0, 0, 1.0), None);
+        assert_eq!(pass_nanoseconds(5_000, 4_999, 1.0), None);
+        assert_eq!(pass_nanoseconds(5_000, 5_000, 1.0), Some(0));
+        assert_eq!(pass_nanoseconds(1_000, 4_000, 41.666_668), Some(125_000));
+    }
 
     #[test]
     fn ticks_turn_into_nanoseconds() {

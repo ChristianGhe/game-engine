@@ -12,20 +12,17 @@ L0  eng-schema-core ▶ eng-derive;  eng-math, eng-core ▶ eng-schema-core   (c
 L1  eng-ecs  eng-net-transport  eng-net-wire                                (core set)
     eng-input ▶ eng-schema-json, eng-platform-api                           (std)
     eng-platform-headless ▶ eng-platform-api                                (std)
-    eng-platform-winit ▶ eng-platform-api, eng-platform-gcmouse*            (std)
+    eng-platform-winit ▶ eng-platform-api, eng-platform-gcmouse             (std)
 L2  eng-sim  eng-collision-api;  kit-fps ▶ eng-collision-api                (core set)
-    eng-collision-grid* ▶ eng-collision-api                                 (core set)
+    eng-collision-grid ▶ eng-collision-api                                  (core set)
     game-testbed-sim ▶ eng-sim, eng-collision-api, kit-fps,                 (core set)
-                       eng-collision-grid*
+                       eng-collision-grid
     eng-session ▶ eng-sim                                                   (core set)
 L3  eng-render ▶ eng-gpu                                                    (std)
 L4  eng-app ▶ eng-cli                                                       (std)
-game  game-testbed (binary) ▶ game-testbed-client*
-tool  xtask  eng-bench*
+game  game-testbed (binary) ▶ game-testbed-client
+tool  xtask  eng-bench
 ```
-
-\* Rung 2 crates, empty skeletons until their tasks in
-`docs/rungs/2/plan.md` (T5, T12, T14, T17).
 
 A crate depends only on lower layers, or on the same-layer crates its
 `same_layer` lists in `architecture.toml`, drawn above as `A ▶ B` (A
@@ -428,7 +425,7 @@ Renderer::render_to: the same three passes, into a window's SurfaceFrame
   current states and never writes, and it interpolates: at the frame's
   alpha, exactly the previous state at 0 and the current one at 1. `shot`
   and `video` pass one tick's state as both, at alpha 1, so they are
-  exact. The testbed's is `crates/game-testbed/src/top_down.rs` (plan
+  exact. The testbed's is `crates/game-testbed-client/src/top_down.rs` (plan
   difference 6): the room centred and fitted to the image (40 px/m at
   320x240), its wall under a floor inset by 0.1 m, and one disc per dot,
   as wide as its hull and coloured by player slot.

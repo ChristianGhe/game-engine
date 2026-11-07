@@ -453,3 +453,41 @@ their paths in `.claude/guard-unlock`: `docs/rungs/2/acceptance.json`,
     `.github/workflows/ci.yml`, and applies to d106e7f. It can wait for
     G5, or the owner can apply it sooner.
 - **T5 and T6 started** at about 14:10 EET, in worktrees pinned to d106e7f.
+
+**T6: maps and sim data** (b9f3795, follow-up 5dd4b27; decision 1,
+ADR-0023)
+- **Built** by one builder in a worktree pinned to d106e7f:
+  - constant resources in `eng-ecs`, outside the state, its hash,
+    snapshots and the `[E-NAN]` walk, sealed at build (`[E-SIM-DATA]`
+    after that);
+  - `Sim::sim_data_hash` (FNV-1a-64 over the values in name order; the
+    names are in the protocol);
+  - `GameMaps`, `--map` on run, dump-world, shot, video and play, and the
+    map and sim-data hash in recordings, hash-stream headers (`map=…
+    sim_data=0x…`, only for a map with sim data), dump-world and reports
+    (`map`, `sim_data_hash`, `files_read`);
+  - `replay verify` picks the map by its hash, or exits 64 with
+    `[E-RECORDING-BUILD]`.
+- **Unchanged for the dot map:** the five hash streams, the protocol,
+  the snapshot (466 bytes) and the dump. The protected `hash_equality`,
+  `never_panic`, `twin`, `version` and `exit_codes` tests pass unchanged.
+- **Tests:** 33 in four new files, which G5 protects (the plan's G5 row
+  names them).
+- **For the owner at G5:** `docs/rungs/2/patches/t6-replay-map.patch`
+  (SHA-256 `702972bb0aa3927a…`). With it, xtask replay reads `map` from
+  `scenarios.toml`. In a scratch clone with the patch, `quick` was 7 of 7.
+- **Review:** a fresh reviewer approved it with no blockers (10 min, 160k
+  tokens, 52 calls). The follow-up commit takes its first point: a known
+  answer for the sim-data hash (`0x87f22d556000363a`, checked by
+  hand-packing its 152 bytes), so CI checks the encoding on every
+  target. The NaN pointer for a constant is now dump-world's
+  `/constants/…` path. The reviewer's other points are carries in the
+  plan's T7, T15, T16 and T22 rows.
+- **A possible flake, for the owner:** in the builder's scratch clone,
+  one full `quick` failed the lock patch's test
+  `run_lock::tests::a_killed_holder_leaves_no_stale_lock`. The holder's
+  PID read back as none under load. It passed 5 of 5 alone, and has not
+  failed on CI. The test is in protected `xtask/`.
+- **Checked on `main`:** `quick` 7 of 7 after the cherry-picks.
+- **Cost:** the builder took 33 + 3.5 min, 374k tokens and 223 calls. It
+  counts as one session (14 of 52).

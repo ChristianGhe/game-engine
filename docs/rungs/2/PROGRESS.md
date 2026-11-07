@@ -429,3 +429,27 @@ their paths in `.claude/guard-unlock`: `docs/rungs/2/acceptance.json`,
 **Next:** T5 onward, at most two builders at once; then sitting 2 (G5).
 
 **Sessions:** this sitting is session 13 of 52.
+
+**After the sitting** (same session)
+- **The push:** the owner pushed `main` (6443ea5..d106e7f), reinstalled
+  the hooks from it (`cargo xtask install-hooks`), and removed
+  `.claude/guard-unlock`.
+- **CI run 42370402965 on d106e7f:** green on its second attempt.
+  - **Rung 1b's computed acceptance:** 18 of 18. `shot-exact` and
+    `shot-flip` pass against the new goldens on all five runners, and
+    `owner-play` is the owner's, accepted.
+  - **The lock:** both Windows jobs passed with it.
+- **The first attempt failed one step, `esc` on ubuntu-24.04.** Its `play`
+  exited at once with `[E-NO-DISPLAY] … Failed to open connection to X
+  server`, 1.1 s after the `window` step's `play` had quit cleanly under
+  the same Xvfb. Every other step passed. The owner re-ran the failed job
+  (`gh run rerun --failed`), and it passed.
+  - **The likely cause:** Xvfb resets when its last client leaves, and a
+    client that connects during the reset fails. `xvfb-run` discards
+    Xvfb's log, so the logs cannot show a reset rather than a crash.
+  - **For the owner:** `docs/rungs/2/patches/ci-xvfb-noreset.patch`
+    (SHA-256 `92106cdea24b1f87…`) adds `-noreset` to the workflow's
+    `xvfb-run` server arguments. It is one line in the protected
+    `.github/workflows/ci.yml`, and applies to d106e7f. It can wait for
+    G5, or the owner can apply it sooner.
+- **T5 and T6 started** at about 14:10 EET, in worktrees pinned to d106e7f.

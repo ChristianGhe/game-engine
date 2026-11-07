@@ -890,3 +890,76 @@ owner; the test is in protected `xtask/`)
   `read_to_end` returns, sleep (say up to 60 s) instead of returning, so
   only the kill ends a child that is still wanted. The parent always
   kills it, and the timeout still ends an orphan.
+
+**CI after T14, and the nextest fix** (2fa0fe1)
+- **What failed:** CI run 42403525706 at a9aec89 failed every native and
+  test job with nextest's "creating test list failed". T14's
+  `tests/start.rs` is `harness = false` and did not answer `--list`. This
+  Mac has no nextest, so `cargo test` here was green.
+- **The fix:** it now speaks libtest's listing, as winit's conformance
+  harness does. Run 42404277380 is green on every job.
+- **A possible flake:** in the failed run, `shot-flip` on
+  ubuntu-24.04-arm also failed once. The shot process for `dot-square-0`
+  ended with no exit code and no output. It passed on the next run.
+
+**T17: benchmarks** (3d4b1b7; decision 14, O7)
+- **Built** by one builder in a worktree pinned to 6fbdd7a, with two
+  follow-ups. `eng-bench` has 11 gungraun benchmarks; their counts on
+  Linux x64 in Docker are in the builder's report.
+  - **Traces:** a grid trace into a wall costs 2,820 instructions, across
+    the hall 3,410 and the ground probe 2,315. The brute-force world costs
+    7 to 14 times as much.
+  - **Movement:** `ground_move` walking costs 13,051, stepping up 20,040.
+  - **Ticks:** a dot tick costs 4,575, a room tick 17,912, and the room's
+    build 229,056.
+  - **Layout:** every dependency is a dev-dependency, because arch-check
+    forbids an engine crate depending on a `game-*` crate. gungraun runs
+    on Linux only.
+- **For the owner at G5**, in one commit, since an xtask test reads
+  ci.yml:
+  - `docs/rungs/2/patches/t17-xtask-bench.patch` (SHA-256
+    `9f6bca4b39f6f80b…`);
+  - `t17-workflow-bench.patch` (`bb5201a228385319…`).
+
+  Both apply to 3d4b1b7. In the builder's scratch clone, `quick` was 7 of
+  7 with both applied.
+- **The gate:**
+  - **The base:** off main, the merge base with `origin/main`. On main,
+    the push's `before`, if it is an ancestor.
+  - **The rule:** over 5% fails, unless an accepted ADR added in the push
+    names the benchmark. Off main, both the acceptance and the name are
+    read from `origin/main`'s copy, which must be byte-identical. A
+    self-accepted ADR makes the step pending, with
+    `[W-BENCH-EXCUSED] … once the owner accepts`.
+  - **Pending, not a pass:** a base equal to HEAD compares nothing, so
+    the step is pending.
+  - **Trusted state:** read before any of the head's code runs.
+  - **The limit, in the module docs:** a check on agent branches, not a
+    security boundary. The owner's push to main remains the gate.
+  - **Proven in Docker:** a planted second ground probe (+12% to +18% on
+    three benchmarks) failed the gate. With a self-accepted ADR it was
+    pending on an agent branch, and excused on a push to main.
+- **Review:** a fresh reviewer found no blockers in the commit and the
+  workflow's security fine (14 min, 167k tokens). It asked for four fixes
+  to the patch before G5, all done.
+- **Security:** three rounds of an automated security review of the
+  builder's new code each found a real gap, all closed:
+  - a self-accepted ADR;
+  - an accepted ADR edited on a branch, or reused from before;
+  - a base the branch controls, and state read after the head's code ran.
+- **A merge slip on `main`, mine:**
+  - **What happened:** the first cherry-pick conflicted with T14 in the
+    root `Cargo.toml`. The guard refused my edits to the unparseable
+    file, and the next command, chained with `;`, committed it with its
+    conflict markers.
+  - **Repaired before any push:** the markers were removed, `main` was
+    soft-reset to 2fa0fe1, and the three commits were recommitted as
+    3d4b1b7.
+  - **Checked:** `quick` 7 of 7, the lint job 7 of 7, and
+    `cargo metadata --locked` is consistent.
+  - **Lesson:** chain merge steps with `&&` only, and check for conflict
+    markers before `--continue`.
+- **Carries** are in T21's row; G5's row protects `eng-bench`'s
+  benchmarks.
+- **Cost:** the builder took about 2 h 20 min in three runs and 620k
+  tokens. It counts as one session (23 of 52).

@@ -46,13 +46,18 @@
 //!
 //! Rung 2's first-person pipeline (`render-retro`, ADR-0020), beside the
 //! top-down view and sharing nothing with it but the blit shader:
-//! - **[`FirstPersonRenderer`]** (tasks T9 and T10) draws a [`GpuWorld`]
+//! - **[`FirstPersonRenderer`]** (tasks T9 to T11) draws a [`GpuWorld`]
 //!   as a [`FirstPersonScene`] sees it, through eng-gpu's sorted graph:
 //!   `opaque` draws the world's [`Chunk`]s, each placed by one instance
 //!   record of its origin minus the eye taken in f64, into linear albedo,
 //!   reversed-Z depth (`near / distance ahead`, 0 where nothing was drawn)
 //!   and `info` ([`Info`]: region, [`SurfaceClass`] and object id in two
-//!   `u32`s); `light` lights the albedo by its region's light in lux
+//!   `u32`s); `sprites` draws each thing ([`Sprite`]) on top as a
+//!   billboard standing on its feet, turned about Z only to face the
+//!   camera, showing the frame of its [`RotationSheet`] that its rotation
+//!   toward the eye picks, alpha-tested and depth-tested, with class
+//!   [`SurfaceClass::Sprite`], its id and its region in `info`; `light`
+//!   lights the albedo by its region's light in lux
 //!   ([`RegionLook`], [`LIGHT_STEP_LUX`]) into luminance in nits; `sky`
 //!   draws the [`Sky`] where the depth is 0; `fog` moves each pixel toward
 //!   its region's fog with distance; `tonemap` exposes by the scene's
@@ -73,7 +78,8 @@
 //!   reversed-Z perspective with an infinite far plane.
 //! - **[`sprite_rotation`]**: which of a thing's 8 rotations the viewer
 //!   sees, by plan decision 4's integer rule, and [`RotationSheet`]'s
-//!   mirror flags for sheets that draw only 5.
+//!   mirror flags for sheets that draw only 5; the `sprites` pass applies
+//!   them each frame ([`Sprite::frame_toward`]).
 //! - **[`PaletteLut`]**: the palette look's 32x32x32 table, baked from
 //!   sRGB colours by OKLab distance, and the [`BAYER_4X4`] dither matrix;
 //!   **[`GplPalette`]** reads the colours from GIMP's plain-text `.gpl`
@@ -98,7 +104,7 @@ pub use error::RenderError;
 pub use first_person::{
     CONTRAST_STEPS, Chunk, DITHER_CODES, FirstPersonRenderer, FirstPersonScene, GpuWorld, Info,
     LIGHT_FALLOFF, LIGHT_STEP_LUX, LIGHT_STEPS, LOW_RESOLUTION, Look, MAX_REGIONS, RegionLook, Sky,
-    SurfaceClass, WorldMesh, WorldVertex, exposure,
+    Sprite, SurfaceClass, WorldMesh, WorldVertex, exposure,
 };
 pub use gpl::GplPalette;
 pub use palette::{

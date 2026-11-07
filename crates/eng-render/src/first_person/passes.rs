@@ -44,6 +44,12 @@ const fn node(
 }
 
 pub(crate) const OPAQUE: PassNode = node("opaque", &[], OPAQUE_TARGETS);
+/// The things' billboards, drawn on top of `opaque`'s three targets
+/// (`first_person/sprites.rs`).
+pub(crate) const SPRITES: PassNode = PassNode {
+    continues: Some("opaque"),
+    ..node("sprites", &[], OPAQUE_TARGETS)
+};
 pub(crate) const LIGHT: PassNode = node("light", OPAQUE_TARGETS, LIT_TARGET);
 pub(crate) const SKY: PassNode = PassNode {
     continues: Some("light"),
@@ -84,19 +90,29 @@ pub(crate) const PLAIN_TONEMAP: PassNode = node("tonemap", LIT_TARGET, &[Resourc
 /// their passes in this order.
 ///
 /// [`FirstPersonRenderer`]: crate::FirstPersonRenderer
-pub(crate) const LOOK_NODES: [PassNode; 6] = [OPAQUE, LIGHT, SKY, FOG, TONEMAP, PALETTE];
-pub(crate) const LOOK_NODES_PRESENTED: [PassNode; 7] =
-    [OPAQUE, LIGHT, SKY, FOG, TONEMAP, PALETTE, PRESENT.node()];
+pub(crate) const LOOK_NODES: [PassNode; 7] = [OPAQUE, SPRITES, LIGHT, SKY, FOG, TONEMAP, PALETTE];
+pub(crate) const LOOK_NODES_PRESENTED: [PassNode; 8] = [
+    OPAQUE,
+    SPRITES,
+    LIGHT,
+    SKY,
+    FOG,
+    TONEMAP,
+    PALETTE,
+    PRESENT.node(),
+];
 /// The plain pipeline's graph: no fog and no palette at all.
-pub(crate) const PLAIN_NODES: [PassNode; 4] = [OPAQUE, LIGHT, SKY, PLAIN_TONEMAP];
-pub(crate) const PLAIN_NODES_PRESENTED: [PassNode; 5] =
-    [OPAQUE, LIGHT, SKY, PLAIN_TONEMAP, PRESENT.node()];
+pub(crate) const PLAIN_NODES: [PassNode; 5] = [OPAQUE, SPRITES, LIGHT, SKY, PLAIN_TONEMAP];
+pub(crate) const PLAIN_NODES_PRESENTED: [PassNode; 6] =
+    [OPAQUE, SPRITES, LIGHT, SKY, PLAIN_TONEMAP, PRESENT.node()];
 
 /// The opaque pass: everything cleared (albedo and `info` to 0, depth to
-/// the far plane), then each chunk drawn with its own record.
+/// the far plane), then each chunk drawn with its own record, the frame's
+/// records from `first_record` on.
 pub(crate) struct Opaque<'a> {
     pub(crate) pipeline: &'a MeshPipeline,
     pub(crate) chunks: &'a [ChunkDraw],
+    pub(crate) first_record: u32,
 }
 
 impl Pass for Opaque<'_> {
@@ -106,7 +122,7 @@ impl Pass for Opaque<'_> {
 
     fn record(&mut self, rec: &mut PassRecorder) {
         rec.clear(LinearRgba::TRANSPARENT);
-        for (record, chunk) in (0u32..).zip(self.chunks) {
+        for (record, chunk) in (self.first_record..).zip(self.chunks) {
             rec.mesh(
                 self.pipeline,
                 MeshDraw {

@@ -16,6 +16,7 @@ const LIGHT_WGSL: &str = include_str!("../src/light.wgsl");
 const FOG_WGSL: &str = include_str!("../src/fog.wgsl");
 const TONEMAP_WGSL: &str = include_str!("../src/pbr_neutral.wgsl");
 const PALETTE_WGSL: &str = include_str!("../src/palette.wgsl");
+const SPRITES_WGSL: &str = include_str!("../src/sprites.wgsl");
 
 fn class() -> impl Strategy<Value = SurfaceClass> {
     (0..SurfaceClass::ALL.len()).prop_map(|i| SurfaceClass::ALL[i])
@@ -148,7 +149,14 @@ fn frame_struct(wgsl: &str) -> Option<&str> {
 #[test]
 fn every_first_person_shader_declares_the_uniform_alike() {
     let opaque = frame_struct(OPAQUE_WGSL).expect("opaque.wgsl declares the uniform");
-    for wgsl in [SKY_WGSL, LIGHT_WGSL, FOG_WGSL, TONEMAP_WGSL, PALETTE_WGSL] {
+    for wgsl in [
+        SKY_WGSL,
+        LIGHT_WGSL,
+        FOG_WGSL,
+        TONEMAP_WGSL,
+        PALETTE_WGSL,
+        SPRITES_WGSL,
+    ] {
         assert_eq!(frame_struct(wgsl), Some(opaque));
     }
     // 39 16-byte rows, as `first_person/frame.rs` writes them.
@@ -184,6 +192,12 @@ fn every_first_person_shader_declares_the_uniform_alike() {
 
 #[test]
 fn the_shaders_repeat_the_crates_constants() {
+    // The sprites pass writes its class into `info` itself.
+    let sprite = format!("const SPRITE: u32 = {}u;", SurfaceClass::Sprite.code());
+    assert!(
+        SPRITES_WGSL.contains(&sprite),
+        "sprites.wgsl lacks {sprite}"
+    );
     // The palette pass's Bayer matrix, row by row.
     let start = PALETTE_WGSL
         .find("const BAYER_4X4: array<u32, 16> = array<u32, 16>(")

@@ -7,7 +7,12 @@
 //! `info`'s region, class and id differ between the surfaces of one chunk
 //! anyway, so they must be per vertex, and with the material there too a
 //! chunk is one draw of one record whatever its materials. A chunk's record
-//! leaves its `material` at 0, unread; T11's sprites use it.
+//! leaves its `material` at 0, unread; the sprites' records use theirs
+//! (`first_person/sprites.rs`).
+//!
+//! After the chunks' indices the index buffer holds the six of one
+//! billboard, `0 1 2 0 2 3`, which every sprite shares: the sprites' shader
+//! makes its corners from the vertex index, so they need no vertices.
 
 use std::ops::Range;
 
@@ -16,6 +21,10 @@ use eng_math::WorldPos;
 
 use super::info::{Info, SurfaceClass};
 use crate::{PaletteLut, RenderError};
+
+/// The billboard's two triangles over its four corners, counter-clockwise
+/// seen from the eye: bottom left, bottom right, top right, top left.
+const BILLBOARD: [u32; 6] = [0, 1, 2, 0, 2, 3];
 
 /// The palette table's layers: its 32,768 cells, 64x64 a layer.
 const PALETTE_LAYERS: usize = 8;
@@ -149,6 +158,10 @@ pub(crate) struct ChunkDraw {
 pub struct GpuWorld {
     pub(crate) scene: Scene,
     pub(crate) chunks: Vec<ChunkDraw>,
+    /// Where the sprites' billboard lies in the index buffer.
+    pub(crate) billboard: Range<u32>,
+    /// How many materials its table holds, which sprites may name.
+    pub(crate) materials: usize,
     /// The palette table's first layer in the 64 px sRGB array, if the
     /// world was loaded with one.
     pub(crate) palette: Option<u32>,
@@ -157,8 +170,9 @@ pub struct GpuWorld {
 impl GpuWorld {
     /// Checks `mesh` and uploads it, once: every chunk's vertices one after
     /// another in one vertex buffer and their indices in one index buffer,
-    /// each chunk drawn from its own first vertex. A mesh that cannot be
-    /// drawn is an `[E-SCENE]` error naming the chunk, before any GPU work:
+    /// each chunk drawn from its own first vertex, then the sprites' six
+    /// billboard indices. A mesh that cannot be drawn is an `[E-SCENE]`
+    /// error naming the chunk, before any GPU work:
     /// an origin, position or texture coordinate that is not finite, indices
     /// that are not whole triangles or point past the chunk's vertices, a
     /// material the mesh lacks, a vertex whose class is
@@ -216,6 +230,12 @@ impl GpuWorld {
                 });
             }
         }
+        let billboard_start = u32::try_from(indices.len()).map_err(|_| RenderError::Scene {
+            shape: None,
+            problem: "the world has more indices than a draw can count".into(),
+        })?;
+        indices.extend_from_slice(&BILLBOARD);
+        let billboard = billboard_start..billboard_start.saturating_add(BILLBOARD.len() as u32);
         let table = palette.map(PaletteLut::to_rgba8).unwrap_or_default();
         let layer_bytes = (PALETTE_SIDE * PALETTE_SIDE * 4) as usize;
         let mut textures = mesh.textures.to_vec();
@@ -258,6 +278,8 @@ impl GpuWorld {
         Ok(Self {
             scene,
             chunks,
+            billboard,
+            materials: mesh.materials.len(),
             palette,
         })
     }
@@ -268,7 +290,8 @@ impl GpuWorld {
         self.palette.is_some()
     }
 
-    /// The bytes written to the GPU when it loaded ([`Scene::bytes`]).
+    /// The bytes written to the GPU when it loaded ([`Scene::bytes`]): the
+    /// billboard's 24 bytes of indices among them.
     pub fn bytes(&self) -> u64 {
         self.scene.bytes()
     }

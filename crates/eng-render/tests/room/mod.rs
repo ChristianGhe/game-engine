@@ -269,6 +269,7 @@ pub fn scene(corner: [f64; 3]) -> FirstPersonScene {
         ev100: Ev100(EV100 as f32),
         look: Look::OFF,
         regions: REGIONS.to_vec(),
+        sprites: Vec::new(),
     }
 }
 

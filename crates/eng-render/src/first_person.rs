@@ -7,6 +7,7 @@
 //! | Pass | Reads | Writes | Here | Switched off |
 //! |---|---|---|---|---|
 //! | `opaque` | none | `albedo` (`Rgba16Float`), `info` (`Rg32Uint`), `depth` (`Depth32Float`) | the world's chunks ([`GpuWorld`]) | never |
+//! | `sprites` | none | continues `opaque`: `albedo`, `info`, `depth` | each thing's billboard ([`Sprite`], `sprites.wgsl`), alpha-tested, depth-tested and written | never |
 //! | `light` | `albedo`, `info`, `depth` | `lit` (`Rgba16Float`) | region light, Lambertian, in nits (`light.wgsl`, [`Look`]) | falloff, banding and contrast each |
 //! | `sky` | `depth` | continues `light`: `lit` | [`Sky`] where the depth is 0 (`sky.wgsl`) | flat: the horizon's colour |
 //! | `fog` | `lit`, `info`, `depth` | `fogged` (`Rgba16Float`) | each region's fog, by distance (`fog.wgsl`) | bypassed: the tone map reads `lit` |
@@ -15,18 +16,17 @@
 //! | `present` | `output` | `surface` | rung 1b's blit, for targets with a surface; k×k for upscaled targets | low resolution is the targets' |
 //!
 //! **The plain pipeline** ([`FirstPersonRenderer::render_plain`]) is
-//! `opaque`, `light` with the region's light alone, a flat `sky`, and the
-//! tone map from `lit` into `output`: no fog or palette pass at all. With
-//! every look switch off ([`Look::OFF`]), [`FirstPersonRenderer::render`]
-//! gives its image byte for byte (plan decision 13).
-//!
-//! T11's `sprites` continues `opaque`, drawing into all three of its
-//! targets.
+//! `opaque`, `sprites`, `light` with the region's light alone, a flat
+//! `sky`, and the tone map from `lit` into `output`: no fog or palette pass
+//! at all. With every look switch off ([`Look::OFF`]),
+//! [`FirstPersonRenderer::render`] gives its image byte for byte (plan
+//! decision 13).
 
 mod frame;
 mod info;
 mod look;
 mod passes;
+mod sprites;
 mod world;
 
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -44,6 +44,7 @@ pub use look::{
     CONTRAST_STEPS, DITHER_CODES, LIGHT_FALLOFF, LIGHT_STEP_LUX, LIGHT_STEPS, LOW_RESOLUTION, Look,
     MAX_REGIONS, RegionLook, exposure,
 };
+pub use sprites::Sprite;
 pub use world::{Chunk, GpuWorld, WorldMesh, WorldVertex};
 
 use crate::{FirstPersonCamera, FrameCounters, RenderError};
@@ -51,6 +52,7 @@ use passes::{
     ALBEDO, DEPTH, FOG, FOGGED, INFO, LIGHT, LIT, LOOK_NODES, LOOK_NODES_PRESENTED, OPAQUE, Opaque,
     PALETTE, PLAIN_NODES, PLAIN_NODES_PRESENTED, PLAIN_TONEMAP, Present, SKY, Screen, TONEMAP,
 };
+use sprites::Sprites;
 
 const OPAQUE_WGSL: &str = include_str!("opaque.wgsl");
 const LIGHT_WGSL: &str = include_str!("light.wgsl");
@@ -61,8 +63,9 @@ const PALETTE_WGSL: &str = include_str!("palette.wgsl");
 const PRESENT_WGSL: &str = include_str!("present.wgsl");
 
 /// One frame of the first-person view: where the camera is, how it
-/// exposes, what the sky and each region look like, and which look
-/// features are on. The world it shows is a [`GpuWorld`], loaded once.
+/// exposes, what the sky and each region look like, which look features
+/// are on, and the things in view. The world it shows is a [`GpuWorld`],
+/// loaded once.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FirstPersonScene {
     /// Its near plane is normally [`crate::NEAR_PLANE`].
@@ -76,6 +79,9 @@ pub struct FirstPersonScene {
     /// [`Info::region`] carries; at most [`MAX_REGIONS`]. A region past the
     /// list's end looks as [`RegionLook::DEFAULT`].
     pub regions: Vec<RegionLook>,
+    /// The things, each drawn as a billboard of the rotation it shows the
+    /// eye (`first_person/sprites.rs`).
+    pub sprites: Vec<Sprite>,
 }
 
 /// Which of the renderer's graphs a frame runs: the look's, by which of
@@ -140,6 +146,7 @@ impl Kind {
 /// [`Kind`], offscreen and presented.
 pub struct FirstPersonRenderer {
     opaque: MeshPipeline,
+    sprites: MeshPipeline,
     light: ScreenPipeline,
     plain_light: ScreenPipeline,
     sky: ScreenPipeline,
@@ -194,6 +201,7 @@ impl FirstPersonRenderer {
                 depth_write: true,
                 cull_back: true,
             })?,
+            sprites: sprites::pipeline(gpu)?,
             light: screen("light", LIGHT_WGSL, "light_fragment", &LIGHT, false)?,
             plain_light: screen(
                 "plain light",
@@ -232,13 +240,16 @@ impl FirstPersonRenderer {
     /// `[E-SCENE]` before any GPU work: a camera
     /// [`FirstPersonCamera::view_proj`] refuses at the targets' aspect, a
     /// sky, fog or EV100 the checks refuse ([`FirstPersonScene`]'s fields),
-    /// or the palette on for a world loaded without a table.
+    /// a [`Sprite`] with feet or a size that is not finite, a size not above
+    /// 0 or a material the world lacks, or the palette on for a world loaded
+    /// without a table.
     ///
     /// A frame draws each chunk with triangles once, with its own instance
-    /// record (its origin minus the eye, in f64); then one draw each for
-    /// light, sky, fog, the tone map and the palette, those of fog and the
-    /// palette only when switched on, and the blit with a surface. It
-    /// uploads the 624-byte uniform and 16 bytes per drawn chunk.
+    /// record (its origin minus the eye, in f64); then every sprite in one
+    /// draw, if there are any; then one draw each for light, sky, fog, the
+    /// tone map and the palette, those of fog and the palette only when
+    /// switched on, and the blit with a surface. It uploads the 624-byte
+    /// uniform, 16 bytes per drawn chunk and 32 per sprite (two records).
     pub fn render(
         &self,
         gpu: &Gpu,
@@ -296,9 +307,9 @@ impl FirstPersonRenderer {
         self.read(gpu, targets, INFO)
     }
 
-    /// The albedo the last frame's opaque pass drew, linear, as half floats
-    /// (`Rgba16Float`): each surface's texel as the adapter decoded it,
-    /// before any light. Refused as [`FirstPersonRenderer::read_depth`] is,
+    /// The albedo the last frame's opaque and sprites passes drew, linear,
+    /// as half floats (`Rgba16Float`): each surface's and sprite's texel as
+    /// the adapter decoded it, before any light. Refused as [`FirstPersonRenderer::read_depth`] is,
     /// and also after a frame with fog, whose `fogged` takes `albedo`'s
     /// pooled texture once the light pass has read it.
     pub fn read_albedo(&self, gpu: &Gpu, targets: &Targets) -> Result<Texels, RenderError> {
@@ -357,6 +368,7 @@ impl FirstPersonRenderer {
         let (width, height) = targets.size();
         let view = scene.camera.view_proj(width as f32 / height as f32)?;
         frame::check(scene)?;
+        sprites::check(&scene.sprites, world.materials)?;
         if matches!(kind, Kind::Look { palette: true, .. }) && world.palette.is_none() {
             return Err(RenderError::Scene {
                 shape: None,
@@ -367,14 +379,13 @@ impl FirstPersonRenderer {
         }
         let uniform = frame::uniform(&view, scene, world.palette.unwrap_or(0));
         let eye = view.eye();
-        let records: Vec<InstanceRecord> = world
-            .chunks
-            .iter()
-            .map(|chunk| {
-                let o = chunk.origin;
-                InstanceRecord::relative([o.x, o.y, o.z], [eye.x, eye.y, eye.z], 0)
-            })
-            .collect();
+        // The sprites' two records each, then one per chunk.
+        let mut records: Vec<InstanceRecord> = sprites::records(&scene.sprites, eye);
+        let first_chunk = u32::try_from(records.len()).unwrap_or(u32::MAX);
+        records.extend(world.chunks.iter().map(|chunk| {
+            let o = chunk.origin;
+            InstanceRecord::relative([o.x, o.y, o.z], [eye.x, eye.y, eye.z], 0)
+        }));
         let input = FrameInput {
             surface: window,
             uniform: &uniform,
@@ -384,6 +395,13 @@ impl FirstPersonRenderer {
         let mut opaque = Opaque {
             pipeline: &self.opaque,
             chunks: &world.chunks,
+            first_record: first_chunk,
+        };
+        let mut sprites = Sprites {
+            pipeline: &self.sprites,
+            billboard: world.billboard.clone(),
+            // `sprites::check` made sure twice as many fit a u32.
+            count: u32::try_from(scene.sprites.len()).unwrap_or(0),
         };
         let plain = kind == Kind::Plain;
         let mut light = Screen(
@@ -401,7 +419,7 @@ impl FirstPersonRenderer {
         let mut palette = Screen(PALETTE, &self.palette);
         let mut present = Present(&self.present);
         let presented = window.is_some() || targets.has_surface();
-        let mut passes: Vec<&mut dyn Pass> = vec![&mut opaque, &mut light, &mut sky];
+        let mut passes: Vec<&mut dyn Pass> = vec![&mut opaque, &mut sprites, &mut light, &mut sky];
         if plain {
             passes.push(&mut plain_tonemap);
         } else {

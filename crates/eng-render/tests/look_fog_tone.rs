@@ -185,6 +185,7 @@ fn sky_scene(sky: Sky) -> FirstPersonScene {
             ..Look::ON
         },
         regions: Vec::new(),
+        sprites: Vec::new(),
     }
 }
 

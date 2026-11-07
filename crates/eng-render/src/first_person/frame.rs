@@ -194,6 +194,7 @@ mod tests {
                     fog_density: 0.25,
                 },
             ],
+            sprites: Vec::new(),
         }
     }
 

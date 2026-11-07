@@ -14,7 +14,7 @@ use std::path::Path;
 use eng_core::{PlayerCommand, Tick};
 use eng_input::{InputScript, Recording, RecordingHeader, TickHash, write_recording};
 use eng_schema_json::JsonValue;
-use eng_sim::{Sim, SimConfig};
+use eng_sim::{SIM_DATA_KEY, Sim, SimConfig};
 
 use crate::args::RunArgs;
 use crate::assertions::{self, Tracker};
@@ -355,7 +355,7 @@ pub(crate) fn write_outputs(
                 ("map", JsonValue::str(map.name())),
                 ("sim_data_hash", JsonValue::hex(sim.sim_data_hash())),
                 (
-                    "constants",
+                    SIM_DATA_KEY,
                     JsonValue::from_walk(&|v| sim.world().visit_constants(v)),
                 ),
             ]);

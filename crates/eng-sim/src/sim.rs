@@ -4,7 +4,7 @@ use core::fmt;
 use eng_core::{PlayerCommand, PlayerSlot, Tick};
 use eng_ecs::World;
 use eng_math::{Fnv1a64, Pcg32};
-use eng_schema_core::{DecodeError, Encoder, NonFinite, Schema, Sink, find_non_finite};
+use eng_schema_core::{DecodeError, Encoder, NonFinite, Schema, Sink, Visitor, find_non_finite};
 
 use crate::schedule::{ScheduleError, Stage, System, resolve};
 
@@ -13,6 +13,11 @@ pub const GAMEPLAY_STREAM: u64 = 0x6761_6d65_706c_6179; // "gameplay"
 /// PCG32 stream for cosmetic randomness (Doom's `M_Random`). Cosmetic
 /// randomness lives outside the simulation and never feeds back into it.
 pub const COSMETIC_STREAM: u64 = 0x636f_736d_6574_6963; // "cosmetic"
+
+/// The key the constant resources (sim data) go under where they are shown
+/// beside the per-tick state: `dump-world`'s file, and so the `[E-NAN]`
+/// pointer of a non-finite constant (`/constants/<name>/...`).
+pub const SIM_DATA_KEY: &str = "constants";
 
 /// The cosmetic generator for a session seed.
 pub fn cosmetic_rng(seed: u64) -> Pcg32 {
@@ -114,7 +119,15 @@ impl SimBuilder {
     pub fn build(mut self) -> Result<Sim, ScheduleError> {
         let systems = resolve(self.systems)?;
         self.world.apply_deferred();
-        if let Some(bad) = find_non_finite(&|v| self.world.visit_constants(v)) {
+        // Under `constants`, so the pointer is the one `dump-world` shows
+        // them at: `/constants/<name>/...`.
+        let walk = |v: &mut dyn Visitor| {
+            v.begin_struct("eng.sim.SimData");
+            v.field(SIM_DATA_KEY);
+            self.world.visit_constants(v);
+            v.end_struct();
+        };
+        if let Some(bad) = find_non_finite(&walk) {
             panic!("[E-NAN] in the sim data (constant resources): {bad}");
         }
         self.world.seal_constants();

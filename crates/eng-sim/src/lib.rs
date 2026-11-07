@@ -21,6 +21,6 @@ mod sim;
 
 pub use schedule::{ScheduleError, Stage, System, SystemFn};
 pub use sim::{
-    COSMETIC_STREAM, GAMEPLAY_STREAM, GameplayRng, RestoreError, Sim, SimBuilder, SimConfig,
-    SimInfo, SimTick, StepError, TickInputs, cosmetic_rng,
+    COSMETIC_STREAM, GAMEPLAY_STREAM, GameplayRng, RestoreError, SIM_DATA_KEY, Sim, SimBuilder,
+    SimConfig, SimInfo, SimTick, StepError, TickInputs, cosmetic_rng,
 };

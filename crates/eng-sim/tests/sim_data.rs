@@ -80,7 +80,11 @@ fn plain_sim() -> Sim {
 }
 
 fn data_sim(gain: f32, wall_count: usize) -> Sim {
-    let mut b = SimBuilder::new(CONFIG);
+    data_sim_for(CONFIG, gain, wall_count)
+}
+
+fn data_sim_for(session: SimConfig, gain: f32, wall_count: usize) -> Sim {
+    let mut b = SimBuilder::new(session);
     b.world_mut().insert_resource(Value(0.0));
     b.world_mut().insert_constant(Gain(gain));
     b.world_mut().insert_constant(walls(wall_count));
@@ -128,6 +132,39 @@ fn the_sim_data_hash_is_fnv_over_the_constants_in_name_order() {
     h.write(&eng_schema_core::to_bytes(&Gain(0.5)));
     h.write(&eng_schema_core::to_bytes(&walls(3)));
     assert_eq!(sim.sim_data_hash(), h.finish());
+}
+
+/// A known answer, computed once on aarch64-apple-darwin (rung 2, T6) and
+/// checked by hand: FNV-1a-64 over the 152 bytes `Gain(0.5)` (f32 LE) then
+/// `walls(3)` (a u32 LE count, six f64 LE per wall) give it. CI checks it
+/// on every target, so a change in the encoding or the hash between
+/// targets, or over time, fails here; the test above recomputes it with the
+/// same encoder and cannot see that.
+const GAIN_HALF_AND_THREE_WALLS: u64 = 0x87f2_2d55_6000_363a;
+
+#[test]
+fn the_sim_data_hash_of_fixed_constants_is_a_known_answer() {
+    let hash = data_sim(0.5, 3).sim_data_hash();
+    assert_eq!(hash, GAIN_HALF_AND_THREE_WALLS, "{hash:#018x}");
+}
+
+#[test]
+fn the_sim_data_hash_changes_with_the_data_only() {
+    // Not with the session: its seed, players or tick rate.
+    for (tick_rate, players, seed) in [(60, 1, 0), (60, 4, 7), (30, 2, u64::MAX), (60, 1, 99)] {
+        let session = SimConfig {
+            tick_rate,
+            players,
+            seed,
+        };
+        let sim = data_sim_for(session, 0.5, 3);
+        assert_eq!(
+            sim.sim_data_hash(),
+            GAIN_HALF_AND_THREE_WALLS,
+            "{session:?}"
+        );
+    }
+    assert_ne!(data_sim(0.5, 2).sim_data_hash(), GAIN_HALF_AND_THREE_WALLS);
 }
 
 #[test]
@@ -202,7 +239,7 @@ fn a_system_cannot_insert_sim_data() {
 
 #[test]
 #[should_panic(
-    expected = "[E-NAN] in the sim data (constant resources): non-finite float at /test.Gain/0"
+    expected = "[E-NAN] in the sim data (constant resources): non-finite float at /constants/test.Gain/0"
 )]
 fn non_finite_sim_data_fails_the_build() {
     let mut b = SimBuilder::new(CONFIG);

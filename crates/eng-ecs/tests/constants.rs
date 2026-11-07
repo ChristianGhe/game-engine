@@ -121,6 +121,8 @@ fn constants_are_outside_the_state_and_the_dump() {
     // The dump has no constants: the NaN above is not in it, so neither
     // the per-system `[E-NAN]` walk nor `state_hash`'s sees it.
     assert_eq!(find_non_finite(&|v| with.visit_dump(v)), None);
+    // Relative to the walk; eng-sim's build check and `dump-world` put it
+    // under `/constants` (eng-sim's `SIM_DATA_KEY`).
     let found = find_non_finite(&|v| with.visit_constants(v)).expect("the NaN");
     assert_eq!(found.path, "/test.Gravity/0");
 }

@@ -5,8 +5,8 @@
 //! |---|---|
 //! | `resumed` | the window is made (hidden); `start`; `window`; then it is shown |
 //! | `window_event` | `event`, for the ones the contract has |
-//! | `device_event` | `event`: raw mouse motion, while the window has focus |
-//! | `about_to_wait` | `frame`, when it is due; the app's answer becomes `ControlFlow` |
+//! | `device_event` | `event`: raw mouse motion, while the window has focus (not on macOS) |
+//! | `about_to_wait` | `event`: on macOS, the GCMouse shim's motion since the last one; then `frame`, when it is due; the app's answer becomes `ControlFlow` |
 //! | `exiting` | `stop` |
 
 use std::sync::Arc;
@@ -18,6 +18,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::{WindowAttributes, WindowId};
 
 use crate::map;
+use crate::motion::RawMotion;
 use crate::pace::{Clock, Pacer};
 use crate::request::Requests;
 use crate::window::WinitWindow;
@@ -65,6 +66,9 @@ pub(crate) struct Run<'a> {
     requests: Requests,
     /// macOS's natural scrolling is on (the wheel's signs).
     natural: bool,
+    /// The platform's GCMouse shim (macOS): told of focus, drained each
+    /// `about_to_wait`.
+    motion: &'a mut RawMotion,
     started: bool,
     exited: bool,
     stopped: bool,
@@ -73,7 +77,14 @@ pub(crate) struct Run<'a> {
 }
 
 impl<'a> Run<'a> {
-    pub(crate) fn new(app: &'a mut dyn App, attributes: WindowAttributes, natural: bool) -> Self {
+    pub(crate) fn new(
+        app: &'a mut dyn App,
+        attributes: WindowAttributes,
+        natural: bool,
+        motion: &'a mut RawMotion,
+    ) -> Self {
+        // A run starts without focus, whatever the last one left.
+        motion.focus(false);
         Self {
             app,
             attributes,
@@ -82,6 +93,7 @@ impl<'a> Run<'a> {
             window: None,
             requests: Requests::default(),
             natural,
+            motion,
             started: false,
             exited: false,
             stopped: false,
@@ -132,10 +144,21 @@ impl<'a> Run<'a> {
         self.call(event_loop, now, |app, ctx| app.event(ctx, event));
     }
 
+    /// Delivers the GCMouse shim's motion since the last drain, if it
+    /// moved. Whether the app is still live after it.
+    fn drain_motion(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        if let Some(event) = self.motion.drain() {
+            self.deliver(event_loop, event);
+        }
+        self.live()
+    }
+
     /// `stop`, once, if the app had `start`; then the window goes. Called
     /// from `exiting`, and again after the loop returns in case winit
     /// ended it without `exiting`.
     pub(crate) fn finish(&mut self) {
+        // Motion not yet delivered is dropped with the run.
+        self.motion.focus(false);
         if self.started && !self.stopped {
             self.stopped = true;
             let now = self.now();
@@ -151,7 +174,8 @@ impl<'a> Run<'a> {
         }
     }
 
-    /// Focus changed: the grab follows before the app hears of it.
+    /// Focus changed: the grab and the GCMouse shim follow before the app
+    /// hears of it.
     fn focus(&mut self, focused: bool) {
         if let Some(window) = &self.window {
             if focused {
@@ -160,6 +184,7 @@ impl<'a> Run<'a> {
                 self.requests.focus_lost(&window.0);
             }
         }
+        self.motion.focus(self.requests.focused());
     }
 }
 
@@ -202,6 +227,11 @@ impl ApplicationHandler for Run<'_> {
             return;
         }
         if let WindowEvent::Focused(focused) = event {
+            // The shim's motion from while the window had focus comes
+            // before the loss.
+            if !focused && !self.drain_motion(event_loop) {
+                return;
+            }
             self.focus(focused);
         }
         if let Some(event) = map::window_event(&event, self.natural) {
@@ -220,7 +250,8 @@ impl ApplicationHandler for Run<'_> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if !self.live() {
+        // The shim's motion first, as the batch's last event.
+        if !self.live() || !self.drain_motion(event_loop) {
             return;
         }
         let now = self.now();

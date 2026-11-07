@@ -9,5 +9,20 @@ publish.workspace = true
 
 [dependencies]
 
+# Only `src/macos.rs` uses them (ADR-0021).
+[target.'cfg(target_os = "macos")'.dependencies]
+block2.workspace = true
+objc2.workspace = true
+objc2-game-controller.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+# GCMouse's source starts only on the main thread, so the test of the real
+# shim is a harness of its own.
+[[test]]
+name = "start"
+harness = false
+
 [lints]
 workspace = true

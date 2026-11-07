@@ -1,7 +1,8 @@
 //! The desktop platform (spec 6.10, 9.2): winit windows and input behind
 //! the `eng-platform-api` contract. It is the only crate that may import
 //! winit (`[floor]` in `architecture.toml`), and no winit type appears in
-//! its API: [`WinitPlatform`] and [`display_required`] are all of it.
+//! its API: [`WinitPlatform`], [`RawMotionCallbacks`] and
+//! [`display_required`] are all of it.
 //!
 //! - **One window per run.** Each [`Platform::run`] makes a window with
 //!   the platform's title, hidden, then calls `start`, hands the window to
@@ -46,11 +47,13 @@
 //!   close requests, which the app handles. Mouse buttons, and the wheel
 //!   turned to the contract's signs (winit's say where content moves; on
 //!   macOS the platform reads natural scrolling once, when it is made, and
-//!   turns it back). Raw mouse motion is winit's device motion, only while
-//!   the window has focus, and not on macOS, where winit's deltas are
-//!   accelerated and coalesced: there it comes from the GCMouse shim
-//!   (rung 2, task T14). No gamepad events until gilrs (rung 6).
-//!   `map.rs` has the details.
+//!   turns it back). Raw mouse motion comes only while the window has
+//!   focus: winit's device motion, except on macOS, where winit's deltas
+//!   are accelerated and coalesced and it comes from the GCMouse shim
+//!   (`eng-platform-gcmouse`, ADR-0021) instead, summed into one event each
+//!   `about_to_wait`; [`WinitPlatform::raw_motion_callbacks`] counts the
+//!   shim's callbacks. No gamepad events until gilrs (rung 6). `map.rs`
+//!   and `motion.rs` have the details.
 //! - **Requests** (ADR-0022, with its proposed Amendment 1). Borderless
 //!   fullscreen on the window's monitor, at once. A cursor grab hides the
 //!   cursor, moves it to the middle of the window and tries winit's
@@ -69,11 +72,12 @@
 //!
 //! It passes the contract's conformance suite where a display exists
 //! (rung 1b, T10). `examples/events.rs` prints what a real window reports,
-//! to check a machine's input by hand; `--grab` and `--fullscreen` make
-//! the requests.
+//! to check a machine's input by hand, with the shim's callbacks on macOS;
+//! `--grab` and `--fullscreen` make the requests.
 #![forbid(unsafe_code)]
 
 mod map;
+mod motion;
 mod pace;
 mod request;
 mod run;
@@ -84,6 +88,7 @@ use winit::error::EventLoopError;
 use winit::event_loop::EventLoop;
 use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
 
+use crate::motion::RawMotion;
 use crate::run::Run;
 
 /// The desktop platform: one window per run, on winit's event loop.
@@ -95,6 +100,8 @@ pub struct WinitPlatform {
     title: String,
     /// macOS's natural scrolling, read once when the platform is made.
     natural: bool,
+    /// The GCMouse shim, on macOS.
+    motion: RawMotion,
 }
 
 impl WinitPlatform {
@@ -121,7 +128,37 @@ impl WinitPlatform {
             event_loop,
             title: title.to_string(),
             natural: natural_scrolling(),
+            motion: RawMotion::start(),
         })
+    }
+
+    /// On macOS, the GCMouse shim's callbacks since the platform was made,
+    /// focused or not: a count to read at any time, during a run or after,
+    /// for the mouse's own rate (raw motion events follow the wakes, not
+    /// the mouse). `None` where the shim does not run: every other system,
+    /// where raw motion is winit's own.
+    pub fn raw_motion_callbacks(&self) -> Option<RawMotionCallbacks> {
+        self.motion.callbacks().map(RawMotionCallbacks)
+    }
+}
+
+/// A count of the GCMouse shim's callbacks
+/// ([`WinitPlatform::raw_motion_callbacks`]). Cheap to clone, and readable
+/// from any thread.
+#[derive(Clone, Debug)]
+pub struct RawMotionCallbacks(eng_platform_gcmouse::Callbacks);
+
+impl RawMotionCallbacks {
+    /// The callbacks so far.
+    pub fn get(&self) -> u64 {
+        self.0.get()
+    }
+
+    /// The mice the shim found, as of the last time it looked: at the
+    /// start, on each `FocusGained`, and while focused once a second. With
+    /// none, no callback comes.
+    pub fn mice(&self) -> usize {
+        self.0.mice()
     }
 }
 
@@ -156,7 +193,7 @@ impl Platform for WinitPlatform {
         let attributes = winit::window::Window::default_attributes()
             .with_title(self.title.as_str())
             .with_visible(false);
-        let mut run = Run::new(app, attributes, self.natural);
+        let mut run = Run::new(app, attributes, self.natural, &mut self.motion);
         let result = self.event_loop.run_app_on_demand(&mut run);
         run.finish();
         if let Some(why) = run.unavailable.take() {

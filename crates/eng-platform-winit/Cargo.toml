@@ -9,6 +9,8 @@ publish.workspace = true
 
 [dependencies]
 eng-platform-api.workspace = true
+# The GCMouse shim (ADR-0021): raw motion on macOS; it does nothing elsewhere.
+eng-platform-gcmouse.workspace = true
 # The window seam (ADR-0016): the window handed to the app implements the
 # two handle traits by passing winit's through. Never re-exported.
 raw-window-handle.workspace = true

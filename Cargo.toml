@@ -67,6 +67,14 @@ png = "=0.18.1"
 # off the pinned configuration (plan decision 3). Tests only: nv-flip-sys
 # compiles FLIP's C++ through `cc`.
 nv-flip = "=0.1.2"
+# Batch 3 (rung 2). The Game Controller bindings, only in the GCMouse shim,
+# eng-platform-gcmouse ([floor], and deny.toml's wrapper ban), on macOS only,
+# with the plan's features ("Crate batch 3"). block2 and objc2 (batch 2,
+# already in the graph through winit and wgpu) name the shim's handler block
+# and the objects it keeps.
+objc2-game-controller = { version = "=0.3.2", default-features = false, features = ["std", "block2", "GCDevice", "GCMouse", "GCMouseInput", "GCPhysicalInputProfile"] }
+block2 = { version = "=0.6.2", default-features = false, features = ["std"] }
+objc2 = { version = "=0.6.5", default-features = false, features = ["std"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

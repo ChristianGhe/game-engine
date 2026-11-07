@@ -15,7 +15,7 @@
 //!   drops any that comes without focus. On macOS winit's deltas are
 //!   accelerated and coalesced, not the raw counts the contract promises,
 //!   so the platform leaves them out there ([`RAW_MOTION`]): macOS motion
-//!   comes from the GCMouse shim (`eng-platform-gcmouse`, task T14).
+//!   comes from the GCMouse shim (`eng-platform-gcmouse`, `motion.rs`).
 //!   Under X11's `Confined` grab (an X pointer grab) the X server sends
 //!   winit each raw motion twice, from the same device (seen under Xvfb
 //!   with XTEST input; once each without the grab). SDL drops a raw motion

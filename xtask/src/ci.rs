@@ -189,6 +189,16 @@ pub fn quick() -> Result<String, String> {
     ci_report::finish(&root, "quick", steps, started, serde_json::Map::new())
 }
 
+/// Whether `name` is one of [`JOBS`]: checked before `main` takes the run
+/// lock, so a mistyped job never waits.
+pub fn known_job(name: &str) -> Result<(), String> {
+    if JOBS.contains(&name) {
+        Ok(())
+    } else {
+        Err(format!("unknown job {name:?}: {}", JOBS.join(" ")))
+    }
+}
+
 pub fn job(name: &str) -> Result<String, String> {
     let root = util::root()?;
     let started = Instant::now();

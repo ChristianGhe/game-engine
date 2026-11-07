@@ -32,6 +32,11 @@ pub fn cargo(root: &Path) -> Command {
     let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     cmd.current_dir(root);
     cmd.envs(crate::stamp::vars(root).iter().map(|(k, v)| (k, v)));
+    // An xtask started below a run that holds the lock fails at once
+    // instead of waiting for it (`run_lock.rs`).
+    if let Some(lock) = crate::run_lock::holding() {
+        cmd.env(crate::run_lock::HELD_BY, lock);
+    }
     cmd
 }
 
@@ -39,17 +44,28 @@ pub fn cargo(root: &Path) -> Command {
 /// returns its stdout. The full output goes to
 /// `target/agent-logs/xtask-<name>.log`.
 pub fn run_quiet(root: &Path, name: &str, cmd: &mut Command) -> Result<String, String> {
+    run_quiet_code(root, name, cmd).1
+}
+
+/// [`run_quiet`], with the exit code: `None` if `cmd` did not start or a
+/// signal ended it.
+pub fn run_quiet_code(
+    root: &Path,
+    name: &str,
+    cmd: &mut Command,
+) -> (Option<i32>, Result<String, String>) {
     let shown = format!("{cmd:?}");
-    let out = cmd
-        .output()
-        .map_err(|e| format!("cannot start {shown}: {e}"))?;
+    let out = match cmd.output() {
+        Ok(out) => out,
+        Err(e) => return (None, Err(format!("cannot start {shown}: {e}"))),
+    };
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let text = format!("{stdout}{}", String::from_utf8_lossy(&out.stderr));
     let log_dir = root.join("target/agent-logs");
     let _ = fs::create_dir_all(&log_dir);
     let log = log_dir.join(format!("xtask-{}.log", name.replace([' ', ':', '/'], "-")));
     let _ = fs::write(&log, format!("$ {shown}\n{text}"));
-    if out.status.success() {
+    let result = if out.status.success() {
         Ok(stdout)
     } else {
         Err(format!(
@@ -59,7 +75,8 @@ pub fn run_quiet(root: &Path, name: &str, cmd: &mut Command) -> Result<String, S
             log.display(),
             tail(&text, 30)
         ))
-    }
+    };
+    (out.status.code(), result)
 }
 
 pub fn tail(text: &str, lines: usize) -> String {

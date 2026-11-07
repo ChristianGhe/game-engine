@@ -587,6 +587,17 @@ client's state at alpha 1, so the pictures are exact.
 ## Agent tooling
 
 - `cargo xtask` is the only entry point; CI only calls it.
+- `quick`, `ci --job`, `replay` and `selftest` build into `target/` and
+  run what they built, so each holds an OS file lock on
+  `target/xtask/run.lock` for its whole run (`xtask/src/run_lock.rs`),
+  taken once its arguments are checked. Another session's run prints one
+  line naming the file, and the holder's PID except on Windows (which
+  will not read a locked file), then waits; with `ENG_XTASK_NO_WAIT` set
+  it exits 75 instead. The Stop hook never waits: while the lock is held
+  it skips its `quick` and says so in one line. An xtask that a holder
+  starts and that would take the same lock fails at once
+  (`[E-LOCK-NESTED]`). The lock ends with its process, so it cannot go
+  stale. A plain `cargo` command takes no lock.
 - CI's `test` job runs the workspace's tests, then, each as a step of its
   own, the harnesses whose results acceptance relies on: `known-answers`,
   `exit-codes`, `crash-json`, `version`, `live-input`, `wire-session` and

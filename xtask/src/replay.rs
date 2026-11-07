@@ -44,7 +44,8 @@ pub struct Options {
     pub out: Option<PathBuf>,
 }
 
-pub fn main(args: &[&str]) -> Result<String, String> {
+/// `cargo xtask replay`'s arguments.
+pub fn parse(args: &[&str]) -> Result<Options, String> {
     let mut opts = Options::default();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -57,7 +58,7 @@ pub fn main(args: &[&str]) -> Result<String, String> {
             other => return Err(format!("replay: unknown argument {other:?}")),
         }
     }
-    run(&util::root()?, &opts)
+    Ok(opts)
 }
 
 pub fn host_triple(root: &Path) -> Result<String, String> {

@@ -14,7 +14,7 @@ use std::process::{Command, ExitCode, Stdio};
 
 use serde_json::Value;
 
-use crate::{acceptance, util};
+use crate::{acceptance, run_lock, util};
 
 fn stdin_json() -> Value {
     let mut text = String::new();
@@ -74,6 +74,7 @@ fn fingerprint(root: &Path) -> String {
 
 /// `Stop`: run `quick` when Rust files changed since the last green run.
 /// Blocks the stop once (exit 2) on failure; honours `stop_hook_active`.
+/// Never waits for another run's lock: it skips the check and says so.
 pub fn stop() -> ExitCode {
     let input = stdin_json();
     if input["stop_hook_active"] == true {
@@ -87,17 +88,31 @@ pub fn stop() -> ExitCode {
     if fs::read_to_string(&stamp).is_ok_and(|s| s == now) {
         return ExitCode::SUCCESS;
     }
+    // Behind `ci --job all` a wait for the run lock has no bound, nobody
+    // would see the waiting line, and on the hook's timeout the stop would
+    // go unchecked anyway. So a held lock skips the check: seen here before
+    // cargo starts (its own build lock can wait too), or, if another run
+    // takes it in between, by `quick` itself, which exits `BUSY_EXIT`.
+    let lock = root.join(run_lock::PATH);
+    if let Err(pid) = run_lock::try_acquire(&lock, |_| {}) {
+        return skipped(&lock, pid);
+    }
     // The working tree's own `quick`, not this prebuilt copy's: a branch may
     // have changed the check tooling, and only the guard must come from main.
+    // That `quick` takes the run lock; this process must not, or `quick`
+    // would wait for it forever (`run_lock.rs`).
     let mut cmd = util::cargo(&root);
-    cmd.args(["xtask", "quick"]);
-    match util::run_quiet(&root, "stop-quick", &mut cmd) {
-        Ok(_) => {
+    cmd.args(["xtask", "quick"]).env(run_lock::NO_WAIT, "1");
+    match util::run_quiet_code(&root, "stop-quick", &mut cmd) {
+        (_, Ok(_)) => {
             let _ = fs::create_dir_all(stamp.parent().expect("has parent"));
             let _ = fs::write(&stamp, fingerprint(&root));
             ExitCode::SUCCESS
         }
-        Err(summary) => {
+        (Some(code), Err(_)) if code == i32::from(run_lock::BUSY_EXIT) => {
+            skipped(&lock, run_lock::holder(&lock))
+        }
+        (_, Err(summary)) => {
             eprintln!(
                 "`cargo xtask quick` failed after your changes:\n{summary}\n\
                  Fix it, or say in your summary why it is red. Green is required at push."
@@ -105,6 +120,16 @@ pub fn stop() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// The Stop hook's one line when another run holds the lock. The stop goes
+/// ahead unchecked, and the next stop checks again.
+fn skipped(lock: &Path, pid: Option<u32>) -> ExitCode {
+    eprintln!(
+        "Stop hook: `cargo xtask quick` not run, so not checked: {}",
+        run_lock::holds(lock, pid)
+    );
+    ExitCode::SUCCESS
 }
 
 /// `SessionStart`: the rung, its acceptance status and the last CI result.

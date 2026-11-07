@@ -48,17 +48,21 @@ pub const CASES: [&str; 22] = [
     "golden-edit",
 ];
 
+/// The cases `cargo xtask selftest [CASE]` names: all with no argument.
+pub fn cases<'a>(args: &[&'a str]) -> Result<Vec<&'a str>, String> {
+    match args {
+        [] => Ok(CASES.to_vec()),
+        [case] if CASES.contains(case) => Ok(vec![*case]),
+        _ => Err(format!("selftest cases: {}", CASES.join(" "))),
+    }
+}
+
 /// `cargo xtask selftest [CASE]`: one line per case, then the counts.
-pub fn main(args: &[&str]) -> Result<String, String> {
+pub fn main(cases: &[&str]) -> Result<String, String> {
     let root = util::root()?;
-    let cases: Vec<&str> = match args {
-        [] => CASES.to_vec(),
-        [case] if CASES.contains(case) => vec![*case],
-        _ => return Err(format!("selftest cases: {}", CASES.join(" "))),
-    };
     let strict = strict();
     let mut outcomes = Vec::new();
-    for case in cases {
+    for &case in cases {
         let name = format!("violation:{case}");
         let started = Instant::now();
         let result = outcome(run_case(&root, case), strict);

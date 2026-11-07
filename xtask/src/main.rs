@@ -28,6 +28,7 @@ mod hooks;
 mod oracle;
 mod push;
 mod replay;
+mod run_lock;
 mod selftest;
 mod selftest_golden;
 mod shell;
@@ -65,17 +66,23 @@ fn main() -> ExitCode {
     if let ["hook", "guard", ..] = args.as_slice() {
         return guard::main();
     }
+    // The commands that build into `target/` and run what they built hold
+    // the checkout's run lock, so two sessions' runs queue (`run_lock.rs`).
+    // Arguments are checked first: a usage error never waits.
     let result = match args.as_slice() {
-        ["quick"] => ci::quick(),
-        ["ci", "--job", job] => ci::job(job),
+        ["quick"] => run_lock::run(ci::quick),
+        ["ci", "--job", job] => ci::known_job(job).and_then(|()| run_lock::run(|| ci::job(job))),
         ["arch-check"] => util::root().and_then(|root| arch::check(&root)),
         ["size-check"] => util::root().and_then(|root| size::check(&root)),
         ["docs-check"] => util::root().and_then(|root| docs::check(&root)),
-        ["replay", rest @ ..] => replay::main(rest),
+        ["replay", rest @ ..] => replay::parse(rest)
+            .and_then(|opts| run_lock::run(|| replay::run(&util::root()?, &opts))),
         ["compare-hashes", dirs @ ..] if dirs.len() >= 2 => {
             util::root().and_then(|root| replay::compare_dirs(&root, dirs))
         }
-        ["selftest", rest @ ..] => selftest::main(rest),
+        ["selftest", rest @ ..] => {
+            selftest::cases(rest).and_then(|cases| run_lock::run(|| selftest::main(&cases)))
+        }
         ["acceptance", dir] => util::root().and_then(|root| acceptance::compute(&root, dir)),
         ["oracle-check", "--base", base, "--head", head] => oracle::check(base, head),
         ["push", rest @ ..] => push::main(rest),

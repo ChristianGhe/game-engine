@@ -8,8 +8,8 @@
 mod rig;
 
 use eng_gpu::{
-    DRAW, FrameInput, FullscreenDesc, Graph, InstanceRecord, MeshDraw, PassDecl, Resource,
-    SceneDesc, ScreenDesc, TONEMAP, Target,
+    ColourTag, DRAW, FrameInput, FullscreenDesc, Graph, InstanceRecord, Material, MeshDraw,
+    PassDecl, Resource, SceneDesc, SceneTexture, ScreenDesc, TONEMAP, Target,
 };
 use rig::{Script, Step, at, at_clip, draw_quad, plain_uniform, quad, rgba, scene_of, uniform};
 
@@ -294,5 +294,67 @@ fn a_frame_without_what_its_pipelines_bind_is_an_error() {
     assert_eq!(
         e,
         "[E-GPU] pass `draw`: the pipeline binds the scene, but the frame has none"
+    );
+}
+
+#[test]
+fn a_screen_pass_that_binds_the_scene_samples_its_textures() {
+    let Some(gpu) = rig::gpu() else { return };
+    let colour = [30u8, 160, 220, 255];
+    let texels = colour.repeat(64 * 64);
+    let textures = [SceneTexture {
+        side: 64,
+        tag: ColourTag::Srgb,
+        rgba8: &texels,
+    }];
+    let materials = [Material {
+        texture: 0,
+        alpha_test: false,
+    }];
+    let scene = gpu
+        .scene(&SceneDesc {
+            label: "backdrop",
+            materials: &materials,
+            textures: &textures,
+            ..SceneDesc::default()
+        })
+        .unwrap_or_else(|e| panic!("{e}"));
+    let backdrop = gpu
+        .screen_pipeline(&ScreenDesc {
+            label: "backdrop",
+            wgsl: MESH,
+            entry: "scene_fragment",
+            reads: &[],
+            writes: &[Resource::Output],
+            scene: true,
+        })
+        .unwrap_or_else(|e| panic!("{e}"));
+    let graph = Graph::new(&[DRAW_OUTPUT], Target::Offscreen).unwrap_or_else(|e| panic!("{e}"));
+    let targets = rig::targets(&gpu, 8, 8);
+    let bytes = plain_uniform();
+    let input = FrameInput {
+        uniform: &bytes,
+        scene: Some(&scene),
+        ..FrameInput::default()
+    };
+    let (counters, image) = rig::render(
+        &gpu,
+        &graph,
+        &targets,
+        &input,
+        &mut [Script(DRAW_OUTPUT, vec![Step::Screen(backdrop)])],
+    );
+    rig::assert_close(image.pixel(1, 1), colour, "top left");
+    rig::assert_close(image.pixel(6, 6), colour, "bottom right");
+    // The frame and the scene, each bound once; the uniform uploaded, no
+    // records.
+    assert_eq!(
+        counters,
+        eng_gpu::FrameCounters {
+            draws: 1,
+            pipeline_switches: 1,
+            bind_group_switches: 2,
+            upload_bytes: 32,
+        }
     );
 }

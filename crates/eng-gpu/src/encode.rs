@@ -10,7 +10,6 @@ use crate::layout::{self, MAX_COLOUR_TARGETS};
 use crate::pass::{Command, FrameInput, Pass, PassRecorder};
 use crate::scene::{self, InstanceRecord};
 use crate::targets::Targets;
-use crate::timing::{FrameQueries, Timed};
 
 mod draw;
 
@@ -33,6 +32,10 @@ impl Graph {
         input: &FrameInput<'_>,
         passes: &mut [&mut dyn Pass],
     ) -> Result<(FrameCounters, u32), GpuError> {
+        // Held for the frame. Its times go first, so that a frame that fails
+        // leaves none of the last frame's.
+        let mut timing = targets.timing();
+        timing.forget();
         if passes.len() != self.declared.len() {
             return Err(GraphError::PassCount {
                 expected: self.declared.len(),
@@ -143,52 +146,54 @@ impl Graph {
             0
         };
         let names: Vec<&'static str> = self.passes.iter().map(|p| p.name).collect();
-        let (counters, groups, timed) = gpu
-            .scoped(|| {
-                let mut frame = Frame {
-                    gpu,
-                    instances: upload(gpu, &uploads),
-                    cursor: 0,
-                    group: binds_frame.then(|| frame_group(gpu, input.uniform, &records)),
-                    scene: input.scene,
-                    counters: FrameCounters {
-                        upload_bytes: uploads.len() as u64 + frame_bytes,
-                        ..FrameCounters::default()
-                    },
-                };
-                let queries = FrameQueries::new(gpu, self.passes.len());
-                let mut encoder =
-                    gpu.device
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("frame"),
-                        });
-                let mut groups = 0;
-                let steps = self.passes.iter().zip(&self.loads).zip(&recorded);
-                for (at, (((decl, &loads), rec), views)) in steps.zip(&views).enumerate() {
-                    if gpu.debug {
-                        encoder.push_debug_group(decl.name);
-                        groups += 1;
-                    }
-                    let timestamps = queries.as_ref().and_then(|q| q.writes(at));
-                    frame.encode(&mut encoder, decl, rec, loads, views, timestamps);
-                    if gpu.debug {
-                        encoder.pop_debug_group();
-                    }
+        let encoded = gpu.scoped(|| {
+            let mut frame = Frame {
+                gpu,
+                instances: upload(gpu, &uploads),
+                cursor: 0,
+                group: binds_frame.then(|| frame_group(gpu, input.uniform, &records)),
+                scene: input.scene,
+                counters: FrameCounters {
+                    upload_bytes: uploads.len() as u64 + frame_bytes,
+                    ..FrameCounters::default()
+                },
+            };
+            // With timing off, or no timestamp queries, none: the frame
+            // is encoded with no timestamps, as before rung 2.
+            let queries = timing.begin(gpu, self.passes.len());
+            let mut encoder = gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("frame"),
+                });
+            let mut groups = 0;
+            let steps = self.passes.iter().zip(&self.loads).zip(&recorded);
+            for (at, (((decl, &loads), rec), views)) in steps.zip(&views).enumerate() {
+                if gpu.debug {
+                    encoder.push_debug_group(decl.name);
+                    groups += 1;
                 }
-                if let Some(queries) = &queries {
-                    queries.resolve(&mut encoder);
+                let timestamps = queries.and_then(|q| q.writes(at));
+                frame.encode(&mut encoder, decl, rec, loads, views, timestamps);
+                if gpu.debug {
+                    encoder.pop_debug_group();
                 }
-                gpu.queue.submit([encoder.finish()]);
-                let timed = queries
-                    .zip(gpu.timestamp_period)
-                    .map(|(queries, period)| queries.map(names, period));
-                (frame.counters, groups, timed)
-            })
-            .map_err(GpuError::Wgpu)?;
-        // A frame that is not timed leaves no times: `frame_stats` is about
-        // the last frame.
-        targets.timed(timed.unwrap_or(Timed::None));
-        Ok((counters, groups))
+            }
+            let timed = queries.is_some();
+            if let Some(queries) = queries {
+                queries.resolve(&mut encoder, self.passes.len());
+            }
+            gpu.queue.submit([encoder.finish()]);
+            if let (true, Some(period)) = (timed, gpu.timestamp_period) {
+                timing.finish(names, period);
+            }
+            (frame.counters, groups)
+        });
+        encoded.map_err(|e| {
+            // wgpu refused the frame: it leaves no times either.
+            timing.forget();
+            GpuError::Wgpu(e)
+        })
     }
 }
 

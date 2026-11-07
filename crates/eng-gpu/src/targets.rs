@@ -5,12 +5,12 @@
 //! textures that graphs' transients are drawn into (their pool), and the
 //! last frame's pass times on their way back (`timing.rs`).
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::error::GpuError;
 use crate::gpu::Gpu;
 use crate::graph::{Format, Plan, PooledTexture};
-use crate::timing::{FrameStats, Timed};
+use crate::timing::{FrameStats, Timing};
 use crate::{Resource, Transient};
 
 /// The scene's format: linear, scene-referred HDR (spec 6.7).
@@ -69,8 +69,9 @@ pub struct Targets {
     /// Transient textures, in the order they were made. A render takes the
     /// pool by reference ([`crate::Graph::render`]), so it sits in a mutex.
     pool: Mutex<Vec<Pooled>>,
-    /// The last frame's pass times, when the device times passes.
-    timed: Mutex<Timed>,
+    /// Pass timing, off until [`Targets::time_passes`], and the last
+    /// frame's times.
+    timing: Mutex<Timing>,
 }
 
 /// One texture of the targets' pool, for transients of one kind.
@@ -156,7 +157,7 @@ impl Targets {
                 (texture, surface_view)
             }),
             pool: Mutex::new(Vec::new()),
-            timed: Mutex::new(Timed::None),
+            timing: Mutex::new(Timing::default()),
         })
     }
 
@@ -194,27 +195,36 @@ impl Targets {
             .len()
     }
 
+    /// Turns GPU time per pass on or off for the frames rendered into these
+    /// targets; it starts off, so only a caller that wants times pays for
+    /// them. On, and on a device with timestamp queries, each frame writes
+    /// two timestamps per pass that runs into a query set the targets keep,
+    /// and maps them back after its submit, without waiting. On a device
+    /// without them it changes nothing. Off, a frame is encoded with no
+    /// timestamps at all. Either way the last frame's times are dropped.
+    pub fn time_passes(&self, on: bool) {
+        self.timing().set(on);
+    }
+
     /// What the last frame rendered into these targets measured beyond its
     /// [`crate::FrameCounters`]: the GPU time of each pass that ran, and the
-    /// textures in the pool. With timestamp queries it waits for the GPU to
-    /// finish that frame, as [`Targets::read_output`] does, at most
-    /// [`READBACK_LIMIT`]; without them the times are `None`. A later frame
-    /// replaces the times of one nobody read.
+    /// textures in the pool. With timing on ([`Targets::time_passes`]) and
+    /// timestamp queries, it waits for the GPU to finish that frame, as
+    /// [`Targets::read_output`] does, at most [`READBACK_LIMIT`]. The times
+    /// are `None` with timing off, without timestamp queries, or after a
+    /// frame that failed. A later frame replaces the times of one nobody
+    /// read.
     pub fn frame_stats(&self, gpu: &Gpu) -> Result<FrameStats, GpuError> {
-        let pass_times = self
-            .timed
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .times(gpu)?;
+        let pass_times = self.timing().times(gpu)?;
         Ok(FrameStats {
             pass_times,
             transient_textures: self.transient_textures(),
         })
     }
 
-    /// Keeps a frame's pass times, in place of the last frame's.
-    pub(crate) fn timed(&self, timed: Timed) {
-        *self.timed.lock().unwrap_or_else(PoisonError::into_inner) = timed;
+    /// The targets' pass timing, locked for a frame or a read.
+    pub(crate) fn timing(&self) -> MutexGuard<'_, Timing> {
+        self.timing.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// A view of each texture in `plan`, in its order, making those the pool

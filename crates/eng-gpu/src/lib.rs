@@ -74,8 +74,10 @@
 //!   they are exact and the same on every adapter. A pass binds a pipeline
 //!   only when a draw needs another, and each bind group once. They keep
 //!   rung 1b's four fields; what rung 2 measures beyond them, the GPU time
-//!   of each pass (`None` without timestamp queries) and the pool's size,
-//!   is [`FrameStats`], from [`Targets::frame_stats`].
+//!   of each pass and the pool's size, is [`FrameStats`], from
+//!   [`Targets::frame_stats`]. Pass times are opt-in
+//!   ([`Targets::time_passes`]): `None` with timing off or without
+//!   timestamp queries, and a frame with timing off has no timestamps.
 //! - **Labels**: every pass, target, pooled texture and pipeline is named
 //!   in wgpu's labels, and with `WGPU_DEBUG=1` each pass is also wrapped in
 //!   a debug group of its name.

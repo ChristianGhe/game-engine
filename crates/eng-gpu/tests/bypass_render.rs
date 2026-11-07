@@ -229,4 +229,21 @@ fn a_pass_with_several_writes_is_planned_and_drawn() {
         [255, 0, 0, 255],
     );
     assert_eq!(targets.transient_textures(), 1);
+    // The same pass with its second write read: the clear reached it too.
+    let graph = Graph::sorted(&[BOTH.node(), LOOK.node()], Target::Offscreen)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mut both = Clear(BOTH, rgba(0.0, 1.0, 0.0));
+    let mut look = Fullscreen(
+        LOOK,
+        fullscreen(&gpu, COPY_WGSL, "copy_fragment", Resource::Output),
+    );
+    graph
+        .render(&gpu, &targets, &mut [&mut both, &mut look])
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_all(
+        &targets.read_output(&gpu).unwrap_or_else(|e| panic!("{e}")),
+        [0, 255, 0, 255],
+    );
+    // `extra` is read now, so it takes a texture of another kind.
+    assert_eq!(targets.transient_textures(), 2);
 }

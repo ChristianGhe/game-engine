@@ -1,8 +1,10 @@
 //! GPU time per pass on a real adapter (rung 2, task T8; plan O11): the
 //! device asks for timestamp queries only when the adapter has them, and
-//! then [`Targets::frame_stats`] gives one time for each pass that ran, in
-//! running order; without them, `None`. The tier stays 0. Beside the times,
-//! the pool's texture count. Without an adapter each test skips, unless
+//! timing is opt-in per targets ([`Targets::time_passes`]). Then
+//! [`Targets::frame_stats`] gives one time for each pass that ran, in
+//! running order; with timing off, without timestamp queries or after a
+//! failed frame, `None`. The tier stays 0. Beside the times, the pool's
+//! texture count. Without an adapter each test skips, unless
 //! `ENG_REQUIRE_GPU=1` (CI) makes it fail.
 
 mod rig;
@@ -38,8 +40,19 @@ fn stats(gpu: &Gpu, targets: &Targets) -> FrameStats {
     targets.frame_stats(gpu).unwrap_or_else(|e| panic!("{e}"))
 }
 
+/// The names of the passes `graph` runs, in running order.
+fn running(graph: &Graph) -> Vec<&'static str> {
+    graph.passes().iter().map(|p| p.name).collect()
+}
+
+fn render(gpu: &Gpu, graph: &Graph, targets: &Targets, passes: &mut [&mut dyn eng_gpu::Pass]) {
+    graph
+        .render(gpu, targets, passes)
+        .unwrap_or_else(|e| panic!("{e}"));
+}
+
 #[test]
-fn each_pass_that_runs_is_timed_when_the_adapter_has_timestamps() {
+fn each_pass_that_runs_is_timed_once_timing_is_on() {
     let Some(gpu) = rig::gpu() else { return };
     let report = gpu.report();
     // Asking for the feature changes neither the tier nor the report.
@@ -66,15 +79,15 @@ fn each_pass_that_runs_is_timed_when_the_adapter_has_timestamps() {
     ];
     let graph = Graph::sorted(&nodes, Target::Offscreen).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(graph.culled(), ["debug"]);
+    // Declared tonemap first; run draw first.
+    assert_eq!(running(&graph), ["draw", "tonemap"]);
     let targets = rig::targets(&gpu, 16, 8);
+    let none = FrameStats {
+        pass_times: None,
+        transient_textures: 0,
+    };
     // Before any frame, nothing has been timed.
-    assert_eq!(
-        stats(&gpu, &targets),
-        FrameStats {
-            pass_times: None,
-            transient_textures: 0
-        }
-    );
+    assert_eq!(stats(&gpu, &targets), none);
     let clamp = fullscreen(&gpu, CLAMP, "clamp_fragment", Resource::Output);
     let copy = fullscreen(&gpu, COPY_WGSL, "copy_fragment", GLOW);
     let mut passes = [
@@ -86,12 +99,15 @@ fn each_pass_that_runs_is_timed_when_the_adapter_has_timestamps() {
         .iter_mut()
         .map(|p| p as &mut dyn eng_gpu::Pass)
         .collect();
-    graph
-        .render(&gpu, &targets, &mut dyn_passes)
-        .unwrap_or_else(|e| panic!("{e}"));
+    // Timing starts off: a frame has no times, whatever the adapter.
+    render(&gpu, &graph, &targets, &mut dyn_passes);
+    assert_eq!(stats(&gpu, &targets), none);
+    targets.time_passes(true);
+    render(&gpu, &graph, &targets, &mut dyn_passes);
     let first = stats(&gpu, &targets);
-    let expected = timestamps.then(|| vec!["draw", "tonemap"]);
-    assert_eq!(timed(&first), expected);
+    // One time for each pass that ran, named by the pass that ran at that
+    // place, in running order.
+    assert_eq!(timed(&first), timestamps.then(|| running(&graph)));
     // `debug`'s transient is culled with it, so the pool holds none.
     assert_eq!(first.transient_textures, 0);
     // Asked again, the same frame's times.
@@ -109,26 +125,48 @@ fn each_pass_that_runs_is_timed_when_the_adapter_has_timestamps() {
 }
 
 #[test]
-fn a_later_frame_replaces_the_times() {
+fn a_later_frame_replaces_the_times_and_a_failed_one_leaves_none() {
     let Some(gpu) = rig::gpu() else { return };
     let timestamps = gpu.report().capabilities.timestamp_queries;
     let targets = Targets::with_offscreen_surface(&gpu, 16, 8).unwrap_or_else(|e| panic!("{e}"));
+    targets.time_passes(true);
     let clamp = fullscreen(&gpu, CLAMP, "clamp_fragment", Resource::Output);
     let present = fullscreen(&gpu, COPY_WGSL, "copy_fragment", Resource::Surface);
     let mut draw = Script(DRAW, vec![Step::Clear(rgba(1.0, 0.0, 0.0, 1.0))]);
     let mut tonemap = Script(TONEMAP, vec![Step::Fullscreen(clamp)]);
     let mut blit = Script(eng_gpu::PRESENT, vec![Step::Fullscreen(present)]);
-    // Two offscreen frames, then a surface frame nobody waits for between.
+    let (offscreen, surface) = (
+        Graph::fixed(Target::Offscreen),
+        Graph::fixed(Target::Surface),
+    );
+    let expect = |graph: &Graph| timestamps.then(|| running(graph));
+    // Two offscreen frames nobody reads the times of, then a surface frame
+    // of more passes than the targets' query set holds.
     for _ in 0..2 {
-        Graph::fixed(Target::Offscreen)
-            .render(&gpu, &targets, &mut [&mut draw, &mut tonemap])
-            .unwrap_or_else(|e| panic!("{e}"));
+        render(&gpu, &offscreen, &targets, &mut [&mut draw, &mut tonemap]);
     }
-    Graph::fixed(Target::Surface)
-        .render(&gpu, &targets, &mut [&mut draw, &mut tonemap, &mut blit])
-        .unwrap_or_else(|e| panic!("{e}"));
-    let expected = timestamps.then(|| vec!["draw", "tonemap", "present"]);
-    assert_eq!(timed(&stats(&gpu, &targets)), expected);
-    let surface = targets.read_surface(&gpu).unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(surface.pixel(0, 0), [255, 0, 0, 255]);
+    render(
+        &gpu,
+        &surface,
+        &targets,
+        &mut [&mut draw, &mut tonemap, &mut blit],
+    );
+    assert_eq!(timed(&stats(&gpu, &targets)), expect(&surface));
+    let image = targets.read_surface(&gpu).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(image.pixel(0, 0), [255, 0, 0, 255]);
+    // Fewer passes again, each frame read, through the same queries.
+    for _ in 0..2 {
+        render(&gpu, &offscreen, &targets, &mut [&mut draw, &mut tonemap]);
+        assert_eq!(timed(&stats(&gpu, &targets)), expect(&offscreen));
+    }
+    // A frame that fails leaves none of the last frame's times.
+    assert!(offscreen.render(&gpu, &targets, &mut [&mut draw]).is_err());
+    assert_eq!(stats(&gpu, &targets).pass_times, None);
+    // Off again: frames are not timed, until timing is back on.
+    targets.time_passes(false);
+    render(&gpu, &offscreen, &targets, &mut [&mut draw, &mut tonemap]);
+    assert_eq!(stats(&gpu, &targets).pass_times, None);
+    targets.time_passes(true);
+    render(&gpu, &offscreen, &targets, &mut [&mut draw, &mut tonemap]);
+    assert_eq!(timed(&stats(&gpu, &targets)), expect(&offscreen));
 }

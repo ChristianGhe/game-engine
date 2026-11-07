@@ -112,3 +112,10 @@ fn textured_fragment(in: Varyings) -> @location(0) vec4<f32> {
     }
     return colour;
 }
+
+// Behind eng-gpu's fullscreen vertex stage, as a screen pipeline that binds
+// the scene: material 0's texture over the whole target.
+@fragment
+fn scene_fragment(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    return sample_material(materials[0], uv);
+}

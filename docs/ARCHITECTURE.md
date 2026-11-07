@@ -286,7 +286,10 @@ Graph::render ──▶ FrameCounters (draws, switches, uploaded bytes)
 ```
 
 - **Tier 0.** The device asks for WebGPU's default features and limits,
-  whatever the adapter supports. `GpuReport` records the adapter, backend,
+  whatever the adapter supports, plus `TIMESTAMP_QUERY` when the adapter
+  has it, only to time passes; the tier stays 0 (rung 2, O11). Times are
+  opt-in per `Targets` (`time_passes`, read with `frame_stats`), `None`
+  when off or unsupported. `GpuReport` records the adapter, backend,
   device type, driver and tier, and what the adapter could do beyond Tier 0
   (timestamp queries, binding arrays, indirect counts, ray queries, mesh
   shaders).
@@ -333,8 +336,8 @@ Graph::render ──▶ FrameCounters (draws, switches, uploaded bytes)
     `Targets` makes the textures on the first frame that needs them and
     keeps them (`Targets::transient_textures`); a resize makes new targets.
     This GPU side is built ahead of the plan's T8.
-  - A pass may write several resources in the plan; `Graph::render` draws
-    only passes with one until T8.
+  - A pass may write several resources: `Graph::render` draws up to four
+    colour targets and one depth target, of one size (T8, ADR-0020).
 
   `Graph::render` takes one `Pass` per declaration, in the order declared.
   The passes that run are checked and record in running order; culled and

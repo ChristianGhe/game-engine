@@ -160,3 +160,28 @@ pub fn render(
             .unwrap_or_else(|e| panic!("{e}")),
     }
 }
+
+/// An f16's value.
+pub fn half(bits: u16) -> f64 {
+    let sign = if bits & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let exponent = i32::from((bits >> 10) & 0x1f);
+    let fraction = f64::from(bits & 0x3ff);
+    let scale = |e: i32| {
+        let mut v = 1.0;
+        for _ in 0..e.abs() {
+            v *= 2.0;
+        }
+        if e < 0 { 1.0 / v } else { v }
+    };
+    sign * match exponent {
+        0 => fraction * scale(-24),
+        31 => panic!("not finite"),
+        e => (1024.0 + fraction) * scale(e - 25),
+    }
+}
+
+/// The RGB of an `Rgba16Float` texel.
+pub fn rgb16(texels: &Texels, x: u32, y: u32) -> [f64; 3] {
+    let t = texels.texel(x, y);
+    [0, 1, 2].map(|c| half(u16::from_le_bytes([t[2 * c], t[2 * c + 1]])))
+}

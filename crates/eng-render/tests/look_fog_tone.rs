@@ -18,34 +18,8 @@ use eng_gpu::Targets;
 use eng_math::{BAngle, Ev100, WorldPos};
 use eng_render::{
     FirstPersonCamera, FirstPersonRenderer, FirstPersonScene, LinearRgb, Look, NEAR_PLANE, Sky,
-    Texels,
 };
-use look::{Frame, GREEN_FOG, H, W, flat_world, gpu, lut, render, room_world, scene};
-
-/// An f16's value.
-fn half(bits: u16) -> f64 {
-    let sign = if bits & 0x8000 != 0 { -1.0 } else { 1.0 };
-    let exponent = i32::from((bits >> 10) & 0x1f);
-    let fraction = f64::from(bits & 0x3ff);
-    let scale = |e: i32| {
-        let mut v = 1.0;
-        for _ in 0..e.abs() {
-            v *= 2.0;
-        }
-        if e < 0 { 1.0 / v } else { v }
-    };
-    sign * match exponent {
-        0 => fraction * scale(-24),
-        31 => panic!("not finite"),
-        e => (1024.0 + fraction) * scale(e - 25),
-    }
-}
-
-/// The RGB of an `Rgba16Float` texel.
-fn rgb16(texels: &Texels, x: u32, y: u32) -> [f64; 3] {
-    let t = texels.texel(x, y);
-    [0, 1, 2].map(|c| half(u16::from_le_bytes([t[2 * c], t[2 * c + 1]])))
-}
+use look::{Frame, GREEN_FOG, H, W, flat_world, gpu, lut, render, rgb16, room_world, scene};
 
 /// The probe rows: for each row of `rows`, the pixels of surface `id`,
 /// each with its distance from the eye along its ray (as fog and falloff

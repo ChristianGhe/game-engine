@@ -152,9 +152,14 @@ pub struct FirstPersonRenderer {
     /// By [`Kind::index`].
     offscreen: Vec<Graph>,
     surface: Vec<Graph>,
-    /// The [`Kind::index`] of the last frame drawn, which reads back from.
+    /// The last frame's graph, which reads back from: its [`Kind::index`],
+    /// plus [`PRESENTED`] if it ran a presented graph.
     last: AtomicU8,
 }
+
+/// The bit of [`FirstPersonRenderer`]'s `last` that says the frame was
+/// presented: into the targets' surface or a window's image.
+const PRESENTED: u8 = 8;
 
 impl FirstPersonRenderer {
     /// Compiles the passes' pipelines on `gpu`.
@@ -275,10 +280,11 @@ impl FirstPersonRenderer {
     }
 
     /// The depth the last frame drew into `targets`: `near / distance
-    /// ahead` where something was drawn, 0 where the sky shows. An
-    /// `[E-GPU]` error unless the last frame rendered into `targets`
-    /// succeeded and was this renderer's last, or pooled its transients as
-    /// that one did.
+    /// ahead` where something was drawn, 0 where the sky shows. It reads
+    /// with the graph of this renderer's last frame (look, plain, presented
+    /// or not), so an `[E-GPU]` error unless the last frame rendered into
+    /// `targets` succeeded and was this renderer's last, or pooled its
+    /// transients as that one did.
     pub fn read_depth(&self, gpu: &Gpu, targets: &Targets) -> Result<Texels, RenderError> {
         self.read(gpu, targets, DEPTH)
     }
@@ -310,12 +316,16 @@ impl FirstPersonRenderer {
         targets: &Targets,
         transient: Transient,
     ) -> Result<Texels, RenderError> {
-        let index = usize::from(self.last.load(Ordering::Relaxed));
-        let graphs = if targets.has_surface() {
+        // The graph the last frame ran, as `draw_frame` chose it: a frame
+        // into a window's image is presented whether or not the targets
+        // have a surface of their own.
+        let last = self.last.load(Ordering::Relaxed);
+        let graphs = if last & PRESENTED != 0 {
             &self.surface
         } else {
             &self.offscreen
         };
+        let index = usize::from(last & !PRESENTED);
         Ok(targets.read_transient(gpu, &graphs[index], transient)?)
     }
 
@@ -395,7 +405,8 @@ impl FirstPersonRenderer {
             &self.offscreen
         };
         let index = kind.index();
-        self.last.store(index, Ordering::Relaxed);
+        let last = if presented { index | PRESENTED } else { index };
+        self.last.store(last, Ordering::Relaxed);
         Ok(graphs[usize::from(index)].render_frame(gpu, targets, &input, &mut passes)?)
     }
 }

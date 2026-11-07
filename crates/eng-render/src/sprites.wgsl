@@ -73,8 +73,9 @@ fn sprite_vertex(
     let shape = instances[2u * thing + 1u];
     let across = select(-0.5, 0.5, corner == 1u || corner == 2u);
     let up = select(0.0, 1.0, corner >= 2u);
-    // Level: the camera has no roll, so its right axis has no z.
-    let right = normalize(frame.ray_right.xyz);
+    // Level whatever the camera does: the right axis with its z dropped, so
+    // a billboard turns about Z only even if a camera ever rolls.
+    let right = normalize(vec3<f32>(frame.ray_right.xy, 0.0));
     let from_eye = place.offset + right * (across * shape.offset.x)
         + vec3<f32>(0.0, 0.0, up * shape.offset.y);
     var out: Varyings;
@@ -111,8 +112,11 @@ struct Targets {
 fn sprite_fragment(in: Varyings) -> Targets {
     let material = materials[in.material];
     // The sampler repeats, so a coordinate on or past an edge would wrap
-    // to the opposite one: keep it inside the texture.
-    let uv = clamp(in.uv, vec2<f32>(0.0), vec2<f32>(0.99999994));
+    // to the opposite one. Keep it half a texel inside the texture, not one
+    // ulp: Vulkan allows as few as 4 sub-texel bits, so a coordinate an ulp
+    // below 1 may round onto the edge and wrap to the top row there.
+    let side = f32(64u << material.bucket);
+    let uv = clamp(in.uv, vec2<f32>(0.5 / side), vec2<f32>(1.0 - 0.5 / side));
     let colour = sample_material(material, uv);
     if (material.flags & 1u) != 0u && colour.a < 0.5 {
         discard;

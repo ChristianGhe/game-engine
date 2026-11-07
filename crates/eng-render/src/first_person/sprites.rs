@@ -68,6 +68,8 @@ pub struct Sprite {
     /// The billboard's height in meters, up +Z from the feet. Finite and
     /// above 0.
     pub height: Real,
+    /// How many rotations its sheet draws: eight, or five mirrored into
+    /// eight for a thing that is left-right symmetric (Q4's rule).
     pub sheet: RotationSheet,
     /// The material of each frame of the sheet, frame `k` at `k`, as
     /// indices into the world's material table; a five-rotation sheet reads

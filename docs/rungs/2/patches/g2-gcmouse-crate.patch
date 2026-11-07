@@ -1,0 +1,220 @@
+Patch G2, the shim (rung 2, task T0): eng-platform-gcmouse, the GCMouse
+shim, as an empty skeleton, with its architecture.toml entry, edge and
+`[floor]` lines. Apply it after g2-crates.patch, in the same commit, if the
+owner's answer to O3 is the recommended one: the shim as a crate of its
+own (ADR-0021). Then G3 is g3-crate-batch-3.patch. For the other answers
+(docs/rungs/2/plan.md, "If the owner answers O3-O5 otherwise"): with the
+shim as a module of eng-platform-winit, apply g2-gcmouse-module.patch
+instead and then g3-crate-batch-3-shim-module.patch; with no shim, neither
+G2 shim patch, then g3-crate-batch-3-no-shim.patch.
+
+- crates/eng-platform-gcmouse: a Cargo.toml like the other skeletons, with
+  no dependencies. objc2-game-controller needs G3 first; T14 adds it under
+  `[target.'cfg(target_os = "macos")'.dependencies]`.
+- src/lib.rs: a doc comment (spec 6.10, decision 11, task T14), then
+  `#![forbid(clippy::undocumented_unsafe_blocks)]` (ADR-0021: an `unsafe`
+  block without a `// SAFETY:` comment fails clippy), then `mod macos`
+  behind `#[cfg(target_os = "macos")]`, so the crate is empty on every
+  other target. src/macos.rs holds a doc comment only.
+- Unlike every other crate's root, this one does not forbid `unsafe_code`.
+  T14 allows it in one module file (ADR-0021), and a `forbid` at the root
+  would refuse that `allow`. The workspace lint still denies it, so the
+  crate compiles no `unsafe` today. The crate is not core, so arch-check
+  requires no root attribute.
+- architecture.toml:
+  - `[crates.eng-platform-gcmouse]`, `layer = "L1"`, before
+    eng-platform-winit, which gains it in its `same_layer`;
+  - `[floor]` gains `objc2-game-controller = "eng-platform-gcmouse"` and
+    `eng-platform-gcmouse = "eng-platform-winit"`, and its comment now
+    says "crates with one user" (ADR-0021). Layering alone lets any higher
+    crate depend on an L1 crate, and cargo-deny's wrapper ban runs only in
+    CI's lint job; arch-check runs in `quick`. Its floor rule looks up
+    every normal dependency by name, workspace crates included
+    (`xtask/src/arch.rs:198-204`), so no xtask change. Dev and build
+    dependencies are not checked, as for every floor crate.
+- Cargo.toml: its `[workspace.dependencies]` path. Cargo.lock gains the
+  path package and nothing else.
+- docs/ARCHITECTURE.md, "Layers": the winit line gains the edge, and the
+  floor-rule sentence is rewritten to name all three users.
+
+Base: main at c879061 with g2-crates.patch applied. At the repo root, run
+`git apply` with this file, then `cargo xtask quick` and
+`cargo xtask ci --job lint`.
+Text before the first `diff --git` line is ignored by `git apply`.
+
+How it was tested, on aarch64-apple-darwin with Rust 1.99.1, in scratch
+clones of c879061 with g2-crates.patch applied:
+- `git apply --check`, then `git apply`: the files equal the tested ones
+  byte for byte.
+- `cargo xtask quick`: 7 of 7 ok. arch-check: 27 crates, no violations.
+- `CI=1 cargo xtask ci --job lint`: 7 of 7 ok.
+- The fences, by throwaway edits in a scratch copy: the shim depending on
+  objc2-game-controller passes arch-check. eng-app depending on it as
+  well, as a normal macOS dependency, fails with `[E-ARCH-FLOOR] eng-app
+  depends on objc2-game-controller; only eng-platform-gcmouse may`.
+  eng-app depending on the shim fails with `[E-ARCH-FLOOR] eng-app depends
+  on eng-platform-gcmouse; only eng-platform-winit may`; eng-platform-winit
+  depending on it passes.
+- The crate builds off macOS, where it is empty: `cargo clippy -p
+  eng-platform-gcmouse --target wasm32-unknown-unknown -- -D warnings`
+  passes (this Mac has no Linux or Windows target installed).
+
+diff --git a/Cargo.lock b/Cargo.lock
+index a05a5af23f05454e75aba903b41c1f6a51ccc10e..4afbc46230f1d170244e159fccfa72e7dd9759de 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -512,6 +512,10 @@ dependencies = [
+  "raw-window-handle",
+ ]
+ 
++[[package]]
++name = "eng-platform-gcmouse"
++version = "0.1.0"
++
+ [[package]]
+ name = "eng-platform-headless"
+ version = "0.1.0"
+diff --git a/Cargo.toml b/Cargo.toml
+index 1d1e73723a85c0defa1d0aa56418e0ee1a0bd9f9..ac3c407e15d10a9c05a4a559ccb775fc3a43f95e 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -35,6 +35,7 @@ eng-app = { path = "crates/eng-app" }
+ eng-collision-grid = { path = "crates/eng-collision-grid" }
+ game-testbed-client = { path = "crates/game-testbed-client" }
+ eng-bench = { path = "crates/eng-bench" }
++eng-platform-gcmouse = { path = "crates/eng-platform-gcmouse" }
+ 
+ # Third-party crates. New entries need the owner's approval (deny.toml allow-list).
+ # `force-soft-floats` keeps libm's `arch` code off even when another crate
+diff --git a/architecture.toml b/architecture.toml
+index 05da86b3c4c892d031ddaa07bd6c6944baf2e46d..5879ebd138a68c6546752b3ae3a8d411885d2968 100644
+--- a/architecture.toml
++++ b/architecture.toml
+@@ -20,12 +20,16 @@ allowed_patches = []
+ [core_third_party]
+ libm = { version = "0.2.16", features = ["arch", "default", "force-soft-floats"] }
+ 
+-# Floor crates and the single engine crate allowed to depend on each.
++# Crates with one user, and the single engine crate allowed to depend on
++# each: floor crates, and the GCMouse shim with its bindings (rung 2,
++# decision 11, ADR-0021).
+ [floor]
+ wgpu = "eng-gpu"
+ winit = "eng-platform-winit"
+ gilrs = "eng-platform-winit"
+ cpal = "eng-audio-cpal"
++objc2-game-controller = "eng-platform-gcmouse"
++eng-platform-gcmouse = "eng-platform-winit"
+ 
+ # Every workspace crate must be listed. `core = true` means: #![no_std] and
+ # #![forbid(unsafe_code)] at the crate root, only core-set dependencies,
+@@ -76,9 +80,12 @@ layer = "L1"
+ layer = "L1"
+ same_layer = ["eng-platform-api"]
+ 
++[crates.eng-platform-gcmouse]
++layer = "L1"
++
+ [crates.eng-platform-winit]
+ layer = "L1"
+-same_layer = ["eng-platform-api"]
++same_layer = ["eng-platform-api", "eng-platform-gcmouse"]
+ 
+ [crates.eng-sim]
+ layer = "L2"
+diff --git a/crates/eng-platform-gcmouse/Cargo.toml b/crates/eng-platform-gcmouse/Cargo.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..ce3bd7219f68ac49b788515df88c90089ce1bbdd
+--- /dev/null
++++ b/crates/eng-platform-gcmouse/Cargo.toml
+@@ -0,0 +1,13 @@
++[package]
++name = "eng-platform-gcmouse"
++description = "The GCMouse shim: raw mouse deltas on macOS from the Game Controller framework, for the winit platform. Empty elsewhere."
++version.workspace = true
++edition.workspace = true
++rust-version.workspace = true
++license.workspace = true
++publish.workspace = true
++
++[dependencies]
++
++[lints]
++workspace = true
+diff --git a/crates/eng-platform-gcmouse/src/lib.rs b/crates/eng-platform-gcmouse/src/lib.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..b91c1b0597e2b232136e01498fe7dee3a7af0ce2
+--- /dev/null
++++ b/crates/eng-platform-gcmouse/src/lib.rs
+@@ -0,0 +1,20 @@
++//! The GCMouse shim (spec 6.10; rung 2 plan, decision 11). winit's macOS
++//! mouse deltas arrive coalesced, one per display refresh. On macOS this
++//! crate reads raw deltas from the Game Controller framework's `GCMouse`
++//! instead: its handlers add them into a sum that `eng-platform-winit`
++//! drains each frame, and count their own calls.
++//!
++//! On every other target the crate is empty. Only `eng-platform-winit` may
++//! depend on it, and only it may depend on `objc2-game-controller` (both in
++//! `[floor]` in `architecture.toml`; the second also in `deny.toml`'s
++//! wrapper ban). The bindings it needs are `unsafe fn`, so the root does not
++//! forbid `unsafe_code`: the workspace lint still denies it, and task T14
++//! allows it in one module file only (ADR-0021). Every `unsafe` block there
++//! needs a `// SAFETY:` comment, which the `forbid` below makes clippy
++//! check.
++//!
++//! An empty skeleton until rung 2's task T14 (`docs/rungs/2/plan.md`).
++#![forbid(clippy::undocumented_unsafe_blocks)]
++
++#[cfg(target_os = "macos")]
++mod macos;
+diff --git a/crates/eng-platform-gcmouse/src/macos.rs b/crates/eng-platform-gcmouse/src/macos.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..42d9fb39f787815f87d40289164cc23fcf0440cf
+--- /dev/null
++++ b/crates/eng-platform-gcmouse/src/macos.rs
+@@ -0,0 +1,2 @@
++//! The macOS side: `GCMouse` discovery and its moved handler, filled in by
++//! rung 2's task T14. Built only on macOS.
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index e98469ce7e509c4bb7ac35b2596e9cb79849ead1..daaa8e5ca84eef56fe8dd3214cd85ef12b4190cd 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -11,7 +11,8 @@ commit that changes what it describes.
+ L0  eng-schema-core ▶ eng-derive;  eng-math, eng-core ▶ eng-schema-core   (core set)
+ L1  eng-ecs  eng-net-transport  eng-net-wire                                (core set)
+     eng-input ▶ eng-schema-json, eng-platform-api                           (std)
+-    eng-platform-headless, eng-platform-winit ▶ eng-platform-api            (std)
++    eng-platform-headless ▶ eng-platform-api                                (std)
++    eng-platform-winit ▶ eng-platform-api, eng-platform-gcmouse*            (std)
+ L2  eng-sim  eng-collision-api;  kit-fps ▶ eng-collision-api                (core set)
+     eng-collision-grid* ▶ eng-collision-api                                 (core set)
+     game-testbed-sim ▶ eng-sim, eng-collision-api, kit-fps,                 (core set)
+@@ -24,7 +25,7 @@ tool  xtask  eng-bench*
+ ```
+ 
+ \* Rung 2 crates, empty skeletons until their tasks in
+-`docs/rungs/2/plan.md` (T5, T12, T17).
++`docs/rungs/2/plan.md` (T5, T12, T14, T17).
+ 
+ A crate depends only on lower layers, or on the same-layer crates its
+ `same_layer` lists in `architecture.toml`, drawn above as `A ▶ B` (A
+@@ -50,11 +51,14 @@ codec, transport and session loops: `#![no_std]`,
+ `#![forbid(unsafe_code)]`, only `libm` as a third-party dependency (plus
+ `eng-derive`'s build-time `syn`/`quote`), overflow checks in release.
+ `cargo xtask arch-check` enforces all of it over the transitive
+-dependency closure, and the floor rule: only eng-gpu imports wgpu, only
+-eng-platform-winit winit. eng-math gives libm `force-soft-floats`, so
+-libm's `arch` code stays off even in builds where wgpu's shader compiler
+-turns the feature on. The core set also builds for
+-`wasm32-unknown-unknown` and is tested on RISC-V under QEMU.
++dependency closure. It also enforces the floor rule, which names the one
++crate that may depend on each of a few crates: only eng-gpu may depend on
++wgpu; only eng-platform-winit on winit and on the GCMouse shim,
++eng-platform-gcmouse; and only the shim on objc2-game-controller.
++eng-math gives libm `force-soft-floats`, so libm's `arch` code stays off
++even in builds where wgpu's shader compiler turns the feature on. The core
++set also builds for `wasm32-unknown-unknown` and is tested on RISC-V under
++QEMU.
+ 
+ L3 starts in rung 1b with GPU and render; audio and UI come later.
+ 

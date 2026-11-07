@@ -1,0 +1,294 @@
+Patch G2 (rung 2, task T0): three of rung 2's four new crates as empty
+skeletons, their architecture.toml entries and edges, and release overflow
+checks for the new core crate. The GCMouse shim follows the owner's
+answer to O3, applied after this one in the same commit:
+- a crate of its own (recommended): g2-gcmouse-crate.patch, the fourth
+  crate; G3 is then g3-crate-batch-3.patch;
+- a module of eng-platform-winit: g2-gcmouse-module.patch (one `[floor]`
+  line); G3 is then g3-crate-batch-3-shim-module.patch;
+- no shim: nothing more; G3 is then g3-crate-batch-3-no-shim.patch.
+g3-parry3d.patch, if O4 picks parry3d, applies after any of the three.
+
+- crates/: eng-collision-grid (L2, core), game-testbed-client (game) and
+  eng-bench (tool). Each is a Cargo.toml with the workspace fields, a
+  description, `[lints] workspace = true` and no dependencies, and a
+  src/lib.rs whose doc comment names its spec sections and the task that
+  fills it in (T5, T12, T17). eng-collision-grid starts with `#![no_std]`,
+  `#![forbid(unsafe_code)]` and `extern crate alloc;`, as arch-check
+  requires of the core set; the other two with `#![forbid(unsafe_code)]`,
+  as every skeleton so far.
+- architecture.toml: the plan's "New crates (4)" table for these three,
+  each entry in its layer's place: eng-collision-grid (L2, core,
+  `same_layer = ["eng-collision-api"]`), game-testbed-sim gaining
+  "eng-collision-grid" in its `same_layer`, game-testbed-client (game),
+  game-testbed gaining `same_layer = ["game-testbed-client"]`, and
+  eng-bench (tool).
+- Cargo.toml: the three `[workspace.dependencies]` paths, and the G2 row's
+  one `[profile]` line, `[profile.release.package.eng-collision-grid]
+  overflow-checks = true`, after the core set's others.
+- Cargo.lock gains the three path packages and nothing else.
+- docs/ARCHITECTURE.md, "Layers": the diagram gains the three crates and
+  the new edges, marked as skeletons. AGENTS.md is left alone: it is at
+  150 of 150 lines, its crate summary still holds ("collision" covers the
+  grid), and T22 rewrites it.
+
+It must land as one commit. arch-check fails on a crate that is not listed
+in architecture.toml and on a listed one that does not exist
+([E-ARCH-UNKNOWN]), and on a core crate without release overflow checks
+([E-ARCH-OVERFLOW]).
+
+For T17, not changed here: arch-check's [E-ARCH-GAME-DEP] refuses a normal
+dependency of any crate whose name does not start with `game-` on one whose
+name does, so eng-bench cannot take game-testbed-sim as a normal
+dependency. arch-check reads normal dependencies only, so the benchmarks
+can take it as a dev-dependency.
+
+Base: main at c879061. At the repo root, run `git apply` with this file,
+then `cargo xtask quick` and `cargo xtask ci --job lint`.
+Text before the first `diff --git` line is ignored by `git apply`.
+This patch set and 1b's quick-lock.patch apply in either order: they
+share only docs/ARCHITECTURE.md, in different sections.
+
+How it was tested, on aarch64-apple-darwin with Rust 1.99.1, cargo-deny
+0.20.2 and typos-cli 1.51.1, in scratch clones of c879061:
+- `git apply --check`, then `git apply`, on a fresh clone: the files equal
+  the tested ones byte for byte.
+- `cargo xtask quick`: 7 of 7 ok. arch-check: 26 crates, no violations.
+- `CI=1 cargo xtask ci --job lint`: 7 of 7 ok, cargo-deny and typos
+  included.
+- Each O3 path after it, as above, with `quick` and the lint job, with
+  and without g3-parry3d.patch.
+- `cargo xtask selftest` on the recommended path with all its patches:
+  21 caught; golden-edit not run, since it needs CI's pinned lavapipe.
+  `ci --job wasm` checks eng-collision-grid for wasm32 and passes. Not
+  run: the riscv job (this Mac has no RISC-V target); the crate is an
+  empty `no_std` one.
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 2bf0bad53f7462c4fe86e2fe0705c14bd159c153..a05a5af23f05454e75aba903b41c1f6a51ccc10e 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -400,6 +400,10 @@ dependencies = [
+  "eng-render",
+ ]
+ 
++[[package]]
++name = "eng-bench"
++version = "0.1.0"
++
+ [[package]]
+ name = "eng-cli"
+ version = "0.1.0"
+@@ -429,6 +433,10 @@ dependencies = [
+  "proptest",
+ ]
+ 
++[[package]]
++name = "eng-collision-grid"
++version = "0.1.0"
++
+ [[package]]
+ name = "eng-core"
+ version = "0.1.0"
+@@ -694,6 +702,10 @@ dependencies = [
+  "toml",
+ ]
+ 
++[[package]]
++name = "game-testbed-client"
++version = "0.1.0"
++
+ [[package]]
+ name = "game-testbed-sim"
+ version = "0.1.0"
+diff --git a/Cargo.toml b/Cargo.toml
+index 7178cbe1b65c8628bbc6411313335492cb9e8a07..1d1e73723a85c0defa1d0aa56418e0ee1a0bd9f9 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -32,6 +32,9 @@ eng-session = { path = "crates/eng-session" }
+ eng-gpu = { path = "crates/eng-gpu" }
+ eng-render = { path = "crates/eng-render" }
+ eng-app = { path = "crates/eng-app" }
++eng-collision-grid = { path = "crates/eng-collision-grid" }
++game-testbed-client = { path = "crates/game-testbed-client" }
++eng-bench = { path = "crates/eng-bench" }
+ 
+ # Third-party crates. New entries need the owner's approval (deny.toml allow-list).
+ # `force-soft-floats` keeps libm's `arch` code off even when another crate
+@@ -105,3 +108,5 @@ overflow-checks = true
+ overflow-checks = true
+ [profile.release.package.eng-session]
+ overflow-checks = true
++[profile.release.package.eng-collision-grid]
++overflow-checks = true
+diff --git a/architecture.toml b/architecture.toml
+index 67971bbc769ff2b2a46ae9331df6bc8a2d15a8cd..05da86b3c4c892d031ddaa07bd6c6944baf2e46d 100644
+--- a/architecture.toml
++++ b/architecture.toml
+@@ -88,6 +88,11 @@ core = true
+ layer = "L2"
+ core = true
+ 
++[crates.eng-collision-grid]
++layer = "L2"
++core = true
++same_layer = ["eng-collision-api"]
++
+ [crates.kit-fps]
+ layer = "L2"
+ core = true
+@@ -96,7 +101,7 @@ same_layer = ["eng-collision-api"]
+ [crates.game-testbed-sim]
+ layer = "L2"
+ core = true
+-same_layer = ["eng-sim", "eng-collision-api", "kit-fps"]
++same_layer = ["eng-sim", "eng-collision-api", "kit-fps", "eng-collision-grid"]
+ 
+ [crates.eng-session]
+ layer = "L2"
+@@ -117,8 +122,15 @@ layer = "L4"
+ layer = "L4"
+ same_layer = ["eng-cli"]
+ 
++[crates.game-testbed-client]
++layer = "game"
++
+ [crates.game-testbed]
+ layer = "game"
++same_layer = ["game-testbed-client"]
+ 
+ [crates.xtask]
+ layer = "tool"
++
++[crates.eng-bench]
++layer = "tool"
+diff --git a/crates/eng-bench/Cargo.toml b/crates/eng-bench/Cargo.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..145c97448663bb0f8641c1ada2e6c49b91c6e64d
+--- /dev/null
++++ b/crates/eng-bench/Cargo.toml
+@@ -0,0 +1,13 @@
++[package]
++name = "eng-bench"
++description = "Instruction-count benchmarks: the sim steps, grid traces and ground movement."
++version.workspace = true
++edition.workspace = true
++rust-version.workspace = true
++license.workspace = true
++publish.workspace = true
++
++[dependencies]
++
++[lints]
++workspace = true
+diff --git a/crates/eng-bench/src/lib.rs b/crates/eng-bench/src/lib.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..5fb3cb2cb7ee6a08b8b707d1a53183a129d3040d
+--- /dev/null
++++ b/crates/eng-bench/src/lib.rs
+@@ -0,0 +1,8 @@
++//! Benchmarks (spec 6.1, the tools row; 6.13): instruction counts for the
++//! dot and room sim steps, grid traces and `ground_move`, through gungraun,
++//! a dev-dependency on Linux only. On every other target each bench is an
++//! empty `main`, so the workspace still builds there. Nothing at run time
++//! depends on this crate.
++//!
++//! An empty skeleton until rung 2's task T17 (`docs/rungs/2/plan.md`).
++#![forbid(unsafe_code)]
+diff --git a/crates/eng-collision-grid/Cargo.toml b/crates/eng-collision-grid/Cargo.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..eb2b8bc6a211e95101c3a10da362e9f8db04b961
+--- /dev/null
++++ b/crates/eng-collision-grid/Cargo.toml
+@@ -0,0 +1,13 @@
++[package]
++name = "eng-collision-grid"
++description = "Level 1's collision: a uniform grid over static walls and slabs, with deterministic box sweeps."
++version.workspace = true
++edition.workspace = true
++rust-version.workspace = true
++license.workspace = true
++publish.workspace = true
++
++[dependencies]
++
++[lints]
++workspace = true
+diff --git a/crates/eng-collision-grid/src/lib.rs b/crates/eng-collision-grid/src/lib.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..3ac259a427c4bd83b2010f8ff9078fba9d8655f9
+--- /dev/null
++++ b/crates/eng-collision-grid/src/lib.rs
+@@ -0,0 +1,13 @@
++//! Level 1's collision (spec 6.11): a uniform grid of 1 m cells over static
++//! primitives, vertical wall segments with a z range and horizontal convex
++//! slabs for floors, ceilings and steps, built once from a map's sim data.
++//! Sweeps of a `BoxHull` are deterministic (f64, IEEE basic operations only)
++//! and end in contact (ADR-0024): exactly on faces square to an axis, within
++//! `CONTACT_GAP` off the axes. It implements `eng-collision-api`'s
++//! `CollisionWorld` and passes that crate's conformance suite.
++//!
++//! An empty skeleton until rung 2's task T5 (`docs/rungs/2/plan.md`).
++#![no_std]
++#![forbid(unsafe_code)]
++
++extern crate alloc;
+diff --git a/crates/game-testbed-client/Cargo.toml b/crates/game-testbed-client/Cargo.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..91e3de3c0a0be17c15854233f891588daa850011
+--- /dev/null
++++ b/crates/game-testbed-client/Cargo.toml
+@@ -0,0 +1,13 @@
++[package]
++name = "game-testbed-client"
++description = "The testbed's presentation: top-down and first-person extraction, region looks, and textures, sprites and palette made by code."
++version.workspace = true
++edition.workspace = true
++rust-version.workspace = true
++license.workspace = true
++publish.workspace = true
++
++[dependencies]
++
++[lints]
++workspace = true
+diff --git a/crates/game-testbed-client/src/lib.rs b/crates/game-testbed-client/src/lib.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..a20315fca69fade3ba94c135ee5916aa638e1020
+--- /dev/null
++++ b/crates/game-testbed-client/src/lib.rs
+@@ -0,0 +1,8 @@
++//! The testbed's presentation (spec 6.1, the games row): what the renderer
++//! is given each frame, extracted from the simulation's state. The top-down
++//! extraction (moved here from `game-testbed`, unchanged), the first-person
++//! extraction, region looks, textures and sprites made by code, and the
++//! plain-text palette.
++//!
++//! An empty skeleton until rung 2's task T12 (`docs/rungs/2/plan.md`).
++#![forbid(unsafe_code)]
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index e0959c8e92ce3451cf800aad14b6a11b5e3379d9..e98469ce7e509c4bb7ac35b2596e9cb79849ead1 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -13,13 +13,19 @@ L1  eng-ecs  eng-net-transport  eng-net-wire                                (cor
+     eng-input ▶ eng-schema-json, eng-platform-api                           (std)
+     eng-platform-headless, eng-platform-winit ▶ eng-platform-api            (std)
+ L2  eng-sim  eng-collision-api;  kit-fps ▶ eng-collision-api                (core set)
+-    game-testbed-sim ▶ eng-sim, eng-collision-api, kit-fps                  (core set)
++    eng-collision-grid* ▶ eng-collision-api                                 (core set)
++    game-testbed-sim ▶ eng-sim, eng-collision-api, kit-fps,                 (core set)
++                       eng-collision-grid*
+     eng-session ▶ eng-sim                                                   (core set)
+ L3  eng-render ▶ eng-gpu                                                    (std)
+ L4  eng-app ▶ eng-cli                                                       (std)
+-game  game-testbed (binary)        tool  xtask
++game  game-testbed (binary) ▶ game-testbed-client*
++tool  xtask  eng-bench*
+ ```
+ 
++\* Rung 2 crates, empty skeletons until their tasks in
++`docs/rungs/2/plan.md` (T5, T12, T17).
++
+ A crate depends only on lower layers, or on the same-layer crates its
+ `same_layer` lists in `architecture.toml`, drawn above as `A ▶ B` (A
+ depends on B). Rung 1b added seven crates; their edges to our others

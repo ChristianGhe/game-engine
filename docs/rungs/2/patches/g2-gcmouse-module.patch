@@ -1,0 +1,66 @@
+Patch G2, shim as a module (rung 2, task T0): for the owner's O3 answer "a
+module inside eng-platform-winit". Apply it after g2-crates.patch, in the
+same commit, instead of g2-gcmouse-crate.patch; G3 is then
+g3-crate-batch-3-shim-module.patch. ADR-0021 changes its crate to match
+(plan, "If the owner answers O3-O5 otherwise").
+
+- architecture.toml: `[floor]` gains
+  `objc2-game-controller = "eng-platform-winit"`, so arch-check (in
+  `quick`) keeps the Game Controller bindings inside eng-platform-winit,
+  as cargo-deny's wrapper ban does in CI's lint job. A third-party floor
+  crate like the others, so the table's comment stays.
+- docs/ARCHITECTURE.md: the floor-rule sentence names it.
+- Not here: relaxing eng-platform-winit's `#![forbid(unsafe_code)]` for
+  the module. That is T14's change, under ADR-0021 as amended.
+
+Base: main at c879061 with g2-crates.patch applied. At the repo root, run
+`git apply` with this file, then `cargo xtask quick` and
+`cargo xtask ci --job lint`.
+Text before the first `diff --git` line is ignored by `git apply`.
+
+How it was tested, on aarch64-apple-darwin with Rust 1.99.1, in scratch
+clones of c879061:
+- g2-crates.patch, then this file, apply with `git apply --check` and
+  `git apply`, and give the tested files byte for byte.
+- `cargo xtask quick`: 7 of 7 ok. arch-check: 26 crates, no violations.
+- `CI=1 cargo xtask ci --job lint`: 7 of 7 ok.
+- By throwaway edits in a scratch copy: eng-platform-winit depending on
+  objc2-game-controller (macOS) passes arch-check; eng-app depending on it
+  too fails with `[E-ARCH-FLOOR] eng-app depends on objc2-game-controller;
+  only eng-platform-winit may`.
+
+diff --git a/architecture.toml b/architecture.toml
+index 05da86b3c4c892d031ddaa07bd6c6944baf2e46d..e263553b4e4507b60d8f8eccaa19ab510f3a4871 100644
+--- a/architecture.toml
++++ b/architecture.toml
+@@ -26,6 +26,9 @@ wgpu = "eng-gpu"
+ winit = "eng-platform-winit"
+ gilrs = "eng-platform-winit"
+ cpal = "eng-audio-cpal"
++# The GCMouse bindings, used by the shim module inside eng-platform-winit
++# (rung 2, decision 11, O3).
++objc2-game-controller = "eng-platform-winit"
+ 
+ # Every workspace crate must be listed. `core = true` means: #![no_std] and
+ # #![forbid(unsafe_code)] at the crate root, only core-set dependencies,
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index e98469ce7e509c4bb7ac35b2596e9cb79849ead1..d8b3ed3f843f8ef1ece0e7c297c7e4366f21744a 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -50,10 +50,12 @@ codec, transport and session loops: `#![no_std]`,
+ `#![forbid(unsafe_code)]`, only `libm` as a third-party dependency (plus
+ `eng-derive`'s build-time `syn`/`quote`), overflow checks in release.
+ `cargo xtask arch-check` enforces all of it over the transitive
+-dependency closure, and the floor rule: only eng-gpu imports wgpu, only
+-eng-platform-winit winit. eng-math gives libm `force-soft-floats`, so
+-libm's `arch` code stays off even in builds where wgpu's shader compiler
+-turns the feature on. The core set also builds for
++dependency closure. It also enforces the floor rule, which names the one
++crate that may depend on each of a few crates: only eng-gpu may depend on
++wgpu, and only eng-platform-winit on winit and on objc2-game-controller
++(the GCMouse bindings, for its shim module). eng-math gives libm
++`force-soft-floats`, so libm's `arch` code stays off even in builds where
++wgpu's shader compiler turns the feature on. The core set also builds for
+ `wasm32-unknown-unknown` and is tested on RISC-V under QEMU.
+ 
+ L3 starts in rung 1b with GPU and render; audio and UI come later.

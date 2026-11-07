@@ -1,0 +1,83 @@
+Patch G3, shim as a module (rung 2, task T0b): g3-crate-batch-3.patch for
+the owner's O3 answer "a module inside eng-platform-winit". Apply it after
+g2-crates.patch and g2-gcmouse-module.patch, instead of
+g3-crate-batch-3.patch. That file's header gives the batch, its two
+differences from the plan's list, the notes on bincode-next's licence,
+typos and MSRVs, and how the batch was resolved; all hold here.
+
+The only differences from g3-crate-batch-3.patch:
+- the wrapper ban names eng-platform-winit:
+  `{ crate = "objc2-game-controller", wrappers = ["eng-platform-winit"] }`,
+  with its comment saying why;
+- the batch 3 comment calls the shim a module of eng-platform-winit.
+The same 17 names, with `objc2-game-controller:*`.
+
+Base: main at c879061 with g2-crates.patch and g2-gcmouse-module.patch
+applied. At the repo root, run `git apply` with this file, then
+`cargo xtask quick` and `cargo xtask ci --job lint`.
+Text before the first `diff --git` line is ignored by `git apply`.
+
+How it was tested, on aarch64-apple-darwin with Rust 1.99.1, cargo-deny
+0.20.2 and typos-cli 1.51.1, in scratch clones of c879061 with those two
+patches applied:
+- `git apply --check` and `git apply` give the tested files byte for byte;
+  `cargo xtask quick` and `CI=1 cargo xtask ci --job lint` are 7 of 7.
+- In a scratch copy (not part of this patch), gungraun =0.20.0 in
+  eng-bench's Linux dev-dependencies and objc2-game-controller =0.3.2 (the
+  shim's features) in eng-platform-winit's macOS dependencies:
+  `cargo deny check` exits 0, all four checks ok, no warning beyond
+  today's. objc2-game-controller in eng-app as well: bans fails with
+  `error[banned]`.
+
+diff --git a/deny.toml b/deny.toml
+index 0f1a64be48db4379cd4603ed0008fb1f258447b4..6ce3e3749fa9e2474414af116c4863c5ede082b7 100644
+--- a/deny.toml
++++ b/deny.toml
+@@ -62,6 +62,10 @@ deny = [
+     "wgpu", "wgpu-core", "wgpu-hal", "wgpu-types", "winit",
+     "eng-platform-api", "eng-platform-winit", "eng-gpu", "eng-app",
+   ] },
++  # The Game Controller bindings stay inside eng-platform-winit, whose GCMouse
++  # shim module is the one place that calls them with `unsafe` (rung 2,
++  # decision 11, O3).
++  { crate = "objc2-game-controller", wrappers = ["eng-platform-winit"] },
+   # Unmaintained (spec 6.8).
+   { crate = "laminar" },
+   { crate = "bincode" },
+@@ -80,6 +84,11 @@ deny = [
+ # every target above. wgpu, winit and raw-window-handle are also in `deny`
+ # with their wrappers, and cargo-deny refuses the same spec in both lists, so
+ # here they are written `name:*` (any release version).
++# Batch 3, approved by the owner at gate G3 for rung 2 ("Crate batch 3" in
++# docs/rungs/2/plan.md): gungraun and its dependencies (eng-bench's
++# instruction counts, a dev-dependency on Linux only) and
++# objc2-game-controller (the GCMouse shim, a module of eng-platform-winit,
++# macOS only; `name:*` for its wrapper ban, as above).
+ allow = [
+   "autocfg",
+   "bitflags",
+@@ -255,6 +264,24 @@ allow = [
+   "xkeysym",
+   "zerocopy",
+   "zerocopy-derive",
++  # Batch 3 (rung 2).
++  "bincode-next",
++  "derive_more",
++  "derive_more-impl",
++  "either-or-both",
++  "gungraun",
++  "gungraun-common",
++  "gungraun-macros",
++  "gungraun-runner",
++  "objc2-game-controller:*",
++  "pastey",
++  "proc-macro-error-attr3",
++  "proc-macro-error3",
++  "rapidhash",
++  "rustc_version",
++  "rustversion",
++  "semver",
++  "unty-next",
+ ]
+ 
+ [sources]

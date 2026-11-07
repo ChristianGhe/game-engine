@@ -1,0 +1,67 @@
+Patch G3, no shim (rung 2, task T0b): g3-crate-batch-3.patch for the
+owner's O3 answer "no shim", which keeps winit's coalesced macOS deltas.
+Apply it after g2-crates.patch alone (no G2 shim patch), instead of
+g3-crate-batch-3.patch. That file's header gives the batch, its two
+differences from the plan's list, the notes on bincode-next's licence,
+typos and MSRVs, and how the batch was resolved; all hold here.
+
+The only differences from g3-crate-batch-3.patch:
+- no wrapper ban, and no `objc2-game-controller:*` entry: 16 names;
+- the batch 3 comment says why there is no objc2-game-controller.
+Criteria 11 and 25 drop with this answer (plan, "If the owner answers
+O3-O5 otherwise").
+
+Base: main at c879061 with g2-crates.patch applied. At the repo root, run
+`git apply` with this file, then `cargo xtask quick` and
+`cargo xtask ci --job lint`.
+Text before the first `diff --git` line is ignored by `git apply`.
+
+How it was tested, on aarch64-apple-darwin with Rust 1.99.1, cargo-deny
+0.20.2 and typos-cli 1.51.1, in scratch clones of c879061 with
+g2-crates.patch applied:
+- `git apply --check` and `git apply` give the tested files byte for byte;
+  `cargo xtask quick` and `CI=1 cargo xtask ci --job lint` are 7 of 7.
+- In a scratch copy (not part of this patch), gungraun =0.20.0 in
+  eng-bench's Linux dev-dependencies: `cargo deny check` exits 0, all
+  four checks ok, no warning beyond today's. objc2-game-controller in
+  eng-platform-winit: bans fails with `error[not-allowed]`.
+
+diff --git a/deny.toml b/deny.toml
+index 0f1a64be48db4379cd4603ed0008fb1f258447b4..7d4ed1153d188f384a5680469a35107339468011 100644
+--- a/deny.toml
++++ b/deny.toml
+@@ -80,6 +80,10 @@ deny = [
+ # every target above. wgpu, winit and raw-window-handle are also in `deny`
+ # with their wrappers, and cargo-deny refuses the same spec in both lists, so
+ # here they are written `name:*` (any release version).
++# Batch 3, approved by the owner at gate G3 for rung 2 ("Crate batch 3" in
++# docs/rungs/2/plan.md): gungraun and its dependencies (eng-bench's
++# instruction counts, a dev-dependency on Linux only). No GCMouse shim, so
++# no objc2-game-controller (the owner's answer to the plan's O3).
+ allow = [
+   "autocfg",
+   "bitflags",
+@@ -255,6 +259,23 @@ allow = [
+   "xkeysym",
+   "zerocopy",
+   "zerocopy-derive",
++  # Batch 3 (rung 2).
++  "bincode-next",
++  "derive_more",
++  "derive_more-impl",
++  "either-or-both",
++  "gungraun",
++  "gungraun-common",
++  "gungraun-macros",
++  "gungraun-runner",
++  "pastey",
++  "proc-macro-error-attr3",
++  "proc-macro-error3",
++  "rapidhash",
++  "rustc_version",
++  "rustversion",
++  "semver",
++  "unty-next",
+ ]
+ 
+ [sources]

@@ -9,10 +9,11 @@
 
 - **Status:** draft for the owner's first sitting. The four pre-approval
   queue items have landed on `main` (commits in `docs/rungs/2/PROGRESS.md`).
-  Sitting 1 waits for three planning tasks ("Before the first sitting"):
-  T0a, ADR-0020 to ADR-0024, is drafted in `docs/adr/` (uncommitted) and
-  under review; T0 and T0b, the G2 and G3 patches, are not started. They write
-  only ADR drafts and patch files.
+  Sitting 1 needed three planning tasks first ("Before the first sitting"):
+  all three are done. T0a's ADR-0020 to ADR-0024 are in `docs/adr/`
+  (Proposed, reviewed twice), and T0's and T0b's patches are in
+  `docs/rungs/2/patches/` (reviewed). They write only ADR drafts and patch
+  files.
 - **Spec:** the rung 2 row of section 9 of
   `docs/superpowers/specs/2026-10-20-ai-built-engine-design.md`, with 6.1-6.3
   (crates, rules, the fixed spine), 6.4 (simulation), 6.6 (frame loop), 6.7
@@ -49,9 +50,17 @@ Each item links to its decision; the recommended answer comes first.
    **O9** fullscreen for first-person maps. **O10** Khronos PBR Neutral, to
    inform. **O11** ask for timestamp queries when there. **O12** leave
    `pmove`'s angled-wall fix to rung 3. **O13** gravity only in the air.
-6. **G2:** apply T0's patch (the four crates). **G3:** apply T0b's patch
-   (crate batch 3, 15 names). Each comes in the variant your O3-O5 answers
-   pick.
+6. **G2 and G3**, from `docs/rungs/2/patches/`, by your O3 answer. Apply
+   `g2-crates.patch` first (three crates), then one of:
+   - the shim as a crate: `g2-gcmouse-crate.patch`, then
+     `g3-crate-batch-3.patch`;
+   - the shim as a module: `g2-gcmouse-module.patch`, then
+     `g3-crate-batch-3-shim-module.patch`;
+   - no shim: `g3-crate-batch-3-no-shim.patch`.
+
+   If O4 picks parry3d, add `g3-parry3d.patch` after any of them. Batch 3
+   is 17 names, and each path passes `quick` and the lint job. The
+   patches do nothing for O5: its tool comes with T20.
 7. **G4:** accept, change or refuse ADR-0019 to ADR-0024.
 
 Sitting 2 is G5 (the patches, then a push); sitting 3 is G6 and G7 for rung
@@ -107,7 +116,7 @@ Layers are `architecture.toml`'s. The exact entries are gate G2.
 |---|---|---|---|
 | `eng-collision-grid` | `L2`, core, `same_layer = ["eng-collision-api"]`; `game-testbed-sim` gains it in its `same_layer` | Level 1's collision: a uniform grid over static primitives (vertical wall segments with a z range, horizontal convex slabs for floors, ceilings and steps), deterministic sweeps of a `BoxHull` that end in contact (ADR-0024: exactly on axis faces, within `CONTACT_GAP` off the axes). It implements `CollisionWorld` and passes `eng-collision-api`'s conformance suite. Built once from sim data (decision 1) | spec 6.1, 6.11, 9 |
 | `game-testbed-client` | `game`; `game-testbed` gains `same_layer = ["game-testbed-client"]` | The testbed's presentation: the top-down extraction (moved, unchanged), the first-person extraction, region looks, textures and sprites made by code, the plain-text palette | spec 6.1 (games row); rung 1b difference 6 |
-| `eng-platform-gcmouse` | `L1`, std; `eng-platform-winit` gains it in its `same_layer` | macOS only: raw mouse deltas from GCMouse, summed for the winit platform to drain each frame, and a count of its callbacks. Empty elsewhere. The engine's only `unsafe` code (decision 11, O3) | spec 6.10 (the shim); its own crate: proposal |
+| `eng-platform-gcmouse` | `L1`, std; `eng-platform-winit` gains it in its `same_layer` | macOS only: raw mouse deltas from GCMouse, summed for the winit platform to drain each frame, and a count of its callbacks. Empty elsewhere. The engine's only `unsafe` code (decision 11, O3). `[floor]` entries make it and `objc2-game-controller` single-user crates: only `eng-platform-winit` may depend on the shim, and only the shim on `objc2-game-controller` | spec 6.10 (the shim); its own crate: proposal |
 | `eng-bench` | `tool` | gungraun benchmarks: the dot and room sim steps, grid traces, `ground_move`. gungraun is a Linux-only dev-dependency; elsewhere each bench is an empty `main` | spec 6.1 (tools row), 6.13 |
 
 ### Changed crates
@@ -594,7 +603,8 @@ ready; sitting 1 waits until all three are done. Like the queue, they change
 no protected path on `main`: they commit ADR drafts (`docs/adr/` is not
 protected) and patch files under `docs/rungs/2/patches/`, tested in a
 scratch clone. **State now:** T0a is drafted (ADR-0020 to ADR-0024 in
-`docs/adr/`, uncommitted) and under review; T0 and T0b are not started.
+`docs/adr/`, Proposed, reviewed twice); T0 and T0b are done (seven patches
+in `docs/rungs/2/patches/`, reviewed).
 
 | Task | Builds | Done when |
 |---|---|---|
@@ -831,7 +841,9 @@ next gate.
 
 ## Crate batch 3
 
-*[proposal]* The third-party crates G3 adds to `[bans] allow`: 15 names.
+*[proposal]* The third-party crates G3 adds to `[bans] allow`: 17 names (T0b found two
+more than this table first listed: `rustc_version` 0.4.1 and `semver`
+1.0.28, build dependencies of `derive_more-impl`).
 
 - **Source:** a scratch project outside the repo, resolved 2026-11-06, with
   `gungraun =0.20.0` and `objc2-game-controller =0.3.2`
@@ -866,7 +878,7 @@ next gate.
 | `proc-macro-error3` | 3.1.1 | MIT OR Apache-2.0 | gungraun-macros |
 | `proc-macro-error-attr3` | 3.1.1 | MIT OR Apache-2.0 | proc-macro-error3 |
 | `rapidhash` | 4.5.1 | MIT OR Apache-2.0 | gungraun |
-| `rustversion` | 1.0.23 | MIT OR Apache-2.0 | derive_more |
+| `rustversion` | 1.0.23 | MIT OR Apache-2.0 | rapidhash, through bincode-next |
 
 **Tools, not dependencies.** They are installed by the workflows (G5), so
 they are not in `deny.toml`. Versions were checked with `cargo search` and

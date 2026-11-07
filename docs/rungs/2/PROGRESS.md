@@ -188,3 +188,120 @@ if the owner approves the plan as it is.
     - Strip and split debug info are protected `[profile]` keys.
   - **Nits:** about ten, in the review's report. The most useful is
     `--seed 1` in criterion 1.
+
+## 2026-11-07, session 1 (resumed at 02:11): the plan made ready, T0a, T0 and T0b (Claude Opus 5.5, orchestrator, owner away)
+
+The usage limit stopped the window at 00:45; it resumed at 02:11 with
+the same rules.
+
+**CI on the agent branch**
+- Run 42316720146 failed lint once more, because this log quoted the
+  misspelt word. 586d8b8 rewords it.
+- Run 42317502863, at 586d8b8, is **green on every job** in 5.3 min:
+  - lint, both test targets, riscv (`kit-fps`'s new tests), wasm and
+    selftest;
+  - the five native jobs, which run Q4's pinned bake hash on x86-64 and
+    arm64;
+  - the summary: `compare-hashes` ok, and rung 1b at 16/18 computed
+    features passing, `shot-exact` and `shot-flip` pending until G6, and
+    `owner-play` the owner's. That is the same as at the handover.
+- The commits after 586d8b8 are docs and patches only, and are not
+  pushed.
+
+**The plan**
+- **Second revision**, after the second review (46aa0e3):
+  - the room's hash streams wait for G5 with their scenarios;
+  - "Before the first sitting" adds T0, T0a and T0b, so every gate's
+    inputs exist when it is asked.
+- **A third fresh review** found a blocker the first two missed. With
+  `current.txt` at `2` from G1, xtask's `ci_native_tests` requires every
+  native check of the current rung to name an existing step. Rung 2's
+  new steps come at G5, so `quick` would be red from the first sitting.
+  - **Third revision** (ac0ed6b): `current.txt` moves to `2` at G5, in
+    the commit that adds those steps. The owner still writes
+    `acceptance.json` at G1, and nothing reads it until then.
+  - It also adds a one-screen "Sitting 1: what you decide" list at the
+    top.
+- **Five places where the plan disagreed with the code**, found by the
+  ADR writer, are fixed (389ef53):
+  - winit 0.30.13 has `Locked` on Windows;
+  - `counters.rs` builds `FrameCounters` by literal;
+  - exact contact holds only on axis faces;
+  - `LateClock` is a test platform's own `Control`;
+  - the handshake denies a client from another map first.
+- **The budget** is now 43 sessions, 52 with the recommended additions.
+
+**T0a: ADR-0020 to ADR-0024, all Proposed** (c879061)
+- A writer drafted them, and a fresh reviewer checked every file:line
+  they cite against HEAD and every implementer of `Control`, `Window`
+  and `CollisionWorld`.
+- **First pass:** 0021 and 0024 were not ready.
+  - **0021** (`unsafe` in the shim) needs every Rust file scanned
+    (`arch-check` reads `src/**` only), a `[floor]` entry, `forbid`, and
+    a macOS clippy step, since CI lints on Linux only.
+  - **0024** (exact contact) measured the off-axis gap along the motion,
+    which grazing traces break. It now measures along the hit normal.
+- **Second pass:** all five are ready for G4.
+
+**T0 and T0b: the G2 and G3 patches** (`docs/rungs/2/patches/`)
+- **The patches:**
+  - `g2-crates.patch`: three crate skeletons, `architecture.toml`, and
+    the overflow-checks table for `eng-collision-grid`;
+  - `g2-gcmouse-crate.patch`, if O3 keeps the shim a crate;
+  - `g3-crate-batch-3.patch`;
+  - `g3-parry3d.patch`, if O4 picks parry3d.
+- **Checked:** on fresh clones, `quick` and `CI=1 cargo xtask ci --job
+  lint` are 7 of 7 at every stage. cargo-deny passes with batch 3 really
+  added as dependencies in a scratch copy, and with parry3d too.
+- **Batch 3 is 17 names, not the plan's 15:** `rustc_version` and
+  `semver` are build dependencies of `derive_more-impl`. No `clarify`
+  entry is needed.
+- **The `[floor]` entry** `eng-platform-gcmouse = "eng-platform-winit"`
+  works with no xtask change. `arch-check` refuses `eng-app` depending
+  on the shim.
+- **The fresh review** approved all four. It asked for:
+  - `objc2-game-controller` under `[floor]`, so `quick` fences it, not
+    only cargo-deny on CI;
+  - ready-made O3 variants for G3.
+
+  Both are done. There are now seven patches, applied in this order:
+  1. `g2-crates.patch`.
+  2. Then, by the O3 answer, one of:
+     - `g2-gcmouse-crate.patch` and `g3-crate-batch-3.patch`;
+     - `g2-gcmouse-module.patch` and `g3-crate-batch-3-shim-module.patch`;
+     - `g3-crate-batch-3-no-shim.patch` alone.
+  3. `g3-parry3d.patch`, after any of them.
+
+  Each path passes `quick` and `CI=1` lint (7 of 7) on a fresh clone of
+  c879061. Checks in scratch copies only:
+  - `arch-check` now refuses `eng-app` depending on
+    `objc2-game-controller` (`[E-ARCH-FLOOR]`);
+  - on the no-shim path, cargo-deny refuses it.
+
+  Every path also applies before or after 1b's `quick-lock.patch`.
+
+**Amendment 98's lock** is a 1b patch, `docs/rungs/1b/patches/quick-lock.patch`.
+1b's session 19 entry describes it. It counts against 1b's budget,
+which makes 32 sessions of 30.
+
+**Costs since the resume**, as the harness reported them (wall time,
+subagent tokens in all, tool calls):
+
+| Agent | Time | Tokens | Calls |
+|---|---|---|---|
+| planner, revisions 2 and 3 and the ADR fixes | 8 + 6 + 2 min | 710k in all, since the draft | 112 |
+| plan review 2 | 13 min | 213k | 66 |
+| plan review 3 | 16 min | 264k | 104 |
+| ADR writer, then its fixes | 24 + 6 min | 388k | 193 |
+| ADR review, then re-review | 14 + 2 min | 238k | 96 |
+| T0/T0b builder, first round | 38 min | 303k | 197 |
+| gate patch review | 13 min | 115k | 52 |
+| 1b lock builder, then its fixes | 14 + 10 min | 221k | 117 |
+| 1b lock review, then re-review | 8 + 3 min | 122k | 54 |
+
+**Sessions**, counted as the plan counts them:
+- planning 4 (the draft and three revisions);
+- the queue 4;
+- T0, T0a and T0b 3.
+
+That is 11 of the proposed 43.

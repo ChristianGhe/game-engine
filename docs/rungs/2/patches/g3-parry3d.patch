@@ -1,0 +1,96 @@
+Patch G3, parry3d (rung 2, task T0b): the allow-list entries parry3d-f64
+0.31.1 needs as a test-only dependency of eng-collision-grid. Apply it
+only if the owner's answer to O4 picks parry3d-f64 for the collision
+oracle instead of brute force; T5 then builds both oracles. It applies
+after any of the three G3 variants (g3-crate-batch-3.patch,
+g3-crate-batch-3-shim-module.patch, g3-crate-batch-3-no-shim.patch):
+its one hunk's context is the end of the batch 3 list, the same in all
+three.
+
+What: `[bans] allow` gains 18 names in a block after batch 3, under a
+comment of their own. They were resolved against the real lock (main with
+both G2 patches, batch 3 as in g3-crate-batch-3.patch, and
+`parry3d-f64 = "=0.31.1"` in eng-collision-grid's `[dev-dependencies]`, in
+a scratch copy only). Cargo.lock gained 19 packages. The 19th,
+downcast-rs 2.0.2, is allowed already by name (batch 2 has its 1.x), so it
+needs no entry. The plan's 39-crate tree was counted from nothing; the
+rest of it is in the allow-list already.
+
+| Crate | Version | Licence |
+|---|---|---|
+| approx | 0.5.1 | Apache-2.0 |
+| byteorder | 1.5.0 | Unlicense OR MIT |
+| either | 1.19.0 | MIT OR Apache-2.0 |
+| ena | 0.14.4 | MIT OR Apache-2.0 |
+| glam | 0.33.12 | MIT OR Apache-2.0 |
+| glamx | 0.3.1 | MIT OR Apache-2.0 |
+| hash32 | 0.3.1 | MIT OR Apache-2.0 |
+| heapless | 0.8.0 | MIT OR Apache-2.0 |
+| num-complex | 0.4.6 | MIT OR Apache-2.0 |
+| num-derive | 0.5.1 | MIT OR Apache-2.0 |
+| parry3d-f64 | 0.31.1 | Apache-2.0 |
+| robust | 1.2.0 | MIT OR Apache-2.0 |
+| rstar | 0.13.1 | MIT OR Apache-2.0 |
+| safe_arch | 1.2.0 | Zlib OR Apache-2.0 OR MIT |
+| simba | 0.10.2 | Apache-2.0 |
+| spade | 2.15.1 | MIT OR Apache-2.0 |
+| stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 |
+| wide | 1.7.1 | Zlib OR Apache-2.0 OR MIT |
+
+Notes:
+- Every licence is on the list, or an OR with one that is. As dev-only
+  crates, cargo-deny does not licence-check them anyway.
+- The highest MSRV is 1.89 (safe_arch, wide), below the pinned 1.99.1.
+- The core-set rules allow it: arch-check reads a core crate's normal
+  dependencies only, and this is a dev-dependency.
+- Resolved with parry3d-f64's default features. If T5 turns some off, the
+  tree can only shrink, and unused entries can then be dropped.
+
+Base: main at c879061 with g2-crates.patch, the G2 shim patch of the O3
+answer (if any) and that answer's G3 variant applied. At the repo root,
+run `git apply` with this file, then `cargo xtask quick` and
+`cargo xtask ci --job lint`.
+Text before the first `diff --git` line is ignored by `git apply`.
+
+How it was tested, on aarch64-apple-darwin with Rust 1.99.1 and
+cargo-deny 0.20.2, on each of the three O3 paths, in scratch copies that
+also had batch 3's crates added where that path puts them: `cargo deny
+check` exits 0 (advisories, bans, licenses and sources ok), with no
+warning beyond today's. Without this patch, bans fails on exactly these
+18 names. `cargo check -p eng-collision-grid --tests` compiles parry3d-f64
+on 1.99.1. The file applies with `git apply` on each path and gives the
+tested deny.toml byte for byte; there, `cargo xtask quick` and
+`CI=1 cargo xtask ci --job lint` are 7 of 7.
+
+diff --git a/deny.toml b/deny.toml
+index 37688e43218a9e8e5e6e823e968be3038a6dbabe..e13815381cf0f75262aa697da9479791aa1b518a 100644
+--- a/deny.toml
++++ b/deny.toml
+@@ -281,6 +281,27 @@ allow = [
+   "rustversion",
+   "semver",
+   "unty-next",
++  # parry3d-f64 and its dependencies, with batch 3 if the owner's answer to
++  # the rung 2 plan's O4 picks it: the collision oracle in
++  # eng-collision-grid's tests only.
++  "approx",
++  "byteorder",
++  "either",
++  "ena",
++  "glam",
++  "glamx",
++  "hash32",
++  "heapless",
++  "num-complex",
++  "num-derive",
++  "parry3d-f64",
++  "robust",
++  "rstar",
++  "safe_arch",
++  "simba",
++  "spade",
++  "stable_deref_trait",
++  "wide",
+ ]
+ 
+ [sources]

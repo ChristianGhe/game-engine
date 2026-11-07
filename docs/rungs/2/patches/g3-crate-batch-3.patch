@@ -1,0 +1,132 @@
+Patch G3 (rung 2, task T0b): crate batch 3 in deny.toml's `[bans] allow`,
+and the wrapper ban that keeps objc2-game-controller inside the GCMouse
+shim. No `clarify` entry and no _typos.toml change: neither is needed
+(notes below). This is the variant for the owner's recommended O3 answer,
+the shim as a crate (after g2-gcmouse-crate.patch). The other two are
+g3-crate-batch-3-shim-module.patch and g3-crate-batch-3-no-shim.patch.
+
+Why: T14 adds objc2-game-controller to eng-platform-gcmouse (macOS only),
+and T17 adds gungraun to eng-bench (a dev-dependency, Linux only).
+cargo-deny fails on any crate outside `[bans] allow` for any target in
+`[graph] targets`, whether or not that target builds it.
+
+What (docs/rungs/2/plan.md, "Crate batch 3" and the G3 row of "Owner
+gates"):
+- `[bans] deny`: objc2-game-controller only as a direct dependency of
+  eng-platform-gcmouse, the way wgpu and winit are kept inside eng-gpu and
+  eng-platform-winit.
+- `[bans] allow`: 17 names in a block after batch 2, sorted: the plan's
+  15 and two it missed (difference 1). objc2-game-controller is written
+  `objc2-game-controller:*`, as wgpu, winit and raw-window-handle are:
+  cargo-deny 0.20.2 still refuses a bare name in both lists ("a crate was
+  specified in both `allow` and `deny`", checked again with this crate).
+- A comment on batch 3 after batch 2's.
+
+Differences from the plan's list (proposed amendments to "Crate batch 3"):
+1. Two more names: rustc_version 0.4.1 and semver 1.0.28, both MIT OR
+   Apache-2.0. rustc_version is a build-dependency of derive_more-impl and
+   gungraun-macros, and semver is a dependency of rustc_version. Both are
+   in Cargo.lock already, but only through Android crates (jni-macros,
+   simd_cesu8), which no target in `[graph]` reaches. So they are not in
+   `allow` today, and cargo-deny refuses both without these entries. The
+   plan probably counted them as allowed because the lock has them.
+2. rustversion 1.0.23 is brought by rapidhash. For derive_more it is only
+   a dev-dependency, outside our graph. The entry is the same.
+Every version in the plan's table resolved as listed, with the licences it
+gives.
+
+Notes:
+- arch-check fences objc2-game-controller too, in `quick`: the shim
+  patch puts it in `[floor]` (`[E-ARCH-FLOOR]`). This ban is the same
+  fence in CI's lint job.
+- bincode-next's licence string, "MIT or Apache-2.0": cargo-deny 0.20.2
+  reads it as MIT OR Apache-2.0 (`cargo deny list` in a scratch project
+  where it is a normal dependency). Here it is not licence-checked at all:
+  cargo-deny leaves dev-only crates out of the licence check (`include-dev`
+  defaults to false), and the whole gungraun tree is dev-only. So it needs
+  no `clarify` entry.
+- typos (1.51.1) passes with the new names, so _typos.toml is unchanged.
+- Until T14 depends on objc2-game-controller, its wrapper gives one more
+  `unused-wrapper` warning, as gilrs and cpal do.
+- No new duplicate-version warning: the 12 are today's.
+- MSRVs: the highest is bincode-next's 1.90, below the pinned 1.99.1.
+
+Base: main at c879061 with g2-crates.patch and g2-gcmouse-crate.patch
+applied. At the repo root, run `git apply` with this file, then
+`cargo xtask quick` and `cargo xtask ci --job lint`; quick runs neither
+cargo-deny nor typos, the lint job runs both.
+Text before the first `diff --git` line is ignored by `git apply`.
+
+How it was tested, on aarch64-apple-darwin with Rust 1.99.1, cargo-deny
+0.20.2 and typos-cli 1.51.1, the advisory database fetched on 2026-11-07:
+- Today's dependencies with this policy: `cargo deny check` exits 0.
+- In a scratch copy with both G2 patches applied (not part of this patch),
+  batch 3 added where the plan puts it: gungraun =0.20.0 under eng-bench's
+  `[target.'cfg(target_os = "linux")'.dev-dependencies]`, and
+  objc2-game-controller =0.3.2 (`default-features = false`; std, block2,
+  GCDevice, GCMouse, GCMouseInput, GCPhysicalInputProfile) with objc2
+  0.6.5 and block2 0.6.2 under the shim's
+  `[target.'cfg(target_os = "macos")'.dependencies]`. Cargo.lock gained
+  14 packages, all in the plan's table; the other three names were locked
+  already. `cargo deny check` exits 0: advisories, bans, licenses and
+  sources ok, with no warning beyond today's. With only the plan's 15
+  names, bans fails on rustc_version and semver; without rustversion, on
+  rustversion.
+- objc2-game-controller added to eng-platform-winit, or to eng-app, as
+  well: `cargo deny check bans` fails with `error[banned]`.
+- `cargo check` of the shim with those features compiles on 1.99.1.
+- This file applies with `git apply` to a fresh clone with both G2 patches
+  applied, and gives the tested files byte for byte. There, `cargo xtask
+  quick` and `CI=1 cargo xtask ci --job lint` are green.
+
+diff --git a/deny.toml b/deny.toml
+index 0f1a64be48db4379cd4603ed0008fb1f258447b4..37688e43218a9e8e5e6e823e968be3038a6dbabe 100644
+--- a/deny.toml
++++ b/deny.toml
+@@ -62,6 +62,9 @@ deny = [
+     "wgpu", "wgpu-core", "wgpu-hal", "wgpu-types", "winit",
+     "eng-platform-api", "eng-platform-winit", "eng-gpu", "eng-app",
+   ] },
++  # The Game Controller bindings stay inside the GCMouse shim, the one crate
++  # whose `unsafe` calls them (rung 2, decision 11, ADR-0021).
++  { crate = "objc2-game-controller", wrappers = ["eng-platform-gcmouse"] },
+   # Unmaintained (spec 6.8).
+   { crate = "laminar" },
+   { crate = "bincode" },
+@@ -80,6 +83,11 @@ deny = [
+ # every target above. wgpu, winit and raw-window-handle are also in `deny`
+ # with their wrappers, and cargo-deny refuses the same spec in both lists, so
+ # here they are written `name:*` (any release version).
++# Batch 3, approved by the owner at gate G3 for rung 2 ("Crate batch 3" in
++# docs/rungs/2/plan.md): gungraun and its dependencies (eng-bench's
++# instruction counts, a dev-dependency on Linux only) and
++# objc2-game-controller (the GCMouse shim, macOS only; `name:*` for its
++# wrapper ban, as above).
+ allow = [
+   "autocfg",
+   "bitflags",
+@@ -255,6 +263,24 @@ allow = [
+   "xkeysym",
+   "zerocopy",
+   "zerocopy-derive",
++  # Batch 3 (rung 2).
++  "bincode-next",
++  "derive_more",
++  "derive_more-impl",
++  "either-or-both",
++  "gungraun",
++  "gungraun-common",
++  "gungraun-macros",
++  "gungraun-runner",
++  "objc2-game-controller:*",
++  "pastey",
++  "proc-macro-error-attr3",
++  "proc-macro-error3",
++  "rapidhash",
++  "rustc_version",
++  "rustversion",
++  "semver",
++  "unty-next",
+ ]
+ 
+ [sources]

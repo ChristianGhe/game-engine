@@ -156,11 +156,13 @@ if the owner approves the plan as it is.
   not: they were all chosen from the rules the builder already had in
   mind.
 
-**Last: CI and the second plan review** (00:40 EET; the usage limit ended the window here)
+**Last: CI and the second plan review** (00:40 EET; the usage limit paused the window here, and it resumed at 02:11)
 - **CI:** the agent branch's run 42303716372, at 65f0f13, was green on
-  every job but lint. That job failed on typos: "1/256ths" in Q3 read as
-  "ths". 9558779 fixes it, with `typos` and `quick` green here. It is not
-  pushed again.
+  every job but lint. That job failed on typos: Q3's text wrote 1/256 as
+  an ordinal, and typos read the suffix as a misspelt word. 783326b
+  rewords it as "sub-counts (1/256 of a count)". Its run, 42316720146,
+  failed lint once more, on this entry's own quote of the word; the next
+  commit removes the quote.
 - **The second fresh plan review** said the plan is **not ready for the
   owner**. Nothing below is fixed. The next session starts here.
   - **Blocker 1:** T7 commits the room's hash streams before G5 adds

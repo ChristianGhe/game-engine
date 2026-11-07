@@ -539,3 +539,23 @@ ADR-0020, O11)
 - **Checked on `main`:** `ENG_REQUIRE_GPU=1 cargo xtask quick` 7 of 7.
 - **Cost:** the builder took 55 + 35 min, 434k tokens and 165 calls. It
   counts as one session (15 of 52).
+
+**T5's independent review, and two owner decisions**
+- **The verdict: not ready.** The reviewer wrote an exact-rational trace
+  from decision 2 and ADR-0024, in Python, outside the repo. It found one
+  blocker in f47e189. A hull that starts at a vertex contact can pass
+  through an off-axis wall or slab, by 1.3 cm to 43 cm.
+  - **How often:** 5 of 5,368 such traces on random off-axis maps, and 0
+    of 8,044 on axis-aligned maps like the room.
+  - **Why nothing caught it:** `conformance::check` never looks at the
+    path, and the brute oracle copies the same narrow-phase line.
+  - **The fix:** the reviewer's two-part fix is tested in its scratch
+    clone. It went back to the builder with a pass-through assertion
+    for the proptests. The builder's "once in a million" residue was
+    the same fault, at about 0.1% of vertex-aimed traces.
+- **The owner accepted two changes, 2026-11-07:**
+  - **Amendment 1 to ADR-0024:** the check's two loosened rules, and
+    vertex contacts taking the touching edge's normal. The builder writes
+    it into the ADR with the follow-up.
+  - **Plan decision 2:** a slab is a solid convex prism whose sides
+    block. Before, its wording was "a z sweep inside its polygon".

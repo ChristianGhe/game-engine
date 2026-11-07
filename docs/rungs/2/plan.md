@@ -264,7 +264,10 @@ passes, all on by default. No new exit code.
    visited in cell order, then primitive index; ties between hits go to the
    lower index. Sweeps are deterministic (f64, IEEE basic operations only): a
    box against a wall segment is a 2D separating-axis sweep plus the
-   segment's z range, against a slab a z sweep inside its polygon.
+   segment's z range. A slab is a solid convex prism, so its sides block as
+   well as its top and bottom, and steps and ledges need no extra walls
+   (changed by the owner on 2026-11-07, after T5: the first wording, "a z
+   sweep inside its polygon", would let a hull end inside a step).
    - **Contact** (ADR-0024). `ground_move` decides "on the ground" with a
      `GROUND_PROBE` (1/1024 m) trace down, so a blocked trace must end in
      contact, which the contract does not promise today. f64 can hold

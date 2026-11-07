@@ -1,29 +1,18 @@
-//! A test-only [`CollisionWorld`] of solid axis-aligned boxes, until rung 2's
-//! grid crate arrives. A hull overlaps a box only where their interiors meet,
-//! so a hull touching a face is free.
+//! A test-only [`CollisionWorld`] of solid axis-aligned boxes. A hull
+//! overlaps a box only where their interiors meet, so a hull touching a face
+//! is free.
 //!
 //! - Sweeps are slab tests in f64 with IEEE basic operations only, so every
 //!   target gives the same bits.
 //! - The earliest hit wins. Ties go to the lower box index, then the lower
-//!   axis (X, Y, Z). The hit axis ends exactly on the face.
-//! - If rounding would still leave the end inside a box, the trace reports a
-//!   hit at its start instead (fraction 0), so it never ends inside solid.
-//!   [`fallbacks`] counts these. The tests assert it stays put, so the
-//!   sweeps they rely on were exact and the fallback hid nothing.
-
-use std::cell::Cell;
+//!   axis (X, Y, Z). The hit axis ends exactly on the face, as ADR-0024's
+//!   contact rule asks.
+//! - If rounding would still leave the end inside a box, the trace panics.
+//!   The old fallback, a hit at the start, would break the contact rule, and
+//!   the tests that use this world never needed it.
 
 use eng_collision_api::{BoxHull, CollisionWorld, Trace};
 use eng_math::{Vec3, WorldPos, max_f64};
-
-thread_local! {
-    static FALLBACKS: Cell<usize> = const { Cell::new(0) };
-}
-
-/// How many traces on this thread have fallen back to a hit at their start.
-pub fn fallbacks() -> usize {
-    FALLBACKS.with(Cell::get)
-}
 
 /// One solid box.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -134,27 +123,9 @@ fn entry(r: &Ranges, s: [f64; 3], e: [f64; 3]) -> Option<(f64, usize)> {
     (enter < leave && enter < 1.0 && leave > 0.0).then_some((max_f64(enter, 0.0), axis))
 }
 
-impl Boxes {
-    /// A hit at `start`: the face of the first box holding `bad` that
-    /// `start` is outside of.
-    fn blocked(&self, start: WorldPos, bad: WorldPos, hull: &BoxHull) -> Trace {
-        FALLBACKS.with(|n| n.set(n.get() + 1));
-        let (s, b) = (axes(start), axes(bad));
-        let normal = self
-            .0
-            .iter()
-            .map(|solid| solid.grown(hull))
-            .filter(|r| inside(r, b))
-            .find_map(|r| (0..3).find(|&i| !within(r[i], s[i])))
-            .map(|axis| facing(axis, b[axis] - s[axis]))
-            .expect("a free start is outside every box that holds the end");
-        Trace {
-            fraction: 0.0,
-            end: start,
-            normal,
-            start_solid: false,
-        }
-    }
+/// A sweep from `start` that rounding would leave inside a box at `bad`.
+fn inexact(start: WorldPos, bad: WorldPos) -> ! {
+    panic!("the box world's sweep from {start:?} would end inside a box at {bad:?}")
 }
 
 impl CollisionWorld for Boxes {
@@ -184,7 +155,7 @@ impl CollisionWorld for Boxes {
         }
         let Some((t, axis, face)) = first else {
             if self.overlaps(end, hull) {
-                return self.blocked(start, end, hull);
+                inexact(start, end);
             }
             return Trace {
                 fraction: 1.0,
@@ -200,7 +171,7 @@ impl CollisionWorld for Boxes {
         p[axis] = face;
         let stop = WorldPos::new(p[0], p[1], p[2]);
         if self.overlaps(stop, hull) {
-            return self.blocked(start, stop, hull);
+            inexact(start, stop);
         }
         Trace {
             fraction: t,

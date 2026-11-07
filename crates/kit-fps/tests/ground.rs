@@ -5,8 +5,9 @@
 #[path = "support/boxes.rs"]
 mod boxes;
 
-use boxes::{Boxes, course, fallbacks, solid};
+use boxes::{Boxes, course, solid};
 use eng_collision_api::{BoxHull, BoxRoom, CollisionWorld};
+use eng_collision_grid::{Grid, Point2, Slab, Wall};
 use eng_core::{PlayerCommand, Tick};
 use eng_math::{Vec3, WorldPos};
 use eng_schema_core::{Schema, from_bytes, to_bytes};
@@ -96,6 +97,38 @@ const ROOM: BoxRoom = BoxRoom {
     max: WorldPos::new(8.0, 6.0, 3.0),
 };
 
+/// The room on rung 2's collision grid: four walls, a floor slab and a
+/// ceiling slab, and with `cut` a wall off the axes across its north-east
+/// corner.
+fn grid_room(cut: bool) -> Grid {
+    let wall = |a: (f64, f64), b: (f64, f64)| Wall {
+        a: Point2::new(a.0, a.1),
+        b: Point2::new(b.0, b.1),
+        bottom: 0.0,
+        top: 3.0,
+    };
+    let rect = |bottom: f64, top: f64| Slab {
+        points: vec![
+            Point2::new(0.0, 0.0),
+            Point2::new(8.0, 0.0),
+            Point2::new(8.0, 6.0),
+            Point2::new(0.0, 6.0),
+        ],
+        bottom,
+        top,
+    };
+    let mut walls = vec![
+        wall((0.0, 0.0), (8.0, 0.0)),
+        wall((8.0, 0.0), (8.0, 6.0)),
+        wall((8.0, 6.0), (0.0, 6.0)),
+        wall((0.0, 6.0), (0.0, 0.0)),
+    ];
+    if cut {
+        walls.push(wall((5.5, 6.0), (8.0, 3.5)));
+    }
+    Grid::new(walls, vec![rect(-0.5, 0.0), rect(3.0, 3.5)]).unwrap()
+}
+
 /// Runs `pmove` and `ground_move` side by side from a hull on the floor.
 fn same_as_pmove<C: CollisionWorld>(
     world: &C,
@@ -137,9 +170,15 @@ proptest! {
     ) {
         let start = state([x, y, H], [vx, vy, 0.0]);
         same_as_pmove(&ROOM, start, &commands)?;
-        let before = fallbacks();
         same_as_pmove(&walled_room(), start, &commands)?;
-        prop_assert_eq!(fallbacks(), before, "an inexact sweep fell back");
+        // Over the grid too (rung 2, T5), with a wall off the axes as well:
+        // with contact exact on the floor, a stepped move that ties the flat
+        // one gives the same bits.
+        same_as_pmove(&grid_room(false), start, &commands)?;
+        let cut = grid_room(true);
+        if !cut.overlaps(start.pos, &MOVE.hull) {
+            same_as_pmove(&cut, start, &commands)?;
+        }
     }
 }
 
@@ -197,6 +236,38 @@ fn a_step_up_to_the_step_height_is_climbed_within_one_tick() {
 #[test]
 fn a_taller_step_blocks() {
     let world = step(0.41);
+    let mut s = before_riser();
+    for _ in 0..60 {
+        let out = tick(&world, &s, &east());
+        assert_eq!((out.state.pos.x, out.state.pos.z), (1.75, H), "{out:?}");
+        assert_eq!(out.planes(), [Vec3::new(-1.0, 0.0, 0.0)]);
+        assert!(out.on_ground);
+        s = out.state;
+    }
+}
+
+#[test]
+fn on_the_grid_a_step_is_climbed_and_a_taller_one_blocks() {
+    // The box worlds' step as grid slabs: a floor, and from x = 2 a slab whose
+    // top is at `top`. Its side blocks the flat move; its top holds the
+    // stepped one.
+    let grid = |top: f64| {
+        let rect = |x0: f64, x1: f64, top: f64| Slab {
+            points: [(x0, -1.0), (x1, -1.0), (x1, 3.0), (x0, 3.0)]
+                .map(|(x, y)| Point2::new(x, y))
+                .to_vec(),
+            bottom: -1.0,
+            top,
+        };
+        Grid::new(vec![], vec![rect(-1.0, 2.0, 0.0), rect(2.0, 8.0, top)]).unwrap()
+    };
+    for top in [0.2, 0.4] {
+        let out = tick(&grid(top), &before_riser(), &east());
+        assert_eq!(out.state.pos.z, top + H, "top {top}: {out:?}");
+        assert_eq!(out.state.pos.x, 1.73 + 4.0 * f64::from(DT), "top {top}");
+        assert!(out.on_ground, "top {top}");
+    }
+    let world = grid(0.41);
     let mut s = before_riser();
     for _ in 0..60 {
         let out = tick(&world, &s, &east());
@@ -338,7 +409,6 @@ proptest! {
         added.0.retain(|b| !Boxes(vec![*b]).overlaps(start.pos, &MOVE.hull));
         world.0.extend(added.0);
         let mut s = start;
-        let before = fallbacks();
         for (f, side, yaw, ticks) in moves {
             for _ in 0..ticks {
                 let out = tick(&world, &s, &cmd(f, side, yaw));
@@ -352,8 +422,5 @@ proptest! {
                 s = out.state;
             }
         }
-        // The box world's fallback guarantees "never inside" by itself; it
-        // must not have been needed, or this test proves nothing.
-        prop_assert_eq!(fallbacks(), before, "an inexact sweep fell back");
     }
 }

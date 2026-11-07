@@ -14,6 +14,7 @@ eng-math.workspace = true
 eng-schema-core.workspace = true
 
 [dev-dependencies]
+eng-collision-grid.workspace = true
 proptest.workspace = true
 
 [lints]

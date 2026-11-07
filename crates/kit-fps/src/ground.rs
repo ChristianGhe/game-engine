@@ -36,7 +36,7 @@
 //! [`GroundOutcome::on_ground`] is step 1's check at the end position, which
 //! is what the next tick finds.
 
-use eng_collision_api::{BoxHull, CollisionWorld};
+use eng_collision_api::{BoxHull, CONTACT_GAP, CollisionWorld};
 use eng_core::PlayerCommand;
 use eng_math::{Real, Vec3, WorldPos};
 use eng_schema_core::Schema;
@@ -47,13 +47,18 @@ use crate::{MAX_PLANES, MoveConfig, MoveOutcome, MoveState, accelerate, friction
 /// step-up's push-down and the step-down also look this much further, so
 /// floor exactly at the end of their reach is found.
 ///
-/// This assumes every [`CollisionWorld`] stops a trace exactly at contact, as
-/// `BoxRoom`, the test box world and exact f64 sweeps do, so a resting hull's
-/// probe hits at fraction 0. Neither the collision contract nor
-/// `conformance::check` promises that. A world that stops traces short by
-/// more than this would leave a resting hull in the air, to fall a little
-/// every tick.
+/// The collision contract promises that a blocked trace stops in contact
+/// (ADR-0024), and `conformance::check` checks it: exactly on a floor square
+/// to an axis, so a resting hull's probe hits at fraction 0, and within
+/// [`CONTACT_GAP`] along the normal of one off the axes. A sloped floor's
+/// vertical gap is then at most `CONTACT_GAP / n_z`, which for the steepest
+/// walkable floor is still far below this probe (checked at compile time).
 pub const GROUND_PROBE: f64 = 1.0 / 1024.0;
+
+const _: () = assert!(
+    CONTACT_GAP / (GroundConfig::DEFAULT.min_floor_normal_z as f64) < GROUND_PROBE,
+    "the ground probe must reach past a sloped floor's contact gap"
+);
 
 /// Ground-movement tuning, in meters and seconds.
 #[derive(Debug, Clone, Copy, PartialEq, Schema)]

@@ -436,6 +436,12 @@ dependencies = [
 [[package]]
 name = "eng-collision-grid"
 version = "0.1.0"
+dependencies = [
+ "eng-collision-api",
+ "eng-math",
+ "eng-schema-core",
+ "proptest",
+]
 
 [[package]]
 name = "eng-core"
@@ -909,6 +915,7 @@ name = "kit-fps"
 version = "0.1.0"
 dependencies = [
  "eng-collision-api",
+ "eng-collision-grid",
  "eng-core",
  "eng-math",
  "eng-schema-core",

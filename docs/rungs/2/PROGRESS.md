@@ -784,3 +784,90 @@ decisions 7, 8 and 13; ADR-0020)
 - **Checked on `main`:** `ENG_REQUIRE_GPU=1 quick` 7 of 7.
 - **Cost:** the builder took 42 + 25 min, 467k tokens, 160 calls. It
   counts as one session (20 of 52).
+
+**T10's lavapipe fix** (885554e)
+- **What failed:** CI run 42398105940 on `agent/rung2` was red in two
+  places.
+  - `typos` read a two-letter variable name in the PBR Neutral reference as a misspelling of "on".
+  - `light_model` failed on lavapipe: every pixel was 1.1% low in dark
+    channels. The cause is lavapipe's sRGB decode, which differs from the
+    formula at low codes.
+- **The fix:** the oracle now takes the GPU's own decoded albedo
+  (`FirstPersonRenderer::read_albedo`), so it tests the light model, not
+  the adapter's decode. The six mutations are still caught.
+- **Checked** on Metal and in Docker on Debian Mesa 25.0.7 and the pinned
+  25.2.7. CI run 42399931913 is green on every job.
+- **Lesson:** `quick` runs neither lavapipe nor typos. Run
+  `CI=1 cargo xtask ci --job lint` before every push, and push to the
+  agent branch soon after a GPU task lands.
+
+**T14: the GCMouse shim** (b265dd8, follow-up 9a03645; decision 11,
+ADR-0021)
+- **Built:** `eng-platform-gcmouse`. `src/macos.rs` is its only file
+  with `allow(unsafe_code)`, and holds four `unsafe` blocks, each with a
+  SAFETY argument.
+  - `mice`, `mouseInput`, and `setMouseMovedHandler` to set and to
+    clear, all within ADR-0021's list.
+  - `shim.rs` forbids `unsafe`.
+  - Deltas are rounded as `look.rs` rounds them, and every callback is
+    counted.
+  - eng-platform-winit takes macOS raw motion from the shim, only while
+    focused, and exposes `raw_motion_callbacks()`.
+- **The review found no soundness blocker** (11 min, 148k tokens). The
+  follow-up takes its points:
+  - a compiled `Send + Sync` check on the handler closure (capturing an
+    `Rc` fails with E0277);
+  - `catch_unwind` with `abort` in the handler, since block2 calls it
+    through `C-unwind`;
+  - an autorelease pool around refresh;
+  - an honest start test.
+- **Still open:**
+  - **The install path is in no test.** GCMouse lists mice only under
+    AppKit's event loop, not a bare run loop. `mouseInput`, the
+    handler's install and its removal ran only by hand.
+  - **Confinement of `unsafe` is a convention until G5.** Nothing stops
+    an `allow` in another file of the crate, or in winit's tests and
+    examples. ADR-0021 leaves the check to G5 (T21).
+- **For the owner:** the real-mouse check, with the screen unlocked:
+  `cargo run -p eng-platform-winit --example events -- --grab`. Check:
+  - that `dx` is above 0 moving right, and `dy` above 0 moving toward
+    you (else set `DELTA_Y_UP` to false);
+  - that the summed counts per inch are about the mouse's counts;
+  - that callbacks per second exceed 120 while moving fast.
+- **The sign of `deltaY`:** SDL negates it in both of its GCMouse
+  handlers (`SDL_cocoamouse.m:381-391`, `SDL_uikitevents.m:355`, at
+  08ab399).
+- **Sessions:** it counts as one (21 of 52).
+
+**T11: the sprites pass** (586000d, then a small fix on `main`;
+decision 4)
+- **Built:** `Sprite` and the `sprites` pass, continuing `opaque`.
+  - Each sprite takes two 16-byte instance records a frame: feet minus
+    eye and the frame's material, then signed width (negative for
+    mirrored), height, region and id.
+  - All sprites share one billboard in one instanced draw.
+  - The alpha test writes depth, `info` carries (Sprite, id, region), and
+    there is no eng-gpu change.
+- **Tests:** against an f64 CPU cast, on Metal and on Debian lavapipe:
+  - the 8 rotations and the mirror of a five-rotation sheet;
+  - Z-only billboards when pitched;
+  - the thing behind the pillar: 0 pixels;
+  - sprite over sprite;
+  - every look switch;
+  - six mutations caught.
+- **1b's shots:** unchanged.
+- **Review:** the builder's own reviewer, then a fresh one (9 min, 147k
+  tokens), found no blockers. Two of the fresh reviewer's points are
+  fixed on `main`, with this entry:
+  - the uv is now clamped half a texel inside the texture, not an ulp
+    below 1, since Vulkan allows 4 sub-texel bits;
+  - the billboard's right axis drops its z in the shader, so Z-only does
+    not rest on the camera having no roll.
+
+  The sprite, first-person and shader tests pass on Metal after the fix.
+  The rest are carries in the T12, T16, T21 and T22 rows; G5's row names
+  T11's tests.
+- **A departure from ADR-0020, for T22:** two records per sprite, where
+  the ADR has one per drawn chunk or sprite. It is internal to
+  eng-render, so nothing waits on it.
+- **Sessions:** it counts as one (22 of 52).

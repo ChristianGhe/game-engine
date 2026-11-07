@@ -6,8 +6,9 @@
 //! `GCMouse::mice`, `GCMouse::mouseInput` and
 //! `GCMouseInput::setMouseMovedHandler`. Each call is one `unsafe` block
 //! with a `// SAFETY:` comment; everything else here is safe code, and the
-//! handler's body is the safe [`Feed::moved`]. This file declares no
-//! modules, so the exception covers its text alone.
+//! handler's body is the safe [`Feed::moved`], run by
+//! [`moved_handler`]. This file declares no modules, so the exception
+//! covers its text alone.
 //!
 //! The arguments the comments rest on:
 //!
@@ -34,13 +35,24 @@
 //!   any call it has queued holds one too. The shim keeps its own until it
 //!   has set the handler back to null. The closure owns all it uses, a
 //!   [`Feed`] (an `Arc` to a mutex), so it is sound to call at any time,
-//!   on any thread, even after the shim is gone.
+//!   on any thread, even after the shim is gone. `RcBlock` itself asks
+//!   nothing of the closure's thread safety, so [`thread_safe`] makes the
+//!   compiler check it: the closure must be `Send + Sync + 'static`, and
+//!   capturing an `Rc` or a `Cell` would not compile.
 //! - **The block's type is the handler's.** It is built as `GCMouseMoved`'s
 //!   `dyn Fn(NonNull<GCMouseInput>, c_float, c_float)`, which the setter's
 //!   argument type checks, and it ignores the first argument, so nothing
 //!   depends on that pointer.
-//! - **Nothing unwinds into the framework.** [`Feed::moved`] cannot panic:
-//!   it takes a poisoned lock anyway and its sums saturate.
+//! - **Nothing unwinds into the framework.** block2 calls the closure
+//!   through an `extern "C-unwind"` trampoline, so a panic in it would
+//!   unwind into GameController's and libdispatch's frames.
+//!   [`moved_handler`] runs the body under `catch_unwind` and aborts the
+//!   process if it panics. [`Feed::moved`] is not expected to: it takes a
+//!   poisoned lock anyway and its sums saturate.
+//! - **Autorelease pools.** [`Mice::refresh`](Source::refresh) and
+//!   `Drop for Mice` run inside `autoreleasepool`: the first refresh runs
+//!   when the platform is made, before any run loop has made a pool, and
+//!   Objective-C getters may autorelease what they return.
 #![allow(unsafe_code)]
 
 use core::ffi::c_float;
@@ -48,7 +60,7 @@ use core::ptr::{self, NonNull};
 
 use block2::RcBlock;
 use objc2::MainThreadMarker;
-use objc2::rc::Retained;
+use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::AnyClass;
 use objc2_game_controller::{GCMouse, GCMouseInput};
 
@@ -87,6 +99,17 @@ impl Mice {
 
 impl Source for Mice {
     fn refresh(&mut self, feed: &Feed) {
+        autoreleasepool(|_| self.look(feed));
+    }
+
+    fn mice(&self) -> usize {
+        self.installed.len()
+    }
+}
+
+impl Mice {
+    /// [`Source::refresh`], inside an autorelease pool.
+    fn look(&mut self, feed: &Feed) {
         // SAFETY: `+[GCMouse mice]` is a class property getter with no
         // arguments, returning a retained `NSArray<GCMouse *>` (the
         // module's first point); the class exists and this is the main
@@ -111,18 +134,14 @@ impl Source for Mice {
                 // No input yet: looked for again at the next refresh.
                 continue;
             };
-            let feed = feed.clone();
-            let handler: Moved = RcBlock::new(
-                move |_: NonNull<GCMouseInput>, delta_x: c_float, delta_y: c_float| {
-                    feed.moved(delta_x, delta_y);
-                },
-            );
+            let handler = moved_handler(feed.clone());
             // SAFETY: the pointer is valid, as the setter requires: it is
             // `handler`'s, a live heap block that `Installed` keeps until
             // `remove` has set the handler to null, and the setter copies
-            // it (fourth point). Its type is `GCMouseMoved`'s (fifth), it
-            // never unwinds (sixth), and `input` is held as `Retained`
-            // (third).
+            // it; the closure owns its `Feed` and the compiler has checked
+            // it is `Send + Sync + 'static` (`thread_safe`; fourth point).
+            // Its type is `GCMouseMoved`'s (fifth), it aborts rather than
+            // unwind (sixth), and `input` is held as `Retained` (third).
             unsafe { input.setMouseMovedHandler(RcBlock::as_ptr(&handler)) };
             self.installed.push(Installed {
                 mouse,
@@ -131,20 +150,41 @@ impl Source for Mice {
             });
         }
     }
-
-    fn mice(&self) -> usize {
-        self.installed.len()
-    }
 }
 
 impl Drop for Mice {
     fn drop(&mut self) {
-        for one in self.installed.drain(..) {
-            remove(&one.input);
-            // Only now does the shim's reference to the handler go.
-            drop(one.handler);
-        }
+        autoreleasepool(|_| {
+            for one in self.installed.drain(..) {
+                remove(&one.input);
+                // Only now does the shim's reference to the handler go.
+                drop(one.handler);
+            }
+        });
     }
+}
+
+/// The moved handler for one mouse: [`Feed::moved`], aborting the process
+/// rather than unwinding into the framework if it ever panics (the
+/// module's sixth point).
+fn moved_handler(feed: Feed) -> Moved {
+    RcBlock::new(thread_safe(
+        move |_: NonNull<GCMouseInput>, delta_x: c_float, delta_y: c_float| {
+            if std::panic::catch_unwind(|| feed.moved(delta_x, delta_y)).is_err() {
+                std::process::abort();
+            }
+        },
+    ))
+}
+
+/// The closure, unchanged, once the compiler has checked that it may be
+/// called from any thread at any time (the module's fourth point): block2's
+/// `RcBlock` does not ask.
+const fn thread_safe<F>(f: F) -> F
+where
+    F: Fn(NonNull<GCMouseInput>, c_float, c_float) + Send + Sync + 'static,
+{
+    f
 }
 
 /// Whether two references are to the same mouse object.

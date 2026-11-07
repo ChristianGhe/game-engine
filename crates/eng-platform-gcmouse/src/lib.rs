@@ -20,11 +20,19 @@
 //! - **Focus.** Motion is summed only while the shim is told the window has
 //!   focus; a focus change drops what was not drained. Every callback is
 //!   counted, focused or not.
-//! - **Signs and units.** GCMouse's `deltaY` is taken as positive up (SDL 3
-//!   sends `-deltaY` as its motion), so the shim negates it into the
-//!   contract's `dy`, positive towards the user; deltas are taken as
-//!   counts. Neither is verified on a real mouse yet (rung 2, T14's carry):
-//!   `examples/events.rs` in `eng-platform-winit` checks them.
+//! - **Signs and units.** GCMouse's `deltaY` is taken as positive up
+//!   (SDL 3's GCMouse handlers send `-deltaY` as their motion), so the
+//!   shim negates it into the contract's `dy`, positive towards the user;
+//!   deltas are taken as counts. Neither is verified on a real mouse yet
+//!   (rung 2, T14's carry): `examples/events.rs` in `eng-platform-winit`
+//!   checks them.
+//! - **What the tests reach.** `tests/shim.rs` runs all the safe logic on
+//!   a fake source. `tests/start.rs` starts and stops the real shim on the
+//!   main thread, which calls `GCMouse::mice`; GCMouse lists mice only in
+//!   an app once AppKit's run loop has run, so it lists none there, and
+//!   `mouseInput`, the handler's install and its removal run in no test.
+//!   They, the callbacks, their signs and units are checked by hand with
+//!   the example on the owner's Mac.
 //!
 //! Only `eng-platform-winit` may depend on this crate, and only this crate
 //! on `objc2-game-controller` (both in `[floor]` in `architecture.toml`;

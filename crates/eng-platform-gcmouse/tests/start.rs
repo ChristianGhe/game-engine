@@ -1,10 +1,17 @@
 //! The real shim on the main thread, which the GCMouse source needs, so
-//! this test is `harness = false`. On macOS it starts on GCMouse: it lists
-//! the mice, installs a handler on each one there is, and on drop sets
-//! each back to null. CI's macOS runner has no mouse, so there it only
-//! lists none; on a Mac with a mouse the handlers go on and off. Without a
-//! run loop no callback comes, so nothing moves. Elsewhere it does not
-//! start.
+//! this test is `harness = false`. Elsewhere than macOS it checks that the
+//! shim does not start.
+//!
+//! On macOS it starts the shim on GCMouse, gives it focus (so it looks for
+//! mice again), takes focus away and drops it. Only `GCMouse::mice` is sure
+//! to run: GCMouse lists mice only in an app, once AppKit's run loop has
+//! run (under winit's event loop on an M2 Pro it listed the trackpad within
+//! a second, and in this test, even after five seconds of the bare main run
+//! loop, none). So `mouseInput`, the handler's install and its removal on
+//! drop run in no test, here or on CI's macOS runner, which has no mouse;
+//! they, the callbacks, their signs and units are checked by hand with
+//! `eng-platform-winit`'s `examples/events.rs`. If GCMouse ever lists a
+//! mouse here, the install path runs and the test says so.
 
 use std::process::ExitCode;
 
@@ -18,24 +25,24 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let mut shim = shim.expect("on macOS's main thread the shim starts");
-    let callbacks = shim.callbacks();
-    assert!(!shim.focused());
-    assert_eq!(shim.drain(), Motion::default());
-    // Focus looks for mice again.
+    assert!(!shim.focused(), "the shim starts without focus");
     shim.set_focused(true);
     assert!(shim.focused());
-    let moved = shim.drain();
-    assert!(
-        moved.callbacks <= callbacks.get(),
-        "a drain sums only callbacks that came"
-    );
     let mice = shim.mice();
-    assert_eq!(mice, callbacks.mice());
+    // Whatever came while focused is dropped with the focus.
     shim.set_focused(false);
+    assert_eq!(shim.drain(), Motion::default(), "nothing after focus went");
     drop(shim);
-    println!(
-        "start: the shim started on GCMouse with {mice} mice and stopped; {} callbacks: ok",
-        callbacks.get()
-    );
+    if mice == 0 {
+        println!(
+            "start: the shim started and stopped; GCMouse listed no mouse, so the handler's \
+             install and removal did not run (check them with eng-platform-winit's events \
+             example): ok"
+        );
+    } else {
+        println!(
+            "start: GCMouse listed {mice} mice; the handler went on each and came off on drop: ok"
+        );
+    }
     ExitCode::SUCCESS
 }

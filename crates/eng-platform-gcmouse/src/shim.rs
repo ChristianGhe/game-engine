@@ -4,8 +4,10 @@
 //! The sum sits behind a mutex. GCMouse runs its handlers on the device's
 //! `handlerQueue`, the main queue by default and the thread winit's event
 //! loop drains, so the lock is never contended; it keeps the sum sound
-//! whatever thread a handler runs on. A handler never panics: a poisoned
-//! lock is taken anyway and every sum saturates.
+//! whatever thread a handler runs on. [`Feed::moved`] is not expected to
+//! panic: a poisoned lock is taken anyway and every sum saturates. The
+//! macOS handler aborts the process if it ever does, rather than unwind
+//! into the framework (`macos.rs`).
 #![forbid(unsafe_code)]
 
 use std::fmt;
@@ -13,9 +15,12 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 /// Whether GCMouse's `deltaY` is positive up, away from the user. SDL 3
-/// takes it so (`SDL_cocoamouse.m` sends `-deltaY`), and the shim follows;
-/// not yet checked on a real mouse (rung 2, T14's carry). If the owner's
-/// check finds it positive towards the user, this becomes `false`.
+/// takes it so: both its GCMouse handlers send `-deltaY` as the motion's y
+/// (`src/video/cocoa/SDL_cocoamouse.m`, `Cocoa_OnGCMouseConnected`, for
+/// macOS, and `src/video/uikit/SDL_uikitevents.m` for iOS; read on SDL's
+/// `main` at 08ab399 on 2026-11-07). The shim follows; not yet checked on
+/// a real mouse (rung 2, T14's carry). If the owner's check finds it
+/// positive towards the user, this becomes `false`.
 const DELTA_Y_UP: bool = true;
 
 /// How often a focused shim looks for mice that came since it last did.

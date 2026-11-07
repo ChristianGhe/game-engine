@@ -650,3 +650,44 @@ ADR-0024 and its Amendment 1)
     on CI.
 - **Cost:** the builder took 52 min, 404k tokens and 141 calls. It counts
   as one session (17 of 52).
+
+**T7: the room map** (8a75d85, follow-up eadf677)
+- **Built:** the 12 x 9 m hall in `game-testbed-sim/src/room.rs` and
+  `room/layout.rs`, with its exact sizes written there:
+  - 8 walls and 11 solid slabs on the axes;
+  - a 0.2 m step, a 0.4 m platform, a 0.6 m ledge that blocks, a pillar,
+    an alcove and a skylight;
+  - 4 regions, 4 spawns, and 3 things that do not block;
+  - constants `Grid`, `RoomMap`, `MoveConfig` and `GroundConfig`, and a
+    new `testbed.View` component;
+  - `sim_protocol` `0xc2250f5f231ff6d3` and `sim_data_hash`
+    `0x3ac50d171e0751f1`, both pinned;
+  - three input scripts, committed;
+  - `docs/rungs/2/patches/room-scenarios.patch` (SHA-256
+    `e68459a6d1f17f7c…`), for G5, after `t6-replay-map.patch`.
+- **Streams:** the room's matched on arm64, on x86_64 (under Rosetta and
+  in Docker) and on riscv64 under QEMU. That is also the grid's first
+  RISC-V run. The dot streams are unchanged.
+- **Review:** a fresh reviewer (12 min, 165k tokens) found one blocker.
+  `shot`, `video` and `play --map room` panicked. Now they exit 64 with
+  `[E-MAP] … has no view yet`, until T15 and T16 lift it. The
+  `never-airborne` assertion went into the patch, with four small fixes.
+- **Carries, still to move into the plan's rows:**
+  - **T12:** player 0 is entity 0; its eye is at `pos.z - 0.875 + 1.6`;
+    read the hull and eye with `constant::<MoveConfig>()`, not
+    `resource`.
+  - **T15 and T16:** lift the `no_view` refusal; the live view starts at
+    the spawn's yaw.
+  - **T16:** shot ideas are in the builder's report: spawn at tick 0;
+    sprites over ticks 0-480; the step at ticks 150-170; the sky at
+    ticks 401-500; the alcove at tick 600; the ledge needs a pose.
+  - **T22:** ADR-0023 should name the tuning constants.
+  - **G5:** protect `game-testbed-sim/tests/{room,sim_data}.rs` and
+    `game-testbed/tests/room.rs`.
+- **A disk-full stop:** after the merge, `quick` failed with "No space
+  left on device". Scratch clones and worktrees had grown to about 270
+  GB. Those of merged tasks were deleted, and 68 GB is now free. Remove
+  each worktree once its task is merged.
+- **CI:** `main` at eadf677 was pushed to `agent/rung2`; that run is
+  42390944638.
+- **Sessions:** 18 of 52.

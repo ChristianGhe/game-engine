@@ -40,8 +40,12 @@ Each item links to its decision; the recommended answer comes first.
 1. **G1, the plan:** approve it, the 25 criteria, 14 days and 43 sessions.
    Write `docs/rungs/2/acceptance.json`, but keep `current.txt` at `1b`
    until G5 (O1: the native-steps test reads the current rung's checks).
-2. **1b:** commit its goldens (G6, commands in `PROGRESS.md`), play it (G7),
-   and accept ADR-0017.
+2. **1b:** commit its goldens (G6; the three commands are in
+   `docs/rungs/2/PROGRESS.md`, session 1), play it (G7), and accept
+   ADR-0017. Optionally apply `docs/rungs/1b/patches/quick-lock.patch`
+   (amendment 98's lock for `quick`). Amendments 96 and 97, the guard's
+   parser gaps, are still open: Anthropic's safeguards stopped the agent
+   building them.
 3. **O2** a second map with sim data, not a new dot room. **O3** the GCMouse
    shim as its own crate with `unsafe`. **O4** a brute-force collision
    oracle, not parry3d. **O5** `cargo xtask dist`, not cargo-dist.

@@ -871,3 +871,22 @@ decision 4)
   the ADR has one per drawn chunk or sprite. It is internal to
   eng-render, so nothing waits on it.
 - **Sessions:** it counts as one (22 of 52).
+
+**The lock test's flake, a third time, now with a likely cause** (for the
+owner; the test is in protected `xtask/`)
+- **What failed:** the Stop hook's `quick` after a9aec89, in
+  `run_lock::tests::a_killed_holder_leaves_no_stale_lock`, at
+  `run_lock_tests.rs:217`: "its PID stays behind", left `None`, right
+  `Some(9204)`. The rerun was green.
+- **Why the line points at the child:** the PID was in the file before
+  the kill (line 213 passed) and gone after it. Only `Held::drop` (or a
+  new `Held::new`) clears it, and a SIGKILLed process runs neither. So
+  the child most likely ended on its own between line 213 and the kill,
+  dropping its `Held`. `child_holds_the_lock` holds the lock until
+  `read_to_end` on its stdin returns, so a stdin that reaches EOF early
+  would do exactly this. That would also explain the earlier failures
+  under load, though not why stdin ends early.
+- **A proposed fix for the owner:** in `child_holds_the_lock`, after
+  `read_to_end` returns, sleep (say up to 60 s) instead of returning, so
+  only the kill ends a child that is still wanted. The parent always
+  kills it, and the timeout still ends an orphan.

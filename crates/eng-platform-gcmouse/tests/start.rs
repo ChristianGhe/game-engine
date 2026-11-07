@@ -12,12 +12,66 @@
 //! they, the callbacks, their signs and units are checked by hand with
 //! `eng-platform-winit`'s `examples/events.rs`. If GCMouse ever lists a
 //! mouse here, the install path runs and the test says so.
+//!
+//! As its own harness it speaks the part of libtest's command line that
+//! `cargo test` and cargo-nextest use, as `eng-platform-winit`'s
+//! `tests/conformance.rs` does: `--list` (with `--format terse` and
+//! `--ignored`) names its one test, `start`; name filters, `--exact` and
+//! `--skip` choose it or not; other flags are ignored. Without the listing,
+//! nextest cannot make its test list and fails the whole run (CI run
+//! 42403525706).
 
 use std::process::ExitCode;
 
 use eng_platform_gcmouse::{Motion, Shim};
 
+/// The one test this harness holds.
+const NAME: &str = "start";
+
+/// Whether libtest's arguments `args` choose [`NAME`], and whether they
+/// only ask for the list of tests.
+fn chosen(args: impl IntoIterator<Item = String>) -> (bool, bool) {
+    let (mut list, mut ignored, mut exact) = (false, false, false);
+    let (mut filters, mut skips) = (Vec::new(), Vec::new());
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--list" => list = true,
+            "--ignored" => ignored = true,
+            "--exact" => exact = true,
+            "--skip" => skips.extend(args.next()),
+            // libtest's flags that take a value; the value means nothing here.
+            "--format" | "--color" | "--test-threads" | "--logfile" | "--shuffle-seed" | "-Z" => {
+                args.next();
+            }
+            flag if flag.starts_with('-') => {}
+            filter => filters.push(filter.to_string()),
+        }
+    }
+    let hit = |f: &String| {
+        if exact {
+            NAME == f
+        } else {
+            NAME.contains(f.as_str())
+        }
+    };
+    // The test is not ignored, so `--ignored` chooses nothing.
+    let selected =
+        !ignored && (filters.is_empty() || filters.iter().any(hit)) && !skips.iter().any(hit);
+    (selected, list)
+}
+
 fn main() -> ExitCode {
+    let (selected, list) = chosen(std::env::args().skip(1));
+    if list {
+        if selected {
+            println!("{NAME}: test");
+        }
+        return ExitCode::SUCCESS;
+    }
+    if !selected {
+        return ExitCode::SUCCESS;
+    }
     let shim = Shim::start();
     if !cfg!(target_os = "macos") {
         assert!(shim.is_none(), "the shim runs on macOS only");

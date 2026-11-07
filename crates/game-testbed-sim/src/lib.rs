@@ -48,7 +48,8 @@ pub const MOVE: MoveConfig = MoveConfig {
 #[schema(name = "testbed.Dot", version = 1)]
 pub struct Dot;
 
-/// A dot's move was clipped against a wall this tick.
+/// A player's move was clipped against a plane this tick: a wall, or in the
+/// room also a slab's side, with the plane's normal. Both maps send it.
 #[derive(Debug, Clone, Copy, PartialEq, Schema)]
 #[schema(name = "testbed.WallBump", version = 1)]
 pub struct WallBump {

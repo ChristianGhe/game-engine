@@ -168,6 +168,14 @@ impl<'g> PlayRun<'g> {
         self.map.name()
     }
 
+    /// The usage error (`[E-USAGE] [E-MAP]`) for a map a window cannot show
+    /// yet: [`GameDef::top_down`] draws the game's first map only, until
+    /// the first-person views (rung 2, T15 and T16). `None` for the first
+    /// map.
+    pub fn view_refusal(&self) -> Option<String> {
+        self.map.no_view(self.game)
+    }
+
     /// The bindings live input reads: `--bindings`, or the defaults (WASD,
     /// the arrows, Esc for `quit`).
     pub fn bindings(&self) -> &Bindings {

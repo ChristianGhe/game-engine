@@ -3,7 +3,9 @@
 //! reports, hash-stream headers and dumps; `replay verify` picks it by the
 //! recording's sim-data hash; and its committed input scripts end where its
 //! scenarios' assertions (`docs/rungs/2/patches/room-scenarios.patch`, at
-//! G5) say. The sim's side is `game-testbed-sim/tests/{room,sim_data}.rs`.
+//! G5) say. Until the first-person views (T15, T16), `shot`, `video` and
+//! `play` refuse the room before a GPU or window opens. The sim's side is
+//! `game-testbed-sim/tests/{room,sim_data}.rs`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -134,6 +136,51 @@ fn the_room_names_its_sim_data_in_recordings_reports_and_stream_headers() {
     let verified = read_json(&dir.join("v.json"));
     assert_eq!(verified["map"], "room");
     assert_eq!(verified["sim_data_hash"], hex.as_str());
+}
+
+/// The top-down view draws the dots only, so the room's views are refused
+/// as usage errors, before the GPU or the window: no adapter or display is
+/// needed, no file is written and nothing panics. T15 and T16 lift this.
+#[test]
+fn shot_video_and_play_refuse_the_room_until_it_has_a_view() {
+    let cases: [&[&str]; 3] = [
+        &[
+            "shot",
+            "--at-tick",
+            "5",
+            "--out",
+            "s.png",
+            "--report",
+            "r.json",
+        ],
+        &[
+            "video", "--ticks", "5", "--out", "v.apng", "--report", "r.json",
+        ],
+        &[
+            "play", "--ticks", "5", "--hashes", "h.txt", "--report", "r.json", "--record", "r.rec",
+        ],
+    ];
+    let expected = "[E-USAGE] [E-MAP] game-testbed's map \"room\" has no view yet \
+                    (GameDef::top_down draws dots only)\n";
+    for args in cases {
+        let dir = scratch(&format!("no-view-{}", args[0]));
+        let mut args = args.to_vec();
+        args.extend(["--map", "room"]);
+        let out = probe(&dir, &args);
+        assert_eq!(out.status.code(), Some(64), "{args:?}: {}", text(&out));
+        assert!(text(&out).contains(expected), "{args:?}: {}", text(&out));
+        for file in ["s.png", "v.apng", "r.json", "h.txt", "r.rec"] {
+            assert!(!dir.join(file).exists(), "{args:?} wrote {file}");
+        }
+        let crashes: Vec<_> = std::fs::read_dir(dir.join("logs"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("crash-"))
+            .collect();
+        assert!(crashes.is_empty(), "{args:?}: {crashes:?}");
+    }
 }
 
 #[test]

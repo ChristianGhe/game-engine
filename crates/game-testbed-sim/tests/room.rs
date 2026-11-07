@@ -16,6 +16,7 @@ use game_testbed_sim::room::layout::{
 use game_testbed_sim::room::{self, RoomData, RoomMap, Spawn, Thing, ThingKind, Turning, View};
 use game_testbed_sim::{TICK_RATE, WallBump};
 use kit_fps::MoveState;
+use proptest::prelude::*;
 
 /// The hull's half height: its centre above the floor it stands on.
 const H: f64 = 0.875;
@@ -336,25 +337,66 @@ fn walls_and_the_pillar_stop_the_hull_exactly() {
     assert_eq!((end.pos.x, end.pos.y, end.vel), (13.75, 1.25, Vec3::ZERO));
 }
 
-/// From every spawn, runs at 32 headings for 5 s: after every tick the
-/// hull is free, between the floor and the platform's height, and inside
-/// the floor plan.
+/// The last player's hull is free, between the floor and the platform's
+/// height, never airborne, and inside the floor plan.
+fn check_free(sim: &Sim, tag: &str) {
+    let (_, s) = sim.world().storage::<MoveState>().iter().last().unwrap();
+    let p = s.pos;
+    let tag = format!("{tag}, tick {}: {s:?}", sim.tick().0);
+    assert!(!grid(sim).overlaps(p, &HULL), "{tag}");
+    assert!((H..=PLATFORM_TOP + H).contains(&p.z), "{tag}");
+    assert_eq!(s.vel.z, 0.0, "{tag}");
+    let in_hall = (0.25..=11.75).contains(&p.x) && (0.25..=8.75).contains(&p.y);
+    let in_alcove = (11.75..=13.75).contains(&p.x) && (1.25..=2.75).contains(&p.y);
+    assert!(in_hall || in_alcove, "{tag}");
+}
+
+/// The fixed case: from every spawn, runs at 32 headings for 5 s, checked
+/// after every tick.
 #[test]
-fn the_hull_is_never_inside_solid() {
+fn the_hull_is_never_inside_solid_at_32_headings() {
     for spawn in 0..4u8 {
         for heading in 0..32 {
             let yaw = f64::from(heading) * 11.25 + 3.0;
             let mut sim = room::build(config(spawn + 1, 1)).unwrap();
             walk(&mut sim, &[(300, 127, yaw)], |sim| {
-                let (_, s) = sim.world().storage::<MoveState>().iter().last().unwrap();
-                let p = s.pos;
-                let tag = format!("spawn {spawn}, yaw {yaw}, tick {}: {p:?}", sim.tick().0);
-                assert!(!grid(sim).overlaps(p, &HULL), "{tag}");
-                assert!((H..=PLATFORM_TOP + H).contains(&p.z), "{tag}");
-                let in_hall = (0.25..=11.75).contains(&p.x) && (0.25..=8.75).contains(&p.y);
-                let in_alcove = (11.75..=13.75).contains(&p.x) && (1.25..=2.75).contains(&p.y);
-                assert!(in_hall || in_alcove, "{tag}");
+                check_free(sim, &format!("spawn {spawn}, yaw {yaw}"));
             });
+        }
+    }
+}
+
+proptest! {
+    // No regressions file, a protected path: a failure prints its case,
+    // which becomes a fixed test.
+    #![proptest_config(ProptestConfig {
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
+
+    /// Any walk from any spawn, checked after every tick: one to four
+    /// segments of up to 4 s, each with its own forward and sideways push
+    /// and view yaw.
+    #[test]
+    fn the_hull_is_never_inside_solid_on_any_walk(
+        spawn in 0..4u8,
+        segments in prop::collection::vec(
+            (1..240u32, any::<i8>(), any::<i8>(), any::<u16>()),
+            1..5,
+        ),
+    ) {
+        let mut sim = room::build(config(spawn + 1, 1)).unwrap();
+        for (i, &(ticks, forward, side, view_yaw)) in segments.iter().enumerate() {
+            for _ in 0..ticks {
+                let cmd = PlayerCommand {
+                    forward,
+                    side,
+                    view_yaw,
+                    ..PlayerCommand::idle(sim.tick().next())
+                };
+                sim.step(&vec![cmd; usize::from(spawn) + 1]).unwrap();
+                check_free(&sim, &format!("spawn {spawn}, segment {i} of {segments:?}"));
+            }
         }
     }
 }

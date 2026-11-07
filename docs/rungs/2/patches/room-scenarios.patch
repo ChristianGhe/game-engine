@@ -1986,10 +1986,10 @@ index 0000000000000000000000000000000000000000..25647859664b2657092883b710b3f1bc
 +value = 0.0
 diff --git a/crates/game-testbed/scenarios/room-walk.assert.toml b/crates/game-testbed/scenarios/room-walk.assert.toml
 new file mode 100644
-index 0000000000000000000000000000000000000000..9e6dd42becbb5d3ceca4d617e4d348fb967ccaa2
+index 0000000000000000000000000000000000000000..4694c326aa9bf38adc5d6ce55670ff1144e41a25
 --- /dev/null
 +++ b/crates/game-testbed/scenarios/room-walk.assert.toml
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,134 @@
 +# PROTECTED ORACLE: semantic assertions for room-walk. Only the owner
 +# approves changes (AGENTS.md, "Protected paths"). The room's sizes are in
 +# game-testbed-sim's src/room/layout.rs; the hull's centre stands 0.875 m
@@ -2024,6 +2024,15 @@ index 0000000000000000000000000000000000000000..9e6dd42becbb5d3ceca4d617e4d348fb
 +pointer = "/entities/0/components/kit_fps.MoveState/pos/z"
 +op = "<="
 +value = 1.275
++
++# Up the step and the platform, and off the platform's 0.4 m side, the hull
++# stays on the ground: it steps and snaps, and never falls.
++[[assert]]
++id = "never-airborne"
++always = true
++pointer = "/entities/0/components/kit_fps.MoveState/vel/z"
++op = "=="
++value = 0.0
 +
 +[[assert]]
 +id = "inside-west-wall"

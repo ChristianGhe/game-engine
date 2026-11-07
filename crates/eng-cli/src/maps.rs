@@ -171,6 +171,20 @@ impl MapChoice {
         sim
     }
 
+    /// Why `shot`, `video` or `play` cannot show this map, if they cannot:
+    /// [`GameDef::top_down`] draws the first map only, until the
+    /// first-person views (rung 2, T15 and T16). A usage error, exit 64,
+    /// refused before a GPU or a window opens.
+    pub fn no_view(&self, game: &GameDef) -> Option<String> {
+        (self.map.name != self.first).then(|| {
+            format!(
+                "[E-USAGE] [E-MAP] {}'s map {:?} has no view yet (GameDef::top_down draws {} \
+                 only)",
+                game.name, self.map.name, self.first
+            )
+        })
+    }
+
     fn check(&self, game: &GameDef, sim: &Sim) -> Result<(), String> {
         if self.map.name == self.first || sim.has_sim_data() {
             return Ok(());

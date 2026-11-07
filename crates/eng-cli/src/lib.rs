@@ -25,7 +25,10 @@
 //! stream's header and in `dump-world`'s file; every run's report names its
 //! `map`, `sim_protocol` and `sim_data_hash`, and `files_read` gives the
 //! format version of each file it read. Recordings carry the sim-data hash
-//! in their header, and `replay verify` replays on the map it names.
+//! in their header, and `replay verify` replays on the map it names. Only
+//! the first map has a view yet ([`GameDef::top_down`]), so `shot`, `video`
+//! and `play` refuse another before a GPU or window opens (exit 64,
+//! `[E-MAP]`), until the first-person views (rung 2, T15 and T16).
 //!
 //! `run`, `dump-world`, `shot` and `video` go through `eng-session` like
 //! every other mode: a server and player 0's client in-process over Memory,

@@ -166,12 +166,21 @@ fn a_dot_recording_has_no_sim_data_and_replays_on_dots() {
         &["replay", "verify", "other.rec", "--report", "o.json"],
     );
     assert_eq!(out.status.code(), Some(64), "{}", text(&out));
-    // Every map is listed with its hash; the room's is pinned in
-    // game-testbed-sim's `tests/sim_data.rs`.
-    let expected = "[E-RECORDING-BUILD] recordings are valid only for the build that made \
-                    them: sim_data_hash recorded 0x0123456789abcdef, and no map of this build \
-                    has it (dots 0x0000000000000000, room 0x";
-    assert!(text(&out).contains(expected), "{}", text(&out));
+    // Every map is listed with its hash, the room's as its sim builds it
+    // (and pinned in game-testbed-sim's `tests/sim_data.rs`).
+    let room = game_testbed_sim::room::build(eng_sim::SimConfig {
+        tick_rate: game_testbed_sim::TICK_RATE,
+        players: 1,
+        seed: 0,
+    })
+    .unwrap()
+    .sim_data_hash();
+    let expected = format!(
+        "[E-RECORDING-BUILD] recordings are valid only for the build that made them: \
+         sim_data_hash recorded 0x0123456789abcdef, and no map of this build has it (dots \
+         0x0000000000000000, room {room:#018x})\n"
+    );
+    assert!(text(&out).contains(&expected), "{}", text(&out));
     assert!(!dir.join("o.json").exists());
 }
 

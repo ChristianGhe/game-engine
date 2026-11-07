@@ -2,8 +2,8 @@
 //! snapshot fits a datagram; its geometry is outside the per-tick state,
 //! its hash and its snapshots; its `sim_data_hash` changes with the room's
 //! data only; the dot map has none; and the `[sim]` budgets hold. The
-//! probe's side (recordings, reports, stream headers) is in
-//! `game-testbed/tests/maps.rs`.
+//! probe's side (recordings, reports, stream headers, dumps) is in
+//! `game-testbed/tests/room.rs`.
 
 use eng_collision_grid::{Grid, Point2};
 use eng_core::{PlayerCommand, Tick};

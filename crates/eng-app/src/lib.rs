@@ -99,6 +99,10 @@ fn play_in_window(run: PlayRun<'_>) -> Exit {
             game.name
         ));
     }
+    // Before the window opens: only the first map has a view yet.
+    if let Some(message) = run.view_refusal() {
+        return run.refuse(&message);
+    }
     match WinitPlatform::new(game.name) {
         Ok(mut platform) => play_on(&mut platform, run),
         Err(e) => run.refuse(&format!("[E-NO-DISPLAY] {e}")),

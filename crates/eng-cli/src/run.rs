@@ -138,6 +138,10 @@ fn write_events(out: &mut impl Write, sim: &Sim) -> Result<u64, String> {
 }
 
 pub(crate) fn run(game: &GameDef, map: MapChoice, a: &RunArgs) -> Exit {
+    // Before anything runs or opens: only the first map has a view yet.
+    if let Some(message) = a.capture.as_ref().and_then(|_| map.no_view(game)) {
+        return fail(Exit::Usage, &message);
+    }
     let mut inputs = match load_inputs(a) {
         Ok(inputs) => inputs,
         Err(message) => return exit::usage(game.name, &message),

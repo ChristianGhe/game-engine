@@ -20,6 +20,7 @@ kit-fps.workspace = true
 [dev-dependencies]
 eng-net-transport.workspace = true
 eng-net-wire.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true

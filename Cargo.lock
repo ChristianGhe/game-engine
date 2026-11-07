@@ -730,6 +730,7 @@ dependencies = [
  "eng-schema-core",
  "eng-sim",
  "kit-fps",
+ "proptest",
 ]
 
 [[package]]

@@ -491,3 +491,51 @@ ADR-0023)
 - **Checked on `main`:** `quick` 7 of 7 after the cherry-picks.
 - **Cost:** the builder took 33 + 3.5 min, 374k tokens and 223 calls. It
   counts as one session (14 of 52).
+
+**T8: eng-gpu grows** (f603199, follow-up 41e9027; decisions 5 and 6,
+ADR-0020, O11)
+- **Built** by one builder in a worktree pinned to 1e7411e, all in
+  `eng-gpu`:
+  - passes with up to four colour targets and one depth target (reversed
+    Z: clear to 0, `GreaterEqual`);
+  - `Format::{Rg32Uint, Depth32Float}`;
+  - mesh and screen pipelines beside 1b's fullscreen and instanced ones;
+  - the scene layout: vertex and `u32` index megabuffers, a material
+    table, six `texture_2d_array`s (64, 128 and 256 px, sRGB and linear),
+    and a per-instance record of chunk origin minus camera, computed in
+    f64;
+  - the per-frame uniform;
+  - per-pass GPU times, beside `FrameCounters`, which keeps its four
+    fields.
+- **Unchanged:** `counters.rs`, `shaders.rs`, `shot_video.rs`'s view, and
+  1b's four shots (0 differing pixels on Metal, on Debian lavapipe, and
+  exactly on the pinned Mesa 25.2.7 in Docker).
+- **One Q1 test changed:** `bypass_render.rs`'s several-writes test
+  pinned the "not built yet (T8)" refusal, and now checks that both
+  writes are drawn. The plan said Q1's tests stay unchanged. The
+  reviewer judged the change legitimate, since decision 5 has T8 remove
+  that refusal, and its two-writers-of-`output` check is kept word for
+  word.
+- **Review:** a fresh reviewer found no blockers (11 min, 189k tokens,
+  55 calls). The builder's own reviewer had run before it.
+  - **The follow-up takes its main risk.** The builder had made pass
+    timestamps per frame for every graph. On Metal, a query set that
+    fails to allocate loses the device, and nobody had run that on CI's
+    Apple Paravirtual device or on WARP.
+  - **Now timing is opt-in** (`Targets::time_passes`), with one query set
+    per `Targets`, and frames with it off encode as before T8.
+  - **The follow-up also:**
+    - clears stale times after a failed frame;
+    - closes the reviewer's test gaps: an equal-depth draw, which a
+      mutation to `Greater` fails; `depth_write: false`; a screen pass
+      reading the scene; and times named by the pass that ran;
+    - corrects two ARCHITECTURE.md lines (O11).
+- **Not verified:** the follow-up's timing reuse and abort path on
+  lavapipe, because Docker Desktop hung on restart. CI's Linux and
+  Windows native jobs run `pass_times.rs` at the next push.
+- **Carries** are in the plan's T9, T10, T11, T21 and T22 rows. T21 needs
+  them: criterion 21's report keys have no wiring task. G5's protection
+  row now names T8's five test files.
+- **Checked on `main`:** `ENG_REQUIRE_GPU=1 cargo xtask quick` 7 of 7.
+- **Cost:** the builder took 55 + 35 min, 434k tokens and 165 calls. It
+  counts as one session (15 of 52).

@@ -3,14 +3,16 @@
 > **DRAFT, NOT APPROVED.** Drafted 2026-11-06 by Claude (Opus 5.5) while
 > the owner was away, and revised twice after fresh reviews; nothing here
 > binds until the owner approves it at gate G1. `docs/rungs/current.txt`
-> stays `1b`, and `docs/rungs/2/acceptance.json` does not exist: the owner
-> writes it from "Proposed acceptance criteria". Every proposal below stands
+> stays `1b` until G5 (O1), and `docs/rungs/2/acceptance.json` does not
+> exist: the owner writes it at G1 from "Proposed acceptance criteria". Every proposal below stands
 > until the owner changes it.
 
 - **Status:** draft for the owner's first sitting. The four pre-approval
   queue items have landed on `main` (commits in `docs/rungs/2/PROGRESS.md`).
-  Three planning tasks, T0, T0a and T0b ("Before the first sitting"), can
-  also be built before approval: they write only ADR drafts and patch files.
+  Sitting 1 waits for three planning tasks ("Before the first sitting"):
+  T0a, the ADR drafts ADR-0020 to ADR-0024, is in progress and not yet in
+  `docs/adr/`; T0 and T0b, the G2 and G3 patches, are not started. They write
+  only ADR drafts and patch files.
 - **Spec:** the rung 2 row of section 9 of
   `docs/superpowers/specs/2026-10-20-ai-built-engine-design.md`, with 6.1-6.3
   (crates, rules, the fixed spine), 6.4 (simulation), 6.6 (frame loop), 6.7
@@ -30,6 +32,30 @@
   *[spec X]* (the spec asks for it, in section X), *[spec X + proposal]*
   (the spec asks and this plan fills in details) or *[proposal]* (Claude's
   own call). Departures are listed in "Where this differs from the spec".
+
+## Sitting 1: what you decide
+
+Each item links to its decision; the recommended answer comes first.
+1. **G1, the plan:** approve it, the 25 criteria, 14 days and 43 sessions.
+   Write `docs/rungs/2/acceptance.json`, but keep `current.txt` at `1b`
+   until G5 (O1: the native-steps test reads the current rung's checks).
+2. **1b:** commit its goldens (G6, commands in `PROGRESS.md`), play it (G7),
+   and accept ADR-0017.
+3. **O2** a second map with sim data, not a new dot room. **O3** the GCMouse
+   shim as its own crate with `unsafe`. **O4** a brute-force collision
+   oracle, not parry3d. **O5** `cargo xtask dist`, not cargo-dist.
+4. **O6** agent seeing: A1, A3, A4 small and A2's three rules; A5 at rung 3.
+5. **O7** benchmarks against the push's base. **O8** a missed mutant fails.
+   **O9** fullscreen for first-person maps. **O10** Khronos PBR Neutral, to
+   inform. **O11** ask for timestamp queries when there. **O12** leave
+   `pmove`'s angled-wall fix to rung 3. **O13** gravity only in the air.
+6. **G2:** apply T0's patch (the four crates). **G3:** apply T0b's patch
+   (crate batch 3, 15 names). Each comes in the variant your O3-O5 answers
+   pick.
+7. **G4:** accept, change or refuse ADR-0019 to ADR-0024.
+
+Sitting 2 is G5 (the patches, then a push); sitting 3 is G6 and G7 for rung
+2 ("Owner gates").
 
 ## Where rung 1b stands
 
@@ -53,7 +79,7 @@ new behaviour comes through new types, functions and keys beside them.
 | `Welcome`'s fields (no wire change in rung 2) | `eng-net-wire/tests/never_panic.rs:44`, `tests/golden.rs` |
 | `Control`'s methods; new ones have default bodies | `impl Control` in `twin.rs:354` and `eng-platform-headless/tests/conformance.rs:227,258` |
 | `--version --json`: its top-level and `sim` keys, `sim.protocol` equal to dot-square's stream, and `formats` exactly (`recording: 1`, `hash_stream: 1`, no new file) | `game-testbed/tests/version.rs:292`, `:321`, `:323-325`, `:373`, `:379` |
-| `Graph::new`, `Graph::fixed`, `PassDecl { name, reads, writes }` | `eng-gpu/tests/counters.rs:181-187` (`Graph::new(&[DRAW, TONEMAP, AGAIN])`: two writers of `Output`) |
+| `Graph::new`, `Graph::fixed`, `PassDecl { name, reads, writes }`; the `FullscreenDesc` and `InstancedDesc` literals; `Targets::new(gpu, 16, 8)`; `Graph::render(gpu, &targets, &mut [&mut dyn Pass])`; the `Pass` trait as an outside `impl` sees it; `PassRecorder::{clear, fullscreen, instanced}` | `eng-gpu/tests/counters.rs:11-15`, `:32-58`, `:83-108`, `:181-187` (`Graph::new(&[DRAW, TONEMAP, AGAIN])`: two writers of `Output`) |
 | A shot report's `gpu.per_frame` exactly, `tier: 0`, the five capability names; the budgets parser accepting the test's own `[gpu]` literal | `game-testbed/tests/shot_video.rs:22-25` (its `BUDGETS`), `:301`, `:305-313`, `:323-324` |
 
 ## What already exists (do not rebuild)
@@ -61,7 +87,7 @@ new behaviour comes through new types, functions and keys beside them.
 | Crate | What rung 2 starts from (1b, then the queue) |
 |---|---|
 | `eng-gpu` | 1b: `Graph::fixed` (draw, tonemap, present) and `Graph::new` over `PassDecl`; instanced and fullscreen pipelines; `Targets` with readback; `FrameCounters`; `GpuReport`; `WindowSurface` (Fifo); `tests/shaders.rs`. **Q1:** `Graph::sorted(&[PassNode], Target)` and `Graph::sorted_without(nodes, off, target)` in `src/graph.rs` and `src/graph/{order,cull,bypass,pool,error}.rs`: Kahn's order with names breaking ties, culling, bypass, continues, `culled()`, `bypassed()`, `pool()`. `Resource::Transient` (a name, a `Format` of `Rgba16Float` or `Rgba8UnormSrgb`, a divisor). Built ahead of T8: the texture pool in `Targets` and `LoadOp::Load` for continuing passes. `Resource` and `GraphError` are `#[non_exhaustive]`, with 16 new error variants. Tests `graph_order`, `graph_errors`, `pool`, `bypass`, `bypass_render`, `transients`. ADR-0019, Proposed. Not yet: a running pass with several writes (`[E-GPU]`), depth, textures, uniform, storage or index buffers, timestamps |
-| `eng-render` | 1b: the top-down view, the clamp tone map, the present blit, `[E-SCENE]`. **Q4**, CPU only: `FirstPersonCamera` (`src/camera.rs`: f64 eye subtracted first, reversed-Z, infinite far; no near distance chosen yet); `sprite_rotation`, `sprite_rotation_toward` and five-rotation sheets (`src/sprite_rot.rs`); `Palette::bake` (a 32³ OKLab LUT of up to 256 colours) and `BAYER_4X4` (`src/palette.rs`). Tests `camera`, `sprite_rotation`, `palette` (Ottosson's OKLab values and a pinned FNV hash of a bake) |
+| `eng-render` | 1b: the top-down view, the clamp tone map, the present blit, `[E-SCENE]`. **Q4**, CPU only: `FirstPersonCamera` (`src/camera.rs`: f64 eye subtracted first, reversed-Z, infinite far; no near distance chosen yet); `sprite_rotation`, `sprite_rotation_toward` and five-rotation sheets (`src/sprite_rot.rs`); `PaletteLut::bake` (a 32³ OKLab LUT of up to 256 colours) and `BAYER_4X4` (`src/palette.rs`). Tests `camera`, `sprite_rotation`, `palette` (Ottosson's OKLab values and a pinned FNV hash of a bake) |
 | `kit-fps` | 1b: `pmove` (flat floor). **Q2:** `ground_move`, `GroundConfig` v1 (`DEFAULT`), `GroundOutcome` and `GROUND_PROBE` (a 1/1024 m trace down) in `src/ground.rs`: gravity only in the air, steps only from the ground and only onto floor; on flat ground `pmove`'s result bit for bit (proptest). Tests `ground`, `slopes`, `boxes`, `tests/support/boxes.rs` |
 | `eng-input` | 1b: keyboard `LiveInput`, strict bindings, scripts with `side`, `yaw_deg`, `pitch_deg`. **Q3:** `LookSettings` (`sensitivity_microdeg`, default 66_000; `invert_pitch`; `pitch_limit`, default 14_563) and `MouseLook` (`motion`, `focus_lost`, `set_view`, `sample`) in `src/look.rs`; look is off by default. Oracle: `mouse_look.rs`, `mouse_look_exact.rs`, `mouse_look_model.rs`, `look_rig/mod.rs` |
 | `eng-collision-api` | `CollisionWorld` (`trace`, `overlaps`), `BoxHull`, `Trace`, `BoxRoom`, and `conformance::check` (not protected) |
@@ -244,12 +270,14 @@ passes, all on by default. No new exit code.
    - **T8 adds:** a running pass with up to four colour targets and one depth
      target (`Graph::render` refuses several writes with `[E-GPU]` today);
      `Format` widened from its two values (`graph.rs:63`) to at least
-     `Rg32Uint` and `Depth32Float`; and GPU time per pass. 6.7 wants
+     `Rg32Uint` and `Depth32Float`; and GPU time per pass. The new pipeline
+     descriptors and recorder calls go **beside** the old ones, which stay as
+     `counters.rs` uses them, and any new `Pass` method has a default body. 6.7 wants
      timestamp queries "when available, with null otherwise", but 1b's device
      asks for WebGPU's defaults only (ARCHITECTURE.md, "Tier 0"), and
      `TIMESTAMP_QUERY` is beyond them: O11.
 6. **The GPU scene layout** *[spec 6.7 "fixed at rung 2" + proposal;
-   ADR-0020]*.
+   ADR-0020, which also records the first-person passes of difference 1]*.
    - One vertex and one index megabuffer (`u32`), vertices relative to their
      chunk's origin. Each frame the CPU uploads every chunk's origin minus the
      camera, subtracted in f64, into a per-instance storage buffer, so static
@@ -307,7 +335,8 @@ passes, all on by default. No new exit code.
         expectations;
       - `PlatformEvent` and `App` do not change.
     - Frames come at the refresh rate when the window reports one, else once
-      per tick (Xvfb has no vsync); ticks still come from the timer. The
+      per tick; ticks still come from the timer. Xvfb has no vsync (1b's T11),
+      and that it reports no refresh rate is a guess T13 checks. The
       camera's position is interpolated at alpha, and its angles come from
       live input between ticks (presentation only, contract 4).
 11. **The GCMouse shim** *[spec 6.10 + proposal; ADR-0021; O3]*.
@@ -351,8 +380,12 @@ passes, all on by default. No new exit code.
       carried (ADR-0018) would give an empty diff.
     - A push that changes no core crate writes a **pending** `in-diff` step,
       as 1b's X2 defines it: not a pass, failing no job. (A job with no report
-      fails, `acceptance.rs:48-52`.) The feature passes only on a run whose
-      push changed core code; T24's push does.
+      fails, `acceptance.rs:48-52`.)
+    - **The rung's run.** The push after G5 carries only G5's files, so
+      `in-diff` may stay pending. So the weekly schedule, and a manual
+      dispatch the owner can start, also run a `rung-diff` step: the diff
+      from the commit that added the current rung's `acceptance.json` (G1),
+      which holds every core change of T5-T22. Criterion 19 binds to it.
     - A missed mutant fails unless `.cargo/mutants.toml` (protected) excludes
       it. A weekly full run is reported, not failed.
 16. **docs-lint** *[spec 7.4 + proposal]*: `docs-check` also checks that
@@ -377,7 +410,9 @@ passes, all on by default. No new exit code.
 
 ## Where this differs from the spec, and why
 
-1. **The graph's shape** (ADR-0019, amending ADR-0003 and ADR-0017).
+1. **The graph's shape.** ADR-0019 records the mechanism; ADR-0020 records
+   the first-person passes and their tail below, amending ADR-0003 and
+   ADR-0017.
    - Passes write several targets and continue earlier passes.
    - A display-referred palette pass follows the tone map, so "tone mapping
      is the last graph pass" becomes "the last scene-referred pass". The
@@ -433,8 +468,9 @@ None of these is in the rung unless the owner takes it at G1.
 
 **Why they are here.**
 - The owner's aim (2026-11-01): "changing the industry would mean ai agents
-  can develop games without human feedback". A review that day (commit
-  353872d) asked whether agents can see enough to check a generated scene.
+  can develop games without human feedback". A review that day, run at
+  commit 353872d (ADR-0018's push commit), with its notes kept outside the
+  repo, asked whether agents can see enough to check a generated scene.
   Its verdict was no: enough to guard the fixed 1b testbed against code bugs,
   with the owner playing at G7, but not a scene nobody prepared, and not
   rung 2.
@@ -467,7 +503,7 @@ decision 13.
 | A1 | **Frame record** | `shot` and `video` write `<out>.frame.json`: the camera; every object the extraction asked for (id, kind, world box); then, from `info` and `output`, each object's visible pixels, screen box, mean luminance and contrast against its surroundings; depth at a fixed 8x6 grid of probes; a luminance histogram | `frame-record`: a record for every shot; exact on the pinned lavapipe, within per-shot tolerances elsewhere; a planted "not drawn" bug and a "drawn black" bug each change it. native x5: frame-record | TA1, 2 | none |
 | A2 | **Rules for "proper"** | Protected `<scene>.rules.toml`, like assertions, checked by a script over frame records. Three starter rules: an object the manifest marks `must_see` has at least 50 visible pixels and contrast at least 0.1; no first-person pixel shows the clear colour; floor shows in the lower third and ceiling or sky in the upper third | `scene-rules`: every shot passes; each rule has a selftest that breaks it. native x5: scene-rules; selftest: violation:rule-1 to rule-3 | TA2, 1 (needs A1) | about 20 min to approve the rules |
 | A3 | **First-person poses** | `shot --pose x,y,z,yaw,pitch`, a camera independent of movement; `shots.toml` names poses; the report lists the views checked | `fps-poses`: every named pose renders on every runner, and the report's `views` equals the manifest. native x5: poses | TA3, 1 | none |
-| A4 | **What each check misses** | 10-12 planted render bugs as patch files that `cargo xtask selftest render-bug-<n>` applies to a workspace copy, as selftests do now; one deletion run that switches each check off in turn; a bug-by-check table in `PROGRESS.md` | `check-misses`: every planted bug fails a check that is not hard-coded to one scene, or is a known miss the owner accepted. selftest: render-bug-1 to render-bug-12 | TA4, 2 | about 10 min |
+| A4 | **What each check misses** | 12 planted render bugs, written by an agent that did not build the renderer, as patch files that `cargo xtask selftest render-bug-<n>` applies to a workspace copy, as selftests do now; one deletion run that switches each check off in turn; a bug-by-check table in `PROGRESS.md` | `check-misses`: every planted bug fails a check that is not hard-coded to one scene, or is a known miss the owner accepted. selftest: render-bug-1 to render-bug-12 | TA4, 2 | about 10 min |
 | A5 | **Two texts per frame** (the owner's idea) | One text from game state (what should be seen, by a CPU ray cast of the map from the camera, independent of the GPU), and one from the pixels (A1's record). A script compares them line by line and fails on a difference; a model may explain a difference, never decide (7.2) | `two-texts`: no difference on every pose and over a 600-frame walk; each A4 bug that changes what is seen shows one. native x5: two-texts | TA5, 2 (needs A1) | none |
 
 **What I recommend, and why.**
@@ -482,8 +518,8 @@ decision 13.
   prepared. One hand-built room gives it little that goldens and A1-A2 miss,
   and A1 builds its pixel side now.
 - **Cost**, scaled by 1b's 1.37 sessions per unit like the base rung: this
-  set is 6 units, 8.2 sessions rounded up to 9 (51 in all); all five are 8
-  units, 10.96 rounded up to 11 (53). The time-box is unchanged.
+  set is 6 units, 8.2 sessions rounded up to 9 (52 in all); all five are 8
+  units, 10.96 rounded up to 11 (54). The time-box is unchanged.
 
 ## Proposed acceptance criteria
 
@@ -499,7 +535,7 @@ mutation testing, (12) the owner plays (touchpoint 1).
 | # | Feature | Criterion | Checks (job: step) | Item |
 |---|---|---|---|---|
 | 1 | `room-window` | `play --map room --windowed --ticks 600 --seed 1 --input room-walk.input.toml --hashes h.txt` presents first-person frames in a real window, and `h.txt` equals `hashes/room-walk.seed1.txt` | native x5: window-room | 1 |
-| 2 | `replay-cross-platform` | As 1b's criterion 7, now with the room scenarios. The five dot streams are unchanged; the room streams are identical on every target, sim-data hash included | test x2, riscv, native x5: replay; summary: compare-hashes | 1, 2 |
+| 2 | `replay-cross-platform` | As 1b's criterion 7, now with the room scenarios. The five dot streams are unchanged (unless O12's fix-now answer changes them, regenerated with the owner's approval); the room streams are identical on every target, sim-data hash included | test x2, riscv, native x5: replay; summary: compare-hashes | 1, 2 |
 | 3 | `collision-grid` | The grid passes the collision conformance suite, exact contact included (ADR-0024), and gives the brute-force oracle's `Trace` bits on proptest maps and sweeps | test x64, arm64: collision; riscv: core-tests | 2 |
 | 4 | `ground-movement` | Q2's tests (steps up to 0.4 m climb and 0.41 m blocks, snapping, gravity only in the air, no slope climbing, never inside solid), and its flat-ground proptest over the grid | test x64, arm64: movement; riscv: core-tests | 2 |
 | 5 | `sim-data` | The room's snapshot fits 1,200 bytes; sim data is outside the state, its hash and snapshots; `sim_data_hash` is in recordings, reports and the room's hash-stream header and changes with the room's data only; the dot map's is 0 | test x64, arm64: sim-data | 1, 2 |
@@ -516,9 +552,9 @@ mutation testing, (12) the owner plays (touchpoint 1).
 | 16 | `docs-lint` | Decision 16; a stale path fails | lint: docs-check; selftest: violation:docs-stale-path | 9 |
 | 17 | `notices` | Notices list every third-party crate in the testbed binary for the three playable targets, with licence texts; a licence off the list fails | lint: notices | 10 |
 | 18 | `dist` | The archive holds the stripped binary, its debug info, `version.json` and notices; the unpacked binary runs `--version --json` and `run --headless --ticks 60` | native ubuntu-24.04, windows-2025, macos-26: dist | 10 |
-| 19 | `mutants` | On a push that changes core crates, no missed mutant outside the exclusions; other pushes are pending (decision 15) | mutants: in-diff | 11 |
+| 19 | `mutants` | Over the rung's core changes (the diff from the G1 commit), no missed mutant outside the exclusions (decision 15) | mutants: rung-diff | 11 |
 | 20 | `violations-2` | Each fails, with a selftest | selftest: violation:unsafe-outside-shim, violation:gcmouse-outside-shim, violation:docs-stale-path, violation:mutant-missed | 6, 9, 11 |
-| 21 | `gpu-report-budgets` | As 1b's criterion 9, plus first-person frames within a new `[gpu.first_person]` table, and per-pass GPU times (or `null`) and the pool's texture count in new `gpu` keys. `per_frame`, `tier: 0` and the capability names stay as `shot_video.rs` pins them | native x5: gpu-budgets | 3 |
+| 21 | `gpu-report-budgets` | As 1b's criterion 9, plus a first-person room shot within a new `[gpu.first_person]` table (the step renders one from G5), and per-pass GPU times (or `null`) and the pool's texture count in new `gpu` keys. `per_frame`, `tier: 0` and the capability names stay as `shot_video.rs` pins them | native x5: gpu-budgets | 3 |
 | 22 | `proof-video` | As 1b's, plus `room.apng`, the 600-tick room walk | native ubuntu-24.04: proof-video | 12 |
 | 23 | `owner-play` | On the owner's Mac: fullscreen, mouse look, WASD, the step, turning sprites, `--look` switches, Esc quits; the owner plays and accepts | the owner | 12 |
 | 24 | carried from 1b | `native-build-test`, `native-window` (the dot window), `esc-quits`, `violations-1b`, `crash-json`, `version-json`, `shaders`, `wire-session` (unchanged: no wire change), `live-input`, `lint-tier`, `tests-and-targets` (the core set adds `eng-collision-grid`), `agents-md-length`, `native-duration` | as in 1b's `acceptance.json` | all |
@@ -545,15 +581,26 @@ shots' SHA-256s still begin `c6cb0547eb48a67e`, `bd264452cd2f5ef4`,
 ## Before the first sitting
 
 Three planning tasks, so that every gate of the first sitting has its inputs
-ready. Like the queue, they change no protected path on `main`: they commit
-ADR drafts (`docs/adr/` is not protected) and patch files under
-`docs/rungs/2/patches/`, tested in a scratch clone.
+ready; sitting 1 waits until all three are done. Like the queue, they change
+no protected path on `main`: they commit ADR drafts (`docs/adr/` is not
+protected) and patch files under `docs/rungs/2/patches/`, tested in a
+scratch clone. **State at 46aa0e3:** T0a is in progress (its ADRs are being
+drafted; none is in `docs/adr/` yet); T0 and T0b are not started.
 
 | Task | Builds | Done when |
 |---|---|---|
-| T0 | The G2 patch: skeletons of the four crates (crate roots with the required attributes, `Cargo.toml` with `[lints] workspace = true`), their `architecture.toml` entries and new edges, and `overflow-checks` for `eng-collision-grid`, in one commit's worth, since `arch-check` fails on a listed crate that does not exist as on one not listed (1b's T0) | `quick` green in a scratch clone with the patch applied |
-| T0a | ADR drafts, all "Proposed": ADR-0020 (the GPU scene layout, decision 6), ADR-0021 (`unsafe` in the shim, decision 11), ADR-0022 (the platform contract: `Control`'s requests and `Window::refresh_rate`, with decision 10's migration notes), ADR-0023 (maps and sim data, decision 1), ADR-0024 (traces stop at exact contact, decision 2, with migration notes), and the ADR index | `docs-check` and `typos` pass; each names what it amends and how it migrates; a fresh `reviewer` reads them against this plan |
-| T0b | The G3 patch: crate batch 3 in `deny.toml`'s allow-list, the wrapper ban for `objc2-game-controller`, a `clarify` entry if `bincode-next`'s licence needs one, `_typos.toml` if needed | `cargo deny check` passes in a scratch clone that adds batch 3's crates to `eng-bench` and the shim crate with T0's patch and this one applied |
+| T0 | The G2 patch: skeletons of the four crates (crate roots with the required attributes, `Cargo.toml` with `[lints] workspace = true`), their `architecture.toml` entries and new edges, and `overflow-checks` for `eng-collision-grid`, in one commit's worth, since `arch-check` fails on a listed crate that does not exist as on one not listed (1b's T0). The shim crate's lines are a separate patch, so O3's other answers apply without it | `quick` green in a scratch clone with the patch applied, with and without the shim patch |
+| T0a (in progress) | ADR drafts, all "Proposed": ADR-0020 (the first-person passes and the GPU scene layout, decision 6; it also records difference 1, the palette after the tone map and the k×k upscale in `present`, amending ADR-0003 and ADR-0017); ADR-0021 (`unsafe` in the shim, decision 11); ADR-0022 (the platform contract: `Control`'s requests and `Window::refresh_rate`, with decision 10's migration notes); ADR-0023 (maps and sim data, decision 1); ADR-0024 (traces stop at exact contact, decision 2, with migration notes); and the ADR index | `docs-check` and `typos` pass; each names what it amends and how it migrates; a fresh `reviewer` reads them against this plan |
+| T0b | The G3 patch: crate batch 3 in `deny.toml`'s allow-list, the wrapper ban for `objc2-game-controller` (naming the shim crate, or `eng-platform-winit` if O3 picks a module), a `clarify` entry if `bincode-next`'s licence needs one, `_typos.toml` if needed. Also a separate parry3d patch, resolved against the real lock, so O4's other answer can be applied at the same sitting | `cargo deny check` passes in a scratch clone that adds batch 3's crates to `eng-bench` and the shim crate with T0's patch and this one applied, and again with the parry3d patch |
+
+**If the owner answers O3-O5 otherwise at sitting 1:**
+- **O3 as a module:** G2 applies T0 without the shim patch; the wrapper ban
+  names `eng-platform-winit`; ADR-0021 changes its crate. **No shim:** the
+  same, without the ban; criteria 11 and 25 drop.
+- **O4 parry3d:** G3 also applies the parry3d patch; T5 builds both oracles.
+- **O5 cargo-dist:** it needs a `[profile.dist]` table in the root
+  `Cargo.toml` (protected) and the workflow it generates. T20 prepares both
+  as a G5 patch, the G5 workflow row gains them, and difference 5 drops.
 
 ## Proposed time-box and AI budget (for the owner to set)
 
@@ -563,19 +610,19 @@ planned unit cost 26 / 19 = 1.37 sessions, counting follow-ups, review fixes,
 patches and the first-run fix.
 
 - **Used so far** (`docs/rungs/2/PROGRESS.md`): 2 planning sessions and 4
-  queue sessions (Q1 to Q4, each with its review and fixes), 6 in all. This
-  second revision is a third planning session: 7.
+  queue sessions (Q1 to Q4, each with its review and fixes), 6 in all. The
+  second and third revisions are two more planning sessions: 8.
 - **Still to come,** counted as 1b's were, so nothing counts twice: T0, T0a,
   T0b and T5-T22, one unit each (21); T23, the two rung reviews, as 1b
   planned them (2; their fixes are in the 1.37); T24, collecting candidates,
   as 1b's T16 (1; first-run fixes are in the 1.37); T25, as 1b's T17 (1).
   25 units × 1.37 = 34.25, rounded up to 35.
-- **Total: 7 + 35 = 42.**
+- **Total: 8 + 35 = 43.**
 
 **The proposal.**
 - **AI budget:** the owner's current Claude plan and nothing else (P1
-  default). At most **42 agent sessions** for the base rung, **51** with the
-  recommended additions, or **53** with all five, logged in
+  default). At most **43 agent sessions** for the base rung, **52** with the
+  recommended additions, or **54** with all five, logged in
   `docs/rungs/2/PROGRESS.md`. As in 1b, a task with its reviewer is one
   session.
 - **Time-box:** **14 calendar days from G1**, as in 1a and 1b.
@@ -585,7 +632,7 @@ patches and the first-run fix.
     PROGRESS.md's costs table, which counts the planner's revision "in all")
     before the limit stopped it after about 2 hours 15 minutes; in 1b, four
     builders and their reviewers used one in under three hours. At two or
-    three windows a day that is 3 to 4 days.
+    three windows a day that is 2 to 4.5 days.
   - The rest is the owner's three sittings and the new jobs' first runs. In
     1b the owner's gates were the long pole: G6 and G7 are still open six
     days after green CI.
@@ -629,25 +676,25 @@ here, because a note left only in an entry gets lost (1b lesson).
 | T1-T4 | none | the queue, built | as built |
 | T5 | G2, G4 (ADR-0024); G3 if O4 picks parry3d | `eng-collision-grid` (decision 2), exact contact in `eng-collision-api`'s conformance suite, the brute-force oracle test (to be protected), RISC-V. **Carry:** `BoxRoom`'s clamp lands a hull exactly on a wall (`dot-corner` asserts `x == 7.75`); the grid does the same in f64. **Carry (Q2):** with box worlds a tie that keeps the stepped move cannot be told apart, so the grid run is what guards decision 3's tie rule | criterion 3's tests pass; `arch-check` passes; `kit-fps`'s `flat_ground_gives_pmoves_result_bit_for_bit` (through `same_as_pmove`) passes over the grid too |
 | T6 | G4 (ADR-0023) | Maps and sim data (decision 1): constant resources and `Sim::sim_data_hash`; `GameMaps` and the new entry points; `--map`; the map and sim data in recordings, hash-stream headers and reports; `replay verify` choosing the map by its hash. Patch: xtask replay reads `map` from `scenarios.toml`. **Carry:** "Protected tests that pin today's APIs" | the dot streams are byte-identical; a sim with a constant resource snapshots and hashes its state without it; `hash_equality.rs`, `never_panic.rs`, `twin.rs`, `version.rs` and `exit_codes.rs` pass unchanged |
-| T7 | T2, T5, T6 | The `room` map in `game-testbed-sim` (the room, spawns, things, `ground_move`), and one patch, `room-scenarios.patch`, holding everything its scenarios need: the input scripts, the three `scenarios.toml` entries (`room-walk`, `room-ledge`, `room-corner`), their `*.assert.toml` and their hash streams. **The streams wait in the patch:** committed before their scenarios, `xtask replay` reports `[E-HASH] … in committed but not in <target>` and `quick` goes red. The owner applies it at G5 with T6's replay patch; an agent then runs `quick` and commits. **Carry:** `[sim]` budgets are 4,096 state bytes and 16 entities. **Carry (Q2, O12):** the room has no angled wall; if O12 fixes `slide` anyway, the dot streams may change; regenerate only if they do, with the owner's approval | criterion 5's tests; in a scratch clone with both patches applied, `quick` is green and the room streams match on the targets this Mac can run (arm64, Docker x64, QEMU riscv) |
+| T7 | T2, T5, T6 | The `room` map in `game-testbed-sim` (the room, spawns, things, `ground_move`); the room's input scripts, **committed directly** (they are not protected, and replay rejects only `.assert.toml` files no scenario names, `replay.rs:92-109`), so T15, T16 and A3 can use them; and one patch, `room-scenarios.patch`, with the three `scenarios.toml` entries (`room-walk`, `room-ledge`, `room-corner`), their `*.assert.toml` and their hash streams. **The streams wait in the patch:** committed before their scenarios, `xtask replay` reports `[E-HASH] … in committed but not in <target>` and `quick` goes red. The owner applies it at G5 with T6's replay patch; an agent then runs `quick` and commits. **Carry:** `[sim]` budgets are 4,096 state bytes and 16 entities. **Carry (Q2, O12):** the room has no angled wall; if O12 fixes `slide` anyway, the dot streams may change; regenerate only if they do, with the owner's approval | criterion 5's tests; in a scratch clone with both patches applied, `quick` is green and the room streams match on the targets this Mac can run (arm64, Docker x64, QEMU riscv) |
 | T8 | T1, G4 (ADR-0020), O11 | `eng-gpu`: a running pass with several colour targets and a depth target; `Format` widened (decision 5); textures; the per-frame uniform; the scene layout (decision 6); timestamps per pass if O11 says so, asking for `TIMESTAMP_QUERY` only when the adapter has it. **Carry:** Q1 already built the pool in `Targets` and `LoadOp::Load`; 1b's one instance buffer per frame and one input bind group per pass are what megabuffers replace; exposure needs the uniform (ADR-0017); the surface format stays `Bgra8UnormSrgb`; new report data goes in new `gpu` keys, never in `per_frame` or `capabilities`, and `tier` stays 0 (`shot_video.rs`) | offscreen depth, several-target and texture-array tests on Metal and Docker lavapipe; `counters.rs` and Q1's tests unchanged |
 | T9 | T4, T8 | `eng-render`: the `opaque` and `sky` passes, camera-relative chunk draws, `info`. **Carry (Q4):** the plan sets no near distance; Q4's tests use one under 1 m, and the 0.25 m hull half-width bounds it from above, so pick it here (0.1 m suggested) | a known room renders with depth probes as computed on the CPU |
 | T10 | T9 | `eng-render`: the `light`, `fog`, `tonemap` (decision 7) and `palette` passes, the `.gpl` reader, the k×k present, the switches. **Carry (Q4):** sampling `toned` (`Rgba8UnormSrgb`) returns linear values, so the palette pass reads it through an `Rgba8Unorm` view or re-encodes first | decision 13's checks pass on Metal and lavapipe |
 | T11 | T9 | `eng-render`: the `sprites` pass (decision 4), continuing `opaque`. Built beside T10 in separate modules; T10 lands first if both touch `renderer.rs` | criterion 8's tests |
-| T12 | T0, T7, T9, T11 | `game-testbed-client`: the top-down extraction moved unchanged; the first-person extraction; region looks; textures and sprites made by code; `palettes/room.gpl`, its generator script and its provenance sidecar. **Carry:** top-down colours are sRGB-level centres at 40 px/m; `view_yaw` 0x4000 is for the dot map only; `GameDef` keeps its fields (`twin.rs:33`) | the four 1b shots are pixel-identical; a first-person shot renders |
-| T13 | G4 (ADR-0022) | The platform contract change (decision 10): `Control`'s requests and `Window::refresh_rate` with default bodies; headless records requests; winit maps mouse motion, buttons and wheel and reads the refresh rate. Patch: the new suite (a file under `src/conformance/` and its `mod` line) and new headless and winit tests for it, to be protected. **Carry (1b T10):** the contract's wheel `y` keeps winit's sign and its `x` is winit's negated; under Xvfb a notch came twice; winit hides macOS's natural scrolling and acceleration; raw motion comes only while focused | the new suite passes headless and on winit where a display exists; the existing suite, `eng-platform-headless/tests/conformance.rs` and `twin.rs` pass unchanged |
-| T14 | T0, G3, G4 (ADR-0021), T13 | `eng-platform-gcmouse` (decision 11) with its callback count; `examples/events.rs` prints its deltas. **Carry:** GCMouse's sign of `deltaY` and its units are unverified; check them on the owner's Mac with the screen unlocked | builds on macos-26; unit tests with a fake source; on this Mac, callbacks arrive per event |
-| T15 | T3, T12, T13 | `eng-app`: first-person `play` (decisions 9, 10), the flags, the live view angles, through new functions; `play_on` and `PlayRun::start` keep their signatures (`twin.rs:76,84`). **Carry (1b T11):** waking at once after each present spins under Xvfb (no vsync); a lost surface is a panic and should now be recreated from the kept window; a locked Mac screen counts as occluded. **Carry (Q3):** `MouseLook` has no reader for the angles between ticks (`sample` consumes the pending motion), so the live view needs one; sensitivity is integer millionths, so `--sensitivity 0.066` needs an exact decimal parse (at most six decimals, refused beyond); the default pitch limit is 14_563 units, and `degrees_to_angle(80.0)` gives 14_564, so a `--pitch-limit` in degrees must round down | `play.rs` and `twin.rs` pass unchanged; a windowed room run's hash stream equals `run --headless` with the same script and seed (the committed stream lands at G5) |
-| T16 | T10, T12 | Shots: `shots.toml`, the first-person shots, `--view`, the look harness `tests/look.rs`, and `shots.rs` reading the manifest and per-shot limits, all as patches. **Carry:** pass `LP_NATIVE_VECTOR_WIDTH=256` only; candidates go to `target/golden-candidates/`; p999 cannot see under about 77 px | candidates from Metal and lavapipe |
-| T17 | T0, G3, T5, T7 | `eng-bench`; `cargo xtask bench` and `ci --job bench` (patch); the workflow job with valgrind and `gungraun-runner` =0.20.0; comparison with the push's base (decision 14). **Carry:** gungraun only on Linux, so `cargo test --all-targets` still builds on the other four native runners | a local Docker run on Linux x64 reports counts for a head and its base; `eng-bench` builds on this Mac |
+| T12 | G2, T7, T9, T11 | `game-testbed-client`: the top-down extraction moved unchanged; the first-person extraction; region looks; textures and sprites made by code; `palettes/room.gpl`, its generator script and its provenance sidecar. **Carry:** top-down colours are sRGB-level centres at 40 px/m; `view_yaw` 0x4000 is for the dot map only; `GameDef` keeps its fields (`twin.rs:33`) | the four 1b shots are pixel-identical; a first-person shot renders |
+| T13 | G4 (ADR-0022) | The platform contract change (decision 10): `Control`'s requests and `Window::refresh_rate` with default bodies; headless records requests; winit maps mouse motion, buttons and wheel and reads the refresh rate. Patch: the new suite (a file under `src/conformance/` and its `mod` line) and new headless and winit tests for it, to be protected. **Carry (1b T10):** the contract's wheel `y` keeps winit's sign and its `x` is winit's negated; under Xvfb a notch came twice; winit hides macOS's natural scrolling and acceleration; raw motion comes only while focused | the new suite passes headless and on winit where a display exists; the existing suite, `eng-platform-headless/tests/conformance.rs`, `eng-platform-winit/tests/conformance.rs` and `twin.rs` pass unchanged |
+| T14 | G2, G3, G4 (ADR-0021), T13 | `eng-platform-gcmouse` (decision 11) with its callback count; `examples/events.rs` prints its deltas. **Carry:** GCMouse's sign of `deltaY` and its units are unverified; check them on the owner's Mac with the screen unlocked | builds on macos-26; unit tests with a fake source; on this Mac, callbacks arrive per event |
+| T15 | T3, T10 (`--look`), T12, T13 | `eng-app`: first-person `play` (decisions 9, 10), the flags, the live view angles, through new functions; `play_on` and `PlayRun::start` keep their signatures (`twin.rs:76,84`). **Carry (1b T11):** waking at once after each present spins under Xvfb (no vsync); a lost surface is a panic and should now be recreated from the kept window; a locked Mac screen counts as occluded. **Carry (Q3):** `MouseLook` has no reader for the angles between ticks (`sample` consumes the pending motion), so the live view needs one; sensitivity is integer millionths, so `--sensitivity 0.066` needs an exact decimal parse (at most six decimals, refused beyond); the default pitch limit is 14_563 units, and `degrees_to_angle(80.0)` gives 14_564, so a `--pitch-limit` in degrees must round down | `play.rs` and `twin.rs` pass unchanged; a windowed room run's hash stream equals `run --headless` with the same script and seed (the committed stream lands at G5) |
+| T16 | T10, T12 | Shots: `shots.toml`, the first-person shots, `--view`, the look harness `tests/look.rs`, and `shots.rs` reading the manifest and per-shot limits, all as patches. In `eng-cli`, the probe's strict budgets parser (`budgets.rs:13,33,43`) gains an optional `[gpu.first_person]` table, applied to first-person frames, before G5 adds it to `budgets.toml`. **Carry:** pass `LP_NATIVE_VECTOR_WIDTH=256` only; candidates go to `target/golden-candidates/`; p999 cannot see under about 77 px | candidates from Metal and lavapipe |
+| T17 | G2, G3, T5, T7 | `eng-bench`; `cargo xtask bench` and `ci --job bench` (patch); the workflow job with valgrind and `gungraun-runner` =0.20.0; comparison with the push's base (decision 14). **Carry:** gungraun only on Linux, so `cargo test --all-targets` still builds on the other four native runners | a local Docker run on Linux x64 reports counts for a head and its base; `eng-bench` builds on this Mac |
 | T18 | G1 | Docs-lint in `docs-check` (patch) and its selftest | a stale path in a scratch copy of AGENTS.md fails |
-| T19 | G1, O8 | `cargo xtask mutants` and `ci --job mutants` (shards, time-box, the diff from the push's base, a pending step when no core crate changed), the weekly schedule, `.cargo/mutants.toml`, the `test-auditor` subagent (spec 7.5), all patches | an in-diff run on T2's change reports its mutants; a push with no core change writes a pending step |
+| T19 | G1, O8 | `cargo xtask mutants` and `ci --job mutants` (shards, time-box; `in-diff` from the push's base, pending when no core crate changed; `rung-diff` from the commit that added the current rung's `acceptance.json`), the weekly schedule and a manual dispatch, `.cargo/mutants.toml`, the `test-auditor` subagent (spec 7.5), all patches | an in-diff run on T2's change reports its mutants; a push with no core change writes a pending step; `rung-diff` in a scratch clone covers Q1-Q4's core changes |
 | T20 | G1, O5 | `cargo xtask notices` and `dist` (decision 17), `about.toml` and its template (to be protected), patches | notices and an archive on this Mac; Linux in Docker; the unpacked binary runs |
 | TA1-TA5 | only if taken at G1 | A1: T10, T16. A2: TA1. A3: with T16. A4: T16, before T21 (its selftests join the G5 package). A5: TA1 | as in the agent-seeing table |
-| T21 | T15-T20 (and TA rows taken) | The G5 package: new `test` and `native` steps, the `selftest` cases, the summary and acceptance for the new jobs, workflows, `budgets.toml`, protection (the G5 rows). **Carry (1b):** build26's Mesa has no window surface, so Ubuntu's lavapipe goes first in `VK_DRIVER_FILES` for windows; find windows by `--pid`; on Windows a running `xtask.exe` cannot be replaced and `canonicalize` gives `\\?\`; Xcode's git defaults to `main` | each job's steps pass where they can run locally |
+| T21 | T15-T20 (and TA rows taken) | The G5 package: new `test` and `native` steps, `gpu-budgets` also rendering a room shot under `[gpu.first_person]` (today it renders dot-square only, `ci_native.rs:384-415`), the `selftest` cases, the summary and acceptance for the new jobs, workflows, `budgets.toml`, protection, and `current.txt` set to `2` (the G5 rows). **Carry (1b):** build26's Mesa has no window surface, so Ubuntu's lavapipe goes first in `VK_DRIVER_FILES` for windows; find windows by `--pid`; on Windows a running `xtask.exe` cannot be replaced and `canonicalize` gives `\\?\`; Xcode's git defaults to `main` | each job's steps pass where they can run locally; in a scratch clone with the package applied and `current.txt` at `2`, `quick` is green, `ci_native_tests.rs`'s check of every native step included |
 | T22 | T15-T20 | Docs, beside T21: `AGENTS.md` (150 lines already: every new line replaces one), `docs/ARCHITECTURE.md`, ADR-0019 to ADR-0024 brought up to what was built, the `perf-investigate` skill (patch) | `docs-check` passes, docs-lint included |
 | T23 | T21, T22 | Two fresh-context `reviewer` passes over the rung, then fixes | no open blockers |
-| T24 | G5 | The first CI runs after G5: fixes, golden candidates and FLIP maps (`golden-update` skill), `owner-mac-shots` on this Mac | the owner has every candidate for G6 |
+| T24 | G5 | The first CI runs after G5: fixes, golden candidates and FLIP maps (`golden-update` skill), `owner-mac-shots` on this Mac. Fixes to xtask or the workflows go to the owner as one patch (G5b), as 1b's `ci-first-run.patch` did (6443ea5) | the owner has every candidate for G6, from a green run |
 | T25 | T23, T24 | `room.apng` and a short scripted session for the owner | the owner accepts (G7) |
 
 **Order, with at most two builders at a time:**
@@ -657,14 +704,25 @@ here, because a note left only in an entry gets lost (1b lesson).
 4. T5 with T6, T7 with T8, T9 with T13, T10 with T11, T12 with T14, T15
    with T16 (and TA3), T17 with T18, T19 with T20, then the TA rows taken;
 5. T21 with T22, then T23;
-6. **sitting 2** (G5); T24, then T25;
-7. **sitting 3** (G6, G7).
+6. **sitting 2** (G5); T24, with G5b if the first run needs it; then T25;
+7. **sitting 3** (G6, G7), after a green run.
 
 ## Owner decisions this rung needs
 
-- **O1. Approve** the plan, acceptance, time-box and budget (G1), and set
-  `current.txt` to `2`. Close 1b first or in the same sitting: its G6 (ready,
-  with commands in `docs/rungs/2/PROGRESS.md`), its G7 and ADR-0017.
+- **O1. Approve** the plan, acceptance, time-box and budget (G1), and write
+  `docs/rungs/2/acceptance.json`. **`current.txt` moves to `2` at G5, not
+  G1.** From the moment it says `2`, `quick` runs
+  `ci_native_tests.rs:42-70`, which reads the current rung's
+  `acceptance.json` and fails unless every native check names a step that
+  `ci_native.rs` runs. `window-room`, `look` and `dist` exist only from G5's
+  patch, so setting it at G1 would leave `quick` red through T5-T22. The
+  other readers are harmless: `acceptance::compute` (CI's summary) reads only
+  the current rung's file, so it keeps reporting 1b until G5, and the
+  session-start hook only prints the name. Briefs point builders at rung 2's
+  plan meanwhile. (The other fix, pending stub steps in xtask at sitting 1,
+  would add an xtask patch to that sitting; this one needs none.) Close 1b
+  first or in the same sitting: its G6 (ready, with commands in
+  `docs/rungs/2/PROGRESS.md`), its G7 and ADR-0017.
 - **O2. Maps** (decision 1). A second map with sim data (recommended: 1b's
   oracles stay byte-identical, no protected test changes, and rung 3 needs
   both), or replace the dot room, which regenerates the dot streams and
@@ -674,10 +732,11 @@ here, because a note left only in an entry gets lost (1b lesson).
   (`forbid` relaxed there), or no shim, keeping winit's coalesced macOS
   deltas, which spec 6.10 warns mislead playtests.
 - **O4. Collision oracle** (decision 2). Brute force (recommended), or
-  `parry3d-f64` 0.31.1 as a test-only dependency, which needs a crate batch
-  of its own at G3 before T5.
+  `parry3d-f64` 0.31.1 as a test-only dependency, through T0b's separate
+  parry3d patch at G3.
 - **O5. dist** (decision 17). `cargo xtask dist` (recommended), or the
-  `dist` tool (cargo-dist 0.34.0) with its workflow and `[profile.dist]`.
+  `dist` tool (cargo-dist 0.34.0), whose `[profile.dist]` and workflow then
+  join G5 ("Before the first sitting").
 - **O6. Agent seeing.** Take or drop A1-A5 (recommended: A1, A3, A4 small,
   A2's three rules).
 - **O7. Benchmark gate** (decision 14). The push's base plus a performance
@@ -718,27 +777,30 @@ here, because a note left only in an entry gets lost (1b lesson).
 Every change below is to a path `protected.toml` lists, except G1's plan,
 `current.txt`, and G4's ADRs (rule decisions). Agents prepare each change and
 the owner applies it. **Three sittings, each with its inputs ready:**
-1. **Sitting 1, at the start:** G1, G2 (T0's patch), G3 (T0b's patch) and G4
-   (T0a's ADRs), all prepared before it;
-2. **Sitting 2,** when T21's package is ready: G5, ending with a push;
-3. **Sitting 3,** after that run's candidates: G6 and G7.
+1. **Sitting 1, at the start,** once T0, T0a and T0b are done: G1, G2 (T0's
+   patch), G3 (T0b's patch) and G4 (T0a's ADRs);
+2. **Sitting 2,** when T21's package is ready: G5, ending with a push (and
+   G5b after it if the first run needs a fix);
+3. **Sitting 3,** after a green run's candidates: G6 and G7.
 
 | Gate | Sitting | Path | Change | Unblocks |
 |---|---|---|---|---|
-| G1 | 1 | this plan; `docs/rungs/2/acceptance.json`; `current.txt` | Approve; write the criteria in 1b's format; set `2`; decide O1-O13 and A1-A5 | everything after it |
+| G1 | 1 | this plan; `docs/rungs/2/acceptance.json` | Approve; write the criteria in 1b's format; decide O1-O13 and A1-A5. `current.txt` stays `1b` (O1) | everything after it |
 | G2 | 1 | `architecture.toml`; root `Cargo.toml` `[profile]` | Apply T0's patch: the four crates and their edges; `[profile.release.package.eng-collision-grid] overflow-checks = true`; one commit with the skeletons | T5, T12, T14, T17 |
 | G3 | 1 | `deny.toml`; `_typos.toml` if needed | Apply T0b's patch: crate batch 3, the `objc2-game-controller` wrapper ban, a `clarify` entry if needed (a parry3d batch too, if O4 picks it) | T14, T17 (T5 with parry3d) |
-| G4 | 1 | ADRs (rule decisions) | Accept, change or refuse ADR-0019 (graph), ADR-0020 (scene layout), ADR-0021 (`unsafe` in the shim), ADR-0022 (platform contract), ADR-0023 (maps and sim data), ADR-0024 (exact contact); and 1b's ADR-0017 | T5, T6, T8, T13, T14 |
-| G5 | 2 | `xtask/**` | Docs-lint; `bench`; `mutants`; `notices` and `dist`; replay reads `map` (T6); new `test` steps (collision, movement, sim-data, render-graph, sprites, mouse-look) and `native` steps (window-room, look, dist); proof video adds `room.apng`; selftest cases; summary and acceptance for the new jobs; `arch-check` refuses `allow(unsafe_code)` outside the shim crate | criteria 1-21 |
-| G5 | 2 | `.github/workflows/**` | The `bench` job (valgrind, `gungraun-runner` =0.20.0); the `mutants` job (`cargo-mutants` =27.1.0, four shards, a weekly `schedule`); `cargo-mutants` in the `selftest` job too, for `violation:mutant-missed`; `cargo-about` =0.9.3 in `lint`; `dist` artifacts on three runners; `room.apng`; actions pinned by SHA, `permissions: {}` | the new jobs exist |
-| G5 | 2 | `scenarios.toml`, `**/*.assert.toml` | T7's `room-scenarios.patch`, applied with T6's replay patch: the room's scenarios, assertions, input scripts and hash streams in one commit | 1, 2, 4, T15's committed stream |
+| G4 | 1 | ADRs (rule decisions) | Accept, change or refuse ADR-0019 (graph), ADR-0020 (first-person passes, difference 1, and the scene layout), ADR-0021 (`unsafe` in the shim), ADR-0022 (platform contract), ADR-0023 (maps and sim data), ADR-0024 (exact contact); and 1b's ADR-0017 | T5, T6, T8, T13, T14 |
+| G5 | 2 | `xtask/**` | Docs-lint; `bench`; `mutants`; `notices` and `dist`; replay reads `map` (T6); new `test` steps (collision, movement, sim-data, render-graph, sprites, mouse-look) and `native` steps (window-room, look, dist); `gpu-budgets` also renders a room shot; mutants' `in-diff` and `rung-diff`; proof video adds `room.apng`; selftest cases; summary and acceptance for the new jobs; `arch-check` refuses `allow(unsafe_code)` outside the shim crate | criteria 1-21 |
+| G5 | 2 | `.github/workflows/**` | The `bench` job (valgrind, `gungraun-runner` =0.20.0); the `mutants` job (`cargo-mutants` =27.1.0, four shards, a weekly `schedule` and a manual dispatch for `rung-diff`); `cargo-mutants` in the `selftest` job too, for `violation:mutant-missed`; `cargo-about` =0.9.3 in `lint`; `dist` artifacts on three runners; `room.apng`; actions pinned by SHA, `permissions: {}` | the new jobs exist |
+| G5 | 2 | `scenarios.toml`, `**/*.assert.toml` | T7's `room-scenarios.patch`, applied with T6's replay patch: the room's scenarios, assertions and hash streams in one commit (its input scripts are already committed) | 1, 2, 4 |
+| G5 | 2 | `docs/rungs/current.txt` (not protected); `docs/rungs/2/acceptance.json` | Set `current.txt` to `2` in G5's commit (O1). Amend `acceptance.json` if a job or step name drifted from this plan, or to add the rows of TA tasks taken | rung 2's acceptance computed by CI |
 | G5 | 2 | `budgets.toml` | A new `[gpu.first_person]` table (from T10's counters); `[ci]` minutes for `bench` and `mutants`. `[gpu]` may stay as it is: `shot_video.rs` feeds its own literal, which the parser must keep accepting | 15, 19, 21 |
-| G5 | 2 | `protected.toml`, `.github/CODEOWNERS` | Protect: Q1's `crates/eng-gpu/tests/{graph_order,graph_errors,pool,bypass,bypass_render,transients}.rs` and `tests/support/**`; Q2's `crates/kit-fps/tests/{ground,slopes,boxes}.rs` and `tests/support/**`; Q3's `crates/eng-input/tests/{mouse_look,mouse_look_exact,mouse_look_model}.rs` and `tests/look_rig/**`; Q4's `crates/eng-render/tests/{camera,sprite_rotation,palette}.rs` (`palette.rs` holds Ottosson's known answers and the pinned bake hash); the grid's oracle test; T13's new conformance tests; `shots.toml`; `tests/look.rs`; `about.toml` and its template; `**/*.rules.toml` if A2 is taken | criteria cannot be weakened |
+| G5 | 2 | `protected.toml`, `.github/CODEOWNERS` | Protect: Q1's `crates/eng-gpu/tests/{graph_order,graph_errors,pool,bypass,bypass_render,transients}.rs` and `tests/support/**`; Q2's `crates/kit-fps/tests/{ground,slopes,boxes}.rs` and `tests/support/**`; Q3's `crates/eng-input/tests/{mouse_look,mouse_look_exact,mouse_look_model}.rs` and `tests/look_rig/**`; Q4's `crates/eng-render/tests/{camera,sprite_rotation,palette}.rs` (`palette.rs` holds Ottosson's known answers and the pinned bake hash); `crates/eng-collision-api/src/conformance.rs`, which T5 extends; the grid's oracle test; T6's sim-data tests (criterion 5); T13's new conformance tests; `shots.toml`; `tests/look.rs`; `about.toml` and its template; `**/*.rules.toml` if A2 is taken | criteria cannot be weakened |
 | G5 | 2 | `crates/eng-platform-api/src/conformance.rs`, `src/conformance/**` | T13's suite: a new file and its `mod` line; the existing suites unchanged | 10 |
 | G5 | 2 | `crates/game-testbed/tests/shots.rs`, `tests/shots/**` | Read `shots.toml` and the per-shot `[flip.<shot>]` limits | 12, 13 |
 | G5 | 2 | `.cargo/mutants.toml` | Exclusions, empty to start | 19 |
 | G5 | 2 | `.claude/**` | The `test-auditor` subagent and the `perf-investigate` skill (spec 7.5) | T19, T24 |
 | G5, if needed | 2 | `**/*.proptest-regressions`; `.config/nextest.toml` | Failing proptests' regression files; a test group for GPU tests | as found |
+| G5b, if needed | between 2 and 3 | `xtask/**`, `.github/workflows/**` | T24's first-run fixes as one patch, as 1b's `ci-first-run.patch` (6443ea5): the owner applies it and pushes, a few minutes outside the sittings | a green run, then sitting 3 |
 | G6 | 3 | `**/golden/**` | Goldens for every manifest shot from the pinned lavapipe; per-shot `[flip.<shot>]` tables in `thresholds.toml`; 1b's four, if 1b's G6 is still open | 12, 13 |
 | G7 | 3 | none | Watch `room.apng`, play, confirm `owner-mac-shots` and `gcmouse-rate`; accept or send back | 14, 23, 25; rung done |
 
@@ -747,7 +809,8 @@ the owner applies it. **Three sittings, each with its inputs ready:**
 - `known_answers.*`, `eng-core`'s and `eng-schema-core`'s `golden.rs`,
   `exit_codes.rs` and the dot `*.assert.toml`;
 - `eng-net-wire`'s `golden.rs` and `never_panic.rs`, `hash_equality.rs`,
-  `twin.rs`, `eng-platform-headless/tests/conformance.rs` and `version.rs`;
+  `twin.rs`, `eng-platform-headless/tests/conformance.rs`,
+  `eng-platform-winit/tests/conformance.rs` and `version.rs`;
 - `play.rs`, `crash_json.rs`, `live_input.rs`, `shot_video.rs`,
   `counters.rs` and `shaders.rs`;
 - `clippy.toml`, `.cargo/config.toml`, `oracle.yml`, the root `Cargo.toml`'s
@@ -829,3 +892,4 @@ they are not in `deny.toml`. Versions were checked with `cargo search` and
 | The owner may dislike the tone curve or the look | every look pass switches off; the curve is one function |
 | 1b's G6 and G7 are still open | rung 2 keeps 1b's pictures and streams byte-identical, so either order works |
 | Q1 built part of T8 ahead of the plan, and the owner may change ADR-0019 | T8 may change that design; G4 is where the owner first sees it |
+| A rung file read through `current.txt` turns `quick` red before its steps exist | `current.txt` moves to `2` at G5, in the commit that adds the steps (O1); T21 checks `quick` with it set in a scratch clone |

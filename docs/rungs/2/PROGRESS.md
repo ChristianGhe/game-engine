@@ -97,7 +97,7 @@ below).
   repo's own hook. I did not retry it: a reworded brief would likely be
   stopped too, and the harness says not to do the stopped agent's work
   myself. It stays the owner's, by hand or with another route.
-- **Amendment 98's first half, the lock in `quick`,** was not started.
+- **Amendment 98's first half, the lock in `quick`,** was built after the window resumed: `docs/rungs/1b/patches/quick-lock.patch` (see 1b's session 19).
 
 **For the owner**
 - **O12:** `pmove`'s shared `slide` can stop the move against an off-axis

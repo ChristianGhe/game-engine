@@ -6504,6 +6504,34 @@ This was part of the overnight window that drafted rung 2's plan
 - **Amendments 96 and 97** (the guard's parser gaps and `git
   credential`): Anthropic's safeguards stopped the builder partway, and
   the work was not retried. Both stay open for the owner.
+- **Amendment 98, first half: `docs/rungs/1b/patches/quick-lock.patch`**
+  (SHA-256 `9f5acd5c959e7cfe…`, made against 783326b; it applies to
+  ac0ed6b). For the owner; it changes `xtask/` and `docs/ARCHITECTURE.md`.
+  - **The lock:** `quick`, `ci --job`, `replay` and `selftest` hold an
+    OS file lock on `target/xtask/run.lock` for the whole run, using std
+    only (`File::lock`). The holder's PID is in the file, except on
+    Windows. A second run prints one line naming the lock and waits.
+  - **Process death releases the lock**, so there is no stale lock to
+    clean up.
+  - **The Stop hook never waits.** If the lock is held, it skips its
+    check and says so. If a `quick` started with `ENG_XTASK_NO_WAIT`
+    finds the lock held, it exits 75, which the hook reports as a skip,
+    not a failure.
+  - **Arguments are checked before the lock.** A nested locked xtask run
+    started through `util::cargo` fails at once with `[E-LOCK-NESTED]`.
+  - **Checked** on aarch64-apple-darwin:
+    - xtask's 110 tests, with and without `GIT_CONFIG_NOSYSTEM=1`;
+    - clippy with `-D warnings`, and fmt;
+    - `quick` 7 of 7;
+    - two `quick` runs at once: one waited, and both passed;
+    - the hook's skip.
+
+    A fresh reviewer read it twice and said "ready for the owner".
+  - **Not checked:** Windows. Its paths have never compiled.
+    `cargo xtask push` refuses protected changes, so CI first sees the
+    patch after the owner applies it.
+  - **Untested by any test, checked by hand:** the hook's skip path, the
+    exit through `process::exit(75)`, and `run()`'s nested check.
 
 ## Proposals for the owner (protected paths)
 

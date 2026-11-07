@@ -1,0 +1,721 @@
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index e0959c8e92ce3451cf800aad14b6a11b5e3379d9..d5e70a88b258e7123a39da25336282e499359b1c 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -587,6 +587,17 @@ client's state at alpha 1, so the pictures are exact.
+ ## Agent tooling
+ 
+ - `cargo xtask` is the only entry point; CI only calls it.
++- `quick`, `ci --job`, `replay` and `selftest` build into `target/` and
++  run what they built, so each holds an OS file lock on
++  `target/xtask/run.lock` for its whole run (`xtask/src/run_lock.rs`),
++  taken once its arguments are checked. Another session's run prints one
++  line naming the file, and the holder's PID except on Windows (which
++  will not read a locked file), then waits; with `ENG_XTASK_NO_WAIT` set
++  it exits 75 instead. The Stop hook never waits: while the lock is held
++  it skips its `quick` and says so in one line. An xtask that a holder
++  starts and that would take the same lock fails at once
++  (`[E-LOCK-NESTED]`). The lock ends with its process, so it cannot go
++  stale. A plain `cargo` command takes no lock.
+ - CI's `test` job runs the workspace's tests, then, each as a step of its
+   own, the harnesses whose results acceptance relies on: `known-answers`,
+   `exit-codes`, `crash-json`, `version`, `live-input`, `wire-session` and
+diff --git a/xtask/src/ci.rs b/xtask/src/ci.rs
+index 08c8065b1f3d3aa91443f29e11ab59b65acede21..27de6902583dab2676c3af16e89dce78535b9ea3 100644
+--- a/xtask/src/ci.rs
++++ b/xtask/src/ci.rs
+@@ -189,6 +189,16 @@ pub fn quick() -> Result<String, String> {
+     ci_report::finish(&root, "quick", steps, started, serde_json::Map::new())
+ }
+ 
++/// Whether `name` is one of [`JOBS`]: checked before `main` takes the run
++/// lock, so a mistyped job never waits.
++pub fn known_job(name: &str) -> Result<(), String> {
++    if JOBS.contains(&name) {
++        Ok(())
++    } else {
++        Err(format!("unknown job {name:?}: {}", JOBS.join(" ")))
++    }
++}
++
+ pub fn job(name: &str) -> Result<String, String> {
+     let root = util::root()?;
+     let started = Instant::now();
+diff --git a/xtask/src/hooks.rs b/xtask/src/hooks.rs
+index 49bbd3156d7a45a6ec333ce457e0aca095a99ba1..d23e0f8b5ab6b5c38d9b3b51bfa7d83b7ad52d95 100644
+--- a/xtask/src/hooks.rs
++++ b/xtask/src/hooks.rs
+@@ -14,7 +14,7 @@ use std::process::{Command, ExitCode, Stdio};
+ 
+ use serde_json::Value;
+ 
+-use crate::{acceptance, util};
++use crate::{acceptance, run_lock, util};
+ 
+ fn stdin_json() -> Value {
+     let mut text = String::new();
+@@ -74,6 +74,7 @@ fn fingerprint(root: &Path) -> String {
+ 
+ /// `Stop`: run `quick` when Rust files changed since the last green run.
+ /// Blocks the stop once (exit 2) on failure; honours `stop_hook_active`.
++/// Never waits for another run's lock: it skips the check and says so.
+ pub fn stop() -> ExitCode {
+     let input = stdin_json();
+     if input["stop_hook_active"] == true {
+@@ -87,17 +88,31 @@ pub fn stop() -> ExitCode {
+     if fs::read_to_string(&stamp).is_ok_and(|s| s == now) {
+         return ExitCode::SUCCESS;
+     }
++    // Behind `ci --job all` a wait for the run lock has no bound, nobody
++    // would see the waiting line, and on the hook's timeout the stop would
++    // go unchecked anyway. So a held lock skips the check: seen here before
++    // cargo starts (its own build lock can wait too), or, if another run
++    // takes it in between, by `quick` itself, which exits `BUSY_EXIT`.
++    let lock = root.join(run_lock::PATH);
++    if let Err(pid) = run_lock::try_acquire(&lock, |_| {}) {
++        return skipped(&lock, pid);
++    }
+     // The working tree's own `quick`, not this prebuilt copy's: a branch may
+     // have changed the check tooling, and only the guard must come from main.
++    // That `quick` takes the run lock; this process must not, or `quick`
++    // would wait for it forever (`run_lock.rs`).
+     let mut cmd = util::cargo(&root);
+-    cmd.args(["xtask", "quick"]);
+-    match util::run_quiet(&root, "stop-quick", &mut cmd) {
+-        Ok(_) => {
++    cmd.args(["xtask", "quick"]).env(run_lock::NO_WAIT, "1");
++    match util::run_quiet_code(&root, "stop-quick", &mut cmd) {
++        (_, Ok(_)) => {
+             let _ = fs::create_dir_all(stamp.parent().expect("has parent"));
+             let _ = fs::write(&stamp, fingerprint(&root));
+             ExitCode::SUCCESS
+         }
+-        Err(summary) => {
++        (Some(code), Err(_)) if code == i32::from(run_lock::BUSY_EXIT) => {
++            skipped(&lock, run_lock::holder(&lock))
++        }
++        (_, Err(summary)) => {
+             eprintln!(
+                 "`cargo xtask quick` failed after your changes:\n{summary}\n\
+                  Fix it, or say in your summary why it is red. Green is required at push."
+@@ -107,6 +122,16 @@ pub fn stop() -> ExitCode {
+     }
+ }
+ 
++/// The Stop hook's one line when another run holds the lock. The stop goes
++/// ahead unchecked, and the next stop checks again.
++fn skipped(lock: &Path, pid: Option<u32>) -> ExitCode {
++    eprintln!(
++        "Stop hook: `cargo xtask quick` not run, so not checked: {}",
++        run_lock::holds(lock, pid)
++    );
++    ExitCode::SUCCESS
++}
++
+ /// `SessionStart`: the rung, its acceptance status and the last CI result.
+ pub fn session_start() -> Result<String, String> {
+     let input = stdin_json();
+diff --git a/xtask/src/main.rs b/xtask/src/main.rs
+index 6a9fdd401a50bcdeef0ac666490b1f2b94e58173..0dc409da5819a062d86d8e76aea06b2e41f0ee2b 100644
+--- a/xtask/src/main.rs
++++ b/xtask/src/main.rs
+@@ -28,6 +28,7 @@ mod hooks;
+ mod oracle;
+ mod push;
+ mod replay;
++mod run_lock;
+ mod selftest;
+ mod selftest_golden;
+ mod shell;
+@@ -65,17 +66,23 @@ fn main() -> ExitCode {
+     if let ["hook", "guard", ..] = args.as_slice() {
+         return guard::main();
+     }
++    // The commands that build into `target/` and run what they built hold
++    // the checkout's run lock, so two sessions' runs queue (`run_lock.rs`).
++    // Arguments are checked first: a usage error never waits.
+     let result = match args.as_slice() {
+-        ["quick"] => ci::quick(),
+-        ["ci", "--job", job] => ci::job(job),
++        ["quick"] => run_lock::run(ci::quick),
++        ["ci", "--job", job] => ci::known_job(job).and_then(|()| run_lock::run(|| ci::job(job))),
+         ["arch-check"] => util::root().and_then(|root| arch::check(&root)),
+         ["size-check"] => util::root().and_then(|root| size::check(&root)),
+         ["docs-check"] => util::root().and_then(|root| docs::check(&root)),
+-        ["replay", rest @ ..] => replay::main(rest),
++        ["replay", rest @ ..] => replay::parse(rest)
++            .and_then(|opts| run_lock::run(|| replay::run(&util::root()?, &opts))),
+         ["compare-hashes", dirs @ ..] if dirs.len() >= 2 => {
+             util::root().and_then(|root| replay::compare_dirs(&root, dirs))
+         }
+-        ["selftest", rest @ ..] => selftest::main(rest),
++        ["selftest", rest @ ..] => {
++            selftest::cases(rest).and_then(|cases| run_lock::run(|| selftest::main(&cases)))
++        }
+         ["acceptance", dir] => util::root().and_then(|root| acceptance::compute(&root, dir)),
+         ["oracle-check", "--base", base, "--head", head] => oracle::check(base, head),
+         ["push", rest @ ..] => push::main(rest),
+diff --git a/xtask/src/replay.rs b/xtask/src/replay.rs
+index e6548fdc161c6ef0b6019f3d8b377c2871ed7077..736c1d732389d41d003968fc0ae9f283631520e7 100644
+--- a/xtask/src/replay.rs
++++ b/xtask/src/replay.rs
+@@ -44,7 +44,8 @@ pub struct Options {
+     pub out: Option<PathBuf>,
+ }
+ 
+-pub fn main(args: &[&str]) -> Result<String, String> {
++/// `cargo xtask replay`'s arguments.
++pub fn parse(args: &[&str]) -> Result<Options, String> {
+     let mut opts = Options::default();
+     let mut it = args.iter();
+     while let Some(arg) = it.next() {
+@@ -57,7 +58,7 @@ pub fn main(args: &[&str]) -> Result<String, String> {
+             other => return Err(format!("replay: unknown argument {other:?}")),
+         }
+     }
+-    run(&util::root()?, &opts)
++    Ok(opts)
+ }
+ 
+ pub fn host_triple(root: &Path) -> Result<String, String> {
+diff --git a/xtask/src/run_lock.rs b/xtask/src/run_lock.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..66034a14309199371d5194f0ffde67b061885564
+--- /dev/null
++++ b/xtask/src/run_lock.rs
+@@ -0,0 +1,199 @@
++//! One xtask run at a time in a checkout (rung 1b, amendment 98).
++//!
++//! Sessions working in one checkout share `target/`. On 2026-11-01 one
++//! session's build replaced `target/debug/game-testbed` while another's
++//! `quick` was running its tests, and `quick` went red for no code reason.
++//! The commands that build into `target/` and run what they built
++//! (`quick`, `ci --job`, `replay` and `selftest`) therefore hold an
++//! exclusive lock on [`PATH`] for their whole run, taken in `main` once
++//! the arguments are known to be good. A second run prints one line naming
++//! the file, and the holder's PID where the platform lets it read the file
++//! (not on Windows), then waits for the first to end. With [`NO_WAIT`] set
++//! it exits [`BUSY_EXIT`] instead; the Stop hook (`hooks.rs`) never waits.
++//! A plain `cargo` command takes no lock and can still replace a binary
++//! under a running xtask.
++//!
++//! The lock is the operating system's (`File::lock`: `flock` on Unix,
++//! `LockFileEx` on Windows) and belongs to the open file, so it ends with
++//! the process, however the process ends: a return, a failed step, a
++//! panic, Ctrl-C or a kill. It cannot go stale. The file stays behind and
++//! holds no lock; a PID a killed run left in it is only ever printed.
++//! std opens files close-on-exec (not inheritable on Windows), so the
++//! cargo and testbed processes a run starts never hold the lock.
++//!
++//! Two opens of the file conflict even within one process, so an xtask
++//! that a holder starts and that locks too would wait for itself forever.
++//! `util::cargo` therefore passes the held lock on in [`HELD_BY`], and a
++//! run that finds its own lock there fails at once. The Stop hook takes no
++//! lock for the same reason: the `cargo xtask quick` it starts does.
++
++use std::ffi::OsStr;
++use std::fs::{self, File, OpenOptions, TryLockError};
++use std::io::{self, Seek, Write};
++use std::path::{Path, PathBuf};
++use std::sync::OnceLock;
++
++use crate::util;
++
++/// The lock file, under the repo root.
++pub const PATH: &str = "target/xtask/run.lock";
++
++/// Set (to anything) for a run that must not wait: the Stop hook's `quick`.
++pub const NO_WAIT: &str = "ENG_XTASK_NO_WAIT";
++
++/// The exit code of a run that found the lock held and, under [`NO_WAIT`],
++/// did not wait (`EX_TEMPFAIL`).
++pub const BUSY_EXIT: u8 = 75;
++
++/// The lock file of the run that started this process, set by
++/// `util::cargo` for every cargo command a holder runs.
++pub const HELD_BY: &str = "ENG_XTASK_LOCK_HELD";
++
++/// The lock this process holds through [`run`]; `main` exits once `run`
++/// returns, so it is never set for longer than the lock is held.
++static HOLDING: OnceLock<PathBuf> = OnceLock::new();
++
++/// The lock file this process holds through [`run`], if any.
++pub fn holding() -> Option<&'static Path> {
++    HOLDING.get().map(PathBuf::as_path)
++}
++
++/// `f` under the lock of the checkout around the current directory, with
++/// the waiting line on stderr. Under [`NO_WAIT`] a held lock ends the
++/// process with [`BUSY_EXIT`] instead of waiting.
++pub fn run(f: impl FnOnce() -> Result<String, String>) -> Result<String, String> {
++    let path = util::root()?.join(PATH);
++    if let Some(error) = nested(std::env::var_os(HELD_BY).as_deref(), &path) {
++        return Err(error);
++    }
++    let say = |line: &str| eprintln!("{line}");
++    let held = if std::env::var_os(NO_WAIT).is_some() {
++        try_acquire(&path, say).unwrap_or_else(|pid| {
++            eprintln!("not waiting ({NO_WAIT} is set): {}", holds(&path, pid));
++            std::process::exit(BUSY_EXIT.into())
++        })
++    } else {
++        acquire(&path, say)
++    };
++    if held.0.is_some() {
++        let _ = HOLDING.set(path);
++    }
++    hold(held, f)
++}
++
++/// `f` while `held` is held, released when `f` returns or panics.
++pub fn hold<T>(held: Held, f: impl FnOnce() -> T) -> T {
++    let _held = held;
++    f()
++}
++
++/// The lock on a file, released when dropped; `None` if it could not be
++/// taken.
++pub struct Held(Option<File>);
++
++impl Held {
++    /// Writes this process's PID into the locked file. Best effort: the PID
++    /// only names the holder in another run's line.
++    fn new(mut file: File) -> Self {
++        let _ = file
++            .set_len(0)
++            .and_then(|()| file.rewind())
++            .and_then(|()| writeln!(file, "{}", std::process::id()));
++        Held(Some(file))
++    }
++}
++
++impl Drop for Held {
++    fn drop(&mut self) {
++        if let Some(file) = &self.0 {
++            // Clear the PID, so that no later waiter names this process.
++            // Closing the file releases the lock even if `unlock` fails.
++            let _ = file.set_len(0);
++            let _ = file.unlock();
++        }
++    }
++}
++
++/// Takes the lock on `path`, creating the file and its directory, and
++/// waits while another holder has it. `say` gets the line to print if
++/// another holder must end first, or if the lock cannot be taken here at
++/// all; then the run goes ahead without it, as every run did before the
++/// lock existed.
++pub fn acquire(path: &Path, mut say: impl FnMut(&str)) -> Held {
++    let pid = match try_acquire(path, &mut say) {
++        Ok(held) => return held,
++        Err(pid) => pid,
++    };
++    say(&format!("waiting: {}", holds(path, pid)));
++    match open(path).and_then(|file| file.lock().map(|()| file)) {
++        Ok(file) => Held::new(file),
++        Err(e) => unavailable(path, &e, &mut say),
++    }
++}
++
++/// [`acquire`] without waiting: `Err` with the holder's PID, where the
++/// platform lets it be read, if another holder has the lock.
++pub fn try_acquire(path: &Path, mut say: impl FnMut(&str)) -> Result<Held, Option<u32>> {
++    let file = match open(path) {
++        Ok(file) => file,
++        Err(e) => return Ok(unavailable(path, &e, &mut say)),
++    };
++    match file.try_lock() {
++        Ok(()) => Ok(Held::new(file)),
++        Err(TryLockError::WouldBlock) => Err(holder(path)),
++        Err(TryLockError::Error(e)) => Ok(unavailable(path, &e, &mut say)),
++    }
++}
++
++fn open(path: &Path) -> io::Result<File> {
++    if let Some(dir) = path.parent() {
++        fs::create_dir_all(dir)?;
++    }
++    // Not truncated on open: the holder's PID stays until the lock is ours.
++    OpenOptions::new()
++        .read(true)
++        .write(true)
++        .create(true)
++        .truncate(false)
++        .open(path)
++}
++
++/// No lock here (a file system without locks, a `target/` that cannot be
++/// written): say so and run without it.
++fn unavailable(path: &Path, e: &io::Error, say: &mut impl FnMut(&str)) -> Held {
++    say(&format!(
++        "cannot lock {} ({e}); running without the lock",
++        path.display()
++    ));
++    Held(None)
++}
++
++/// The PID in the lock file, if it holds one. Windows refuses to read a
++/// file that another handle has locked, so there it is `None` while held.
++pub fn holder(path: &Path) -> Option<u32> {
++    fs::read_to_string(path).ok()?.trim().parse().ok()
++}
++
++/// Who holds the lock on `path`, for the one line a run prints.
++pub fn holds(path: &Path, pid: Option<u32>) -> String {
++    match pid {
++        Some(pid) => format!("another xtask run (pid {pid}) holds {}", path.display()),
++        None => format!("another xtask run holds {}", path.display()),
++    }
++}
++
++/// The error for a run whose lock `path` is `marker`, the lock of the run
++/// that started it ([`HELD_BY`]): waiting for its parent would never end.
++pub fn nested(marker: Option<&OsStr>, path: &Path) -> Option<String> {
++    (Path::new(marker?) == path).then(|| {
++        format!(
++            "[E-LOCK-NESTED] the xtask run that started this one holds {}, so this one \
++             would wait for it forever; call the step's function instead",
++            path.display()
++        )
++    })
++}
++
++#[cfg(test)]
++#[path = "run_lock_tests.rs"]
++mod tests;
+diff --git a/xtask/src/run_lock_tests.rs b/xtask/src/run_lock_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..f5b46d94c9eaea0798474b37abf64c0e8ad498da
+--- /dev/null
++++ b/xtask/src/run_lock_tests.rs
+@@ -0,0 +1,238 @@
++//! Tests for the run lock (amendment 98). Each uses a lock file of its own
++//! under the system's temp directory, never the checkout's: `quick` runs
++//! these tests while it holds that one.
++
++use std::fs::{self, OpenOptions, TryLockError};
++use std::panic;
++use std::path::{Path, PathBuf};
++use std::sync::atomic::{AtomicBool, Ordering};
++use std::sync::{Arc, mpsc};
++use std::thread;
++
++use std::ffi::OsStr;
++
++use super::{acquire, hold, holder, holds, nested, try_acquire};
++
++/// A lock path of the test's own, in a directory that does not exist yet.
++fn scratch(name: &str) -> PathBuf {
++    let dir = std::env::temp_dir().join(format!("xtask-run-lock-{}-{name}", std::process::id()));
++    let _ = fs::remove_dir_all(&dir);
++    dir.join("xtask").join("run.lock")
++}
++
++/// Whether another open of `path` could take the lock right now.
++fn is_free(path: &Path) -> bool {
++    let file = OpenOptions::new()
++        .read(true)
++        .write(true)
++        .open(path)
++        .expect("the lock file exists");
++    match file.try_lock() {
++        Ok(()) => true,
++        Err(TryLockError::WouldBlock) => false,
++        Err(TryLockError::Error(e)) => panic!("try_lock {}: {e}", path.display()),
++    }
++}
++
++/// The scratch directory `path` sits two levels below.
++fn clean(path: &Path) {
++    let _ = fs::remove_dir_all(path.parent().and_then(Path::parent).expect("scratch"));
++}
++
++#[test]
++fn the_line_names_the_file_and_the_holder() {
++    let path = Path::new("target/xtask/run.lock");
++    assert_eq!(
++        holds(path, Some(42)),
++        "another xtask run (pid 42) holds target/xtask/run.lock"
++    );
++    assert_eq!(
++        holds(path, None),
++        "another xtask run holds target/xtask/run.lock"
++    );
++}
++
++/// Two holders in one process: the second says once that it waits, and
++/// runs only after the first lets go. No sleeps: the second's line arrives
++/// only once it has found the lock taken.
++#[test]
++fn a_second_holder_waits_for_the_first() {
++    let path = scratch("two");
++    let first = acquire(&path, |line| panic!("the lock was free: {line}"));
++    let released = Arc::new(AtomicBool::new(false));
++    let (said, heard) = mpsc::channel();
++    let second = thread::spawn({
++        let (path, released) = (path.clone(), Arc::clone(&released));
++        move || {
++            let say = |line: &str| said.send(line.to_string()).expect("the test listens");
++            hold(acquire(&path, say), || released.load(Ordering::SeqCst))
++        }
++    });
++    let line = heard.recv().expect("the second holder says it waits");
++    // Windows refuses to read a locked file, so only Unix names the PID.
++    let pid = cfg!(unix).then(std::process::id);
++    assert_eq!(line, format!("waiting: {}", holds(&path, pid)));
++    assert!(!is_free(&path), "the first still holds it");
++    released.store(true, Ordering::SeqCst);
++    drop(first);
++    let ran_after = second.join().expect("the second holder did not panic");
++    assert!(ran_after, "the second ran before the first let go");
++    assert!(heard.try_recv().is_err(), "more than one waiting line");
++    assert!(is_free(&path), "the second let go too");
++    clean(&path);
++}
++
++/// What the Stop hook's `quick` uses: a held lock is reported at once,
++/// never waited for, and a free one is taken.
++#[test]
++fn try_acquire_never_waits() {
++    let path = scratch("try");
++    let first = try_acquire(&path, |line| panic!("unexpected: {line}"));
++    assert!(first.is_ok(), "the lock was free");
++    let busy = try_acquire(&path, |line| panic!("unexpected: {line}"));
++    let pid = cfg!(unix).then(std::process::id);
++    assert_eq!(busy.err(), Some(pid), "a held lock, and its holder");
++    drop(first);
++    let again = try_acquire(&path, |line| panic!("unexpected: {line}"));
++    assert!(again.is_ok(), "free again once the first let go");
++    drop(again);
++    clean(&path);
++}
++
++/// An xtask started by a run that holds the same lock fails at once; one
++/// under another checkout's run, or under none, goes ahead.
++#[test]
++fn only_a_run_under_its_own_lock_is_nested() {
++    let path = Path::new("/repo/target/xtask/run.lock");
++    assert_eq!(nested(None, path), None);
++    let other = OsStr::new("/other/target/xtask/run.lock");
++    assert_eq!(nested(Some(other), path), None);
++    let error = nested(Some(path.as_os_str()), path).expect("nested");
++    assert!(
++        error.starts_with("[E-LOCK-NESTED]") && error.contains(&path.display().to_string()),
++        "{error}"
++    );
++}
++
++#[test]
++fn the_lock_is_held_while_the_closure_runs_and_free_after_it_returns() {
++    let path = scratch("returns");
++    let held = acquire(&path, |line| panic!("the lock was free: {line}"));
++    let (free, pid) = hold(held, || (is_free(&path), holder(&path)));
++    assert!(!free, "the lock is held while the closure runs");
++    assert!(is_free(&path), "and free once it returns");
++    #[cfg(unix)]
++    {
++        assert_eq!(pid, Some(std::process::id()), "the file names the holder");
++        assert_eq!(holder(&path), None, "and is cleared when it lets go");
++    }
++    #[cfg(not(unix))]
++    let _ = pid;
++    clean(&path);
++}
++
++/// Closing the file would release the lock without `Held`'s `Drop`; the
++/// PID cleared shows that `Drop` ran on the way out of the panic.
++#[test]
++fn the_lock_is_free_after_the_closure_panics() {
++    let path = scratch("panics");
++    let caught = panic::catch_unwind(|| {
++        hold::<()>(acquire(&path, |_| {}), || {
++            assert!(!is_free(&path), "held inside");
++            panic!("a step panicked")
++        })
++    });
++    assert!(caught.is_err(), "the panic reaches the caller");
++    assert!(is_free(&path), "and the lock is released on the way out");
++    #[cfg(unix)]
++    assert_eq!(
++        holder(&path),
++        None,
++        "by `Held`'s `Drop`, which clears the PID"
++    );
++    clean(&path);
++}
++
++/// Where the lock file cannot be made (here: a file stands where its
++/// directory goes), the run goes ahead unlocked, as before amendment 98,
++/// and says so. A file system without locks takes the same way out of
++/// `try_lock`, which this test cannot make fail.
++#[test]
++fn a_lock_file_that_cannot_be_made_says_so_and_runs_anyway() {
++    let path = scratch("blocked");
++    let dir = path.parent().expect("has a directory");
++    fs::create_dir_all(dir.parent().expect("scratch")).expect("scratch directory");
++    fs::write(dir, "not a directory").expect("blocking file");
++    let mut said = Vec::new();
++    let held = acquire(&path, |line| said.push(line.to_string()));
++    let ran = hold(held, || true);
++    assert!(ran, "the closure ran");
++    assert_eq!(said.len(), 1, "{said:?}");
++    assert!(
++        said[0].starts_with(&format!("cannot lock {}", path.display()))
++            && said[0].ends_with("running without the lock"),
++        "{said:?}"
++    );
++    let _ = fs::remove_dir_all(dir.parent().expect("scratch"));
++}
++
++/// The lock file, for the child process of `a_killed_holder_leaves_no_stale_lock`.
++#[cfg(unix)]
++const CHILD_LOCK: &str = "XTASK_RUN_LOCK_TEST_CHILD";
++/// What that child prints once it holds the lock.
++#[cfg(unix)]
++const CHILD_HELD: &str = "run-lock-test: held";
++
++/// A holder killed in the middle of its run leaves no stale lock: the OS
++/// releases it with the process. Its PID stays in the file, where only a
++/// waiting line would read it. Unix only: Windows releases a dead
++/// process's locks too, but documents no bound on when.
++#[cfg(unix)]
++#[test]
++fn a_killed_holder_leaves_no_stale_lock() {
++    use std::io::{BufRead, BufReader};
++    use std::process::{Command, Stdio};
++
++    let path = scratch("killed");
++    let mut child = Command::new(std::env::current_exe().expect("the test binary"))
++        .args(["--exact", "run_lock::tests::child_holds_the_lock"])
++        .args(["--ignored", "--nocapture"])
++        .env(CHILD_LOCK, &path)
++        .stdin(Stdio::piped())
++        .stdout(Stdio::piped())
++        .stderr(Stdio::null())
++        .spawn()
++        .expect("the test binary starts");
++    let mut lines = BufReader::new(child.stdout.take().expect("piped")).lines();
++    let held = lines
++        .by_ref()
++        .map_while(Result::ok)
++        .any(|line| line.contains(CHILD_HELD));
++    assert!(held, "the child never said it holds the lock");
++    assert!(!is_free(&path), "the child holds it");
++    assert_eq!(holder(&path), Some(child.id()));
++    child.kill().expect("kill the child");
++    child.wait().expect("reap the child");
++    assert!(is_free(&path), "the lock went with the killed process");
++    assert_eq!(holder(&path), Some(child.id()), "its PID stays behind");
++    drop(lines);
++    clean(&path);
++}
++
++/// Run by `a_killed_holder_leaves_no_stale_lock` in a child process; does
++/// nothing without `CHILD_LOCK`.
++#[cfg(unix)]
++#[test]
++#[ignore = "a helper: a_killed_holder_leaves_no_stale_lock runs it in a child process"]
++fn child_holds_the_lock() {
++    use std::io::{Read, Write};
++
++    let Some(path) = std::env::var_os(CHILD_LOCK) else {
++        return;
++    };
++    let _held = acquire(Path::new(&path), |line| panic!("{line}"));
++    println!("\n{CHILD_HELD}");
++    let _ = std::io::stdout().flush();
++    // Held until killed, or until the parent's end of stdin closes.
++    let _ = std::io::stdin().read_to_end(&mut Vec::new());
++}
+diff --git a/xtask/src/selftest.rs b/xtask/src/selftest.rs
+index 06c9d779ff94ec635321d231a4ef5e2f43c040f0..32aa2b97e9b13cc019471a7b1e901cd385f60699 100644
+--- a/xtask/src/selftest.rs
++++ b/xtask/src/selftest.rs
+@@ -48,17 +48,21 @@ pub const CASES: [&str; 22] = [
+     "golden-edit",
+ ];
+ 
++/// The cases `cargo xtask selftest [CASE]` names: all with no argument.
++pub fn cases<'a>(args: &[&'a str]) -> Result<Vec<&'a str>, String> {
++    match args {
++        [] => Ok(CASES.to_vec()),
++        [case] if CASES.contains(case) => Ok(vec![*case]),
++        _ => Err(format!("selftest cases: {}", CASES.join(" "))),
++    }
++}
++
+ /// `cargo xtask selftest [CASE]`: one line per case, then the counts.
+-pub fn main(args: &[&str]) -> Result<String, String> {
++pub fn main(cases: &[&str]) -> Result<String, String> {
+     let root = util::root()?;
+-    let cases: Vec<&str> = match args {
+-        [] => CASES.to_vec(),
+-        [case] if CASES.contains(case) => vec![*case],
+-        _ => return Err(format!("selftest cases: {}", CASES.join(" "))),
+-    };
+     let strict = strict();
+     let mut outcomes = Vec::new();
+-    for case in cases {
++    for &case in cases {
+         let name = format!("violation:{case}");
+         let started = Instant::now();
+         let result = outcome(run_case(&root, case), strict);
+diff --git a/xtask/src/util.rs b/xtask/src/util.rs
+index c5cddc10b9bee2d833292e27e554b04f4514499b..1fbc3ec1b4779b508d24332d4cdbeabe94afd74b 100644
+--- a/xtask/src/util.rs
++++ b/xtask/src/util.rs
+@@ -32,6 +32,11 @@ pub fn cargo(root: &Path) -> Command {
+     let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+     cmd.current_dir(root);
+     cmd.envs(crate::stamp::vars(root).iter().map(|(k, v)| (k, v)));
++    // An xtask started below a run that holds the lock fails at once
++    // instead of waiting for it (`run_lock.rs`).
++    if let Some(lock) = crate::run_lock::holding() {
++        cmd.env(crate::run_lock::HELD_BY, lock);
++    }
+     cmd
+ }
+ 
+@@ -39,17 +44,28 @@ pub fn cargo(root: &Path) -> Command {
+ /// returns its stdout. The full output goes to
+ /// `target/agent-logs/xtask-<name>.log`.
+ pub fn run_quiet(root: &Path, name: &str, cmd: &mut Command) -> Result<String, String> {
++    run_quiet_code(root, name, cmd).1
++}
++
++/// [`run_quiet`], with the exit code: `None` if `cmd` did not start or a
++/// signal ended it.
++pub fn run_quiet_code(
++    root: &Path,
++    name: &str,
++    cmd: &mut Command,
++) -> (Option<i32>, Result<String, String>) {
+     let shown = format!("{cmd:?}");
+-    let out = cmd
+-        .output()
+-        .map_err(|e| format!("cannot start {shown}: {e}"))?;
++    let out = match cmd.output() {
++        Ok(out) => out,
++        Err(e) => return (None, Err(format!("cannot start {shown}: {e}"))),
++    };
+     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+     let text = format!("{stdout}{}", String::from_utf8_lossy(&out.stderr));
+     let log_dir = root.join("target/agent-logs");
+     let _ = fs::create_dir_all(&log_dir);
+     let log = log_dir.join(format!("xtask-{}.log", name.replace([' ', ':', '/'], "-")));
+     let _ = fs::write(&log, format!("$ {shown}\n{text}"));
+-    if out.status.success() {
++    let result = if out.status.success() {
+         Ok(stdout)
+     } else {
+         Err(format!(
+@@ -59,7 +75,8 @@ pub fn run_quiet(root: &Path, name: &str, cmd: &mut Command) -> Result<String, S
+             log.display(),
+             tail(&text, 30)
+         ))
+-    }
++    };
++    (out.status.code(), result)
+ }
+ 
+ pub fn tail(text: &str, lines: usize) -> String {

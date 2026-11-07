@@ -10,8 +10,8 @@
 - **Status:** draft for the owner's first sitting. The four pre-approval
   queue items have landed on `main` (commits in `docs/rungs/2/PROGRESS.md`).
   Sitting 1 waits for three planning tasks ("Before the first sitting"):
-  T0a, the ADR drafts ADR-0020 to ADR-0024, is in progress and not yet in
-  `docs/adr/`; T0 and T0b, the G2 and G3 patches, are not started. They write
+  T0a, ADR-0020 to ADR-0024, is drafted in `docs/adr/` (uncommitted) and
+  under review; T0 and T0b, the G2 and G3 patches, are not started. They write
   only ADR drafts and patch files.
 - **Spec:** the rung 2 row of section 9 of
   `docs/superpowers/specs/2026-10-20-ai-built-engine-design.md`, with 6.1-6.3
@@ -77,9 +77,9 @@ new behaviour comes through new types, functions and keys beside them.
 | `SimConfig`'s fields, `SimBuilder::new` | `eng-session/tests/hash_equality.rs:48`, `game-testbed/tests/twin.rs:213` |
 | `GameDef`'s fields, `PlayRun::start`, `eng_app::play_on` | `twin.rs:33` (a `GameDef` literal), `twin.rs:76,84` |
 | `Welcome`'s fields (no wire change in rung 2) | `eng-net-wire/tests/never_panic.rs:44`, `tests/golden.rs` |
-| `Control`'s methods; new ones have default bodies | `impl Control` in `twin.rs:354` and `eng-platform-headless/tests/conformance.rs:227,258` |
+| `Control`'s methods; new ones have default bodies | `twin.rs:354` (`LateClock`, a test platform's own `Control`) and the wrappers in `eng-platform-headless/tests/conformance.rs:227,258`; the unprotected `eng-platform-api/tests/window.rs` implements `Control` and `Window` too |
 | `--version --json`: its top-level and `sim` keys, `sim.protocol` equal to dot-square's stream, and `formats` exactly (`recording: 1`, `hash_stream: 1`, no new file) | `game-testbed/tests/version.rs:292`, `:321`, `:323-325`, `:373`, `:379` |
-| `Graph::new`, `Graph::fixed`, `PassDecl { name, reads, writes }`; the `FullscreenDesc` and `InstancedDesc` literals; `Targets::new(gpu, 16, 8)`; `Graph::render(gpu, &targets, &mut [&mut dyn Pass])`; the `Pass` trait as an outside `impl` sees it; `PassRecorder::{clear, fullscreen, instanced}` | `eng-gpu/tests/counters.rs:11-15`, `:32-58`, `:83-108`, `:181-187` (`Graph::new(&[DRAW, TONEMAP, AGAIN])`: two writers of `Output`) |
+| `Graph::new`, `Graph::fixed`, `PassDecl { name, reads, writes }`; the `FullscreenDesc` and `InstancedDesc` literals; `Targets::new(gpu, 16, 8)`; `Graph::render(gpu, &targets, &mut [&mut dyn Pass])`; the `Pass` trait as an outside `impl` sees it; `PassRecorder::{clear, fullscreen, instanced}`; `FrameCounters`' fields, built by literal | `eng-gpu/tests/counters.rs:11-15`, `:32-58`, `:83-108`, `:140, 166, 199, 223`, `:181-187` (`Graph::new(&[DRAW, TONEMAP, AGAIN])`: two writers of `Output`) |
 | A shot report's `gpu.per_frame` exactly, `tier: 0`, the five capability names; the budgets parser accepting the test's own `[gpu]` literal | `game-testbed/tests/shot_video.rs:22-25` (its `BUDGETS`), `:301`, `:305-313`, `:323-324` |
 
 ## What already exists (do not rebuild)
@@ -105,7 +105,7 @@ Layers are `architecture.toml`'s. The exact entries are gate G2.
 
 | Crate | Proposed layer and edges | What it does in rung 2 | From |
 |---|---|---|---|
-| `eng-collision-grid` | `L2`, core, `same_layer = ["eng-collision-api"]`; `game-testbed-sim` gains it in its `same_layer` | Level 1's collision: a uniform grid over static primitives (vertical wall segments with a z range, horizontal convex slabs for floors, ceilings and steps), deterministic sweeps of a `BoxHull` that stop at exact contact (ADR-0024). It implements `CollisionWorld` and passes `eng-collision-api`'s conformance suite. Built once from sim data (decision 1) | spec 6.1, 6.11, 9 |
+| `eng-collision-grid` | `L2`, core, `same_layer = ["eng-collision-api"]`; `game-testbed-sim` gains it in its `same_layer` | Level 1's collision: a uniform grid over static primitives (vertical wall segments with a z range, horizontal convex slabs for floors, ceilings and steps), deterministic sweeps of a `BoxHull` that end in contact (ADR-0024: exactly on axis faces, within `CONTACT_GAP` off the axes). It implements `CollisionWorld` and passes `eng-collision-api`'s conformance suite. Built once from sim data (decision 1) | spec 6.1, 6.11, 9 |
 | `game-testbed-client` | `game`; `game-testbed` gains `same_layer = ["game-testbed-client"]` | The testbed's presentation: the top-down extraction (moved, unchanged), the first-person extraction, region looks, textures and sprites made by code, the plain-text palette | spec 6.1 (games row); rung 1b difference 6 |
 | `eng-platform-gcmouse` | `L1`, std; `eng-platform-winit` gains it in its `same_layer` | macOS only: raw mouse deltas from GCMouse, summed for the winit platform to drain each frame, and a count of its callbacks. Empty elsewhere. The engine's only `unsafe` code (decision 11, O3) | spec 6.10 (the shim); its own crate: proposal |
 | `eng-bench` | `tool` | gungraun benchmarks: the dot and room sim steps, grid traces, `ground_move`. gungraun is a Linux-only dev-dependency; elsewhere each bench is an empty `main` | spec 6.1 (tools row), 6.13 |
@@ -116,7 +116,7 @@ Layers are `architecture.toml`'s. The exact entries are gate G2.
 |---|---|---|
 | `eng-gpu` | A running pass with several colour targets and a depth target; `Format` widened (decision 5); textures, a per-frame uniform, the scene layout (decision 6); per-pass GPU times (O11). `Graph::new`, `Graph::fixed` and `PassDecl` stay | spec 6.7 + proposal |
 | `eng-render` | First-person opaque, sprite, light, sky, fog, tone-map and palette passes (the `render-retro` pipeline, as modules of this crate); the top-down view unchanged | spec 6.1, 6.7 |
-| `eng-collision-api` | The contract promises that a trace stops at exact contact, and the conformance suite checks it (ADR-0024) | spec 6.11; rule 6 |
+| `eng-collision-api` | The contract promises that a blocked trace ends in contact: exactly on an axis face, within `CONTACT_GAP` off the axes; the conformance suite checks it (ADR-0024) | spec 6.11; rule 6 |
 | `eng-platform-api`, `-headless`, `-winit` | Cursor lock and borderless fullscreen as new `Control` methods, and `Window::refresh_rate`, all with default bodies, and a separate conformance suite; winit maps mouse motion, buttons and wheel; macOS motion from the shim | spec 6.10; rule 6 (ADR-0022) |
 | `eng-ecs`, `eng-sim` | Constant resources outside the per-tick state and snapshots, and `Sim::sim_data_hash` (decision 1) | spec 6.11 + proposal |
 | `eng-cli`, `eng-app` | `GameMaps` and new entry points beside `GameDef`; `--map`, `--view`, first-person `shot`, `video` and `play`; the map and sim data in recordings, hash-stream headers and reports; display-paced frames; cursor and fullscreen | spec 6.6, 6.10, 6.11, 7.1 |
@@ -213,19 +213,27 @@ passes, all on by default. No new exit code.
      and the version of each file the probe read (new keys within report
      v2), and each file's reader checks its own `version` field strictly.
    - **The wire.** `Welcome` does not change. Over Memory the probe builds
-     server and client from one map; another map's snapshot fails on its
-     schemas. Sim data between machines is rung 5's handshake (6.8). The
+     server and client from one map. A client built from another map has
+     another simulation protocol, and the handshake denies it first
+     (`DenyReason::SIM_PROTOCOL`, `eng-session/src/server.rs:182`). Sim data
+     between machines is rung 5's handshake (6.8). The
      alternative, replacing the dot room, is O2.
 2. **Collision** *[spec 6.11 + proposal; ADR-0024]*. 1 m grid cells,
    visited in cell order, then primitive index; ties between hits go to the
    lower index. Sweeps are deterministic (f64, IEEE basic operations only): a
    box against a wall segment is a 2D separating-axis sweep plus the
    segment's z range, against a slab a z sweep inside its polygon.
-   - **Exact contact.** `ground_move` decides "on the ground" with a
-     `GROUND_PROBE` (1/1024 m) trace down, so it needs a trace to stop at
-     exact contact. The contract does not promise that today. ADR-0024 adds
-     the promise and a conformance check, with migration notes: `BoxRoom`
-     already stops there, and the grid must.
+   - **Contact** (ADR-0024). `ground_move` decides "on the ground" with a
+     `GROUND_PROBE` (1/1024 m) trace down, so a blocked trace must end in
+     contact, which the contract does not promise today. f64 can hold
+     contact exactly only against a face square to an axis.
+     - **On an axis**, the trace ends exactly on the boundary that the
+       world's own `overlaps` uses.
+     - **Off the axes** (the grid supports such walls), it ends within a
+       new contract constant, `CONTACT_GAP` (2^-20 m proposed, a thousandth
+       of `GROUND_PROBE`).
+     - `conformance::check` gains the rule, with migration notes: `BoxRoom`
+       already meets it, and the grid must.
    - `BoxRoom` and the grid are the contract's two implementations. A
      brute-force oracle in the tests (every primitive, no grid) must give the
      same `Trace` bits (O4: parry3d instead).
@@ -319,15 +327,16 @@ passes, all on by default. No new exit code.
 10. **Window and frames** *[spec 6.6, 6.10 + proposal; O9]*.
     - First-person maps open borderless fullscreen, with `--windowed` for
       tests. `dots` keeps 1b's window, which the protected `play.rs` runs.
-      The cursor is locked (Confined where Locked is missing: Windows, X11)
-      and hidden while focused, and released on focus loss.
+      The cursor is locked (Confined where Locked is missing, which in winit
+      0.30.13 is X11 only) and hidden while focused, and released on focus
+      loss.
     - **The contract change** (ADR-0022, rule 6) adds cursor and fullscreen
       requests to `Control`, and `refresh_rate()` to `Window`. Its
       **migration notes**:
       - each new method has a default body (doing nothing, or `None` for the
         refresh rate), so every `impl Control` and `impl Window` compiles
-        unchanged, including the wrappers in `twin.rs` and the headless
-        conformance test;
+        unchanged: `twin.rs`'s `LateClock`, the headless conformance test's
+        wrappers, and the unprotected `tests/window.rs`;
       - winit and headless override them; headless records the requests, and
         winit reads the refresh rate from the window's monitor;
       - a wrapper that does not forward a request drops it, so the new rules
@@ -536,7 +545,7 @@ mutation testing, (12) the owner plays (touchpoint 1).
 |---|---|---|---|---|
 | 1 | `room-window` | `play --map room --windowed --ticks 600 --seed 1 --input room-walk.input.toml --hashes h.txt` presents first-person frames in a real window, and `h.txt` equals `hashes/room-walk.seed1.txt` | native x5: window-room | 1 |
 | 2 | `replay-cross-platform` | As 1b's criterion 7, now with the room scenarios. The five dot streams are unchanged (unless O12's fix-now answer changes them, regenerated with the owner's approval); the room streams are identical on every target, sim-data hash included | test x2, riscv, native x5: replay; summary: compare-hashes | 1, 2 |
-| 3 | `collision-grid` | The grid passes the collision conformance suite, exact contact included (ADR-0024), and gives the brute-force oracle's `Trace` bits on proptest maps and sweeps | test x64, arm64: collision; riscv: core-tests | 2 |
+| 3 | `collision-grid` | The grid passes the collision conformance suite with ADR-0024's contact rule (exact on axis faces, within `CONTACT_GAP` off the axes), and gives the brute-force oracle's `Trace` bits on proptest maps and sweeps | test x64, arm64: collision; riscv: core-tests | 2 |
 | 4 | `ground-movement` | Q2's tests (steps up to 0.4 m climb and 0.41 m blocks, snapping, gravity only in the air, no slope climbing, never inside solid), and its flat-ground proptest over the grid | test x64, arm64: movement; riscv: core-tests | 2 |
 | 5 | `sim-data` | The room's snapshot fits 1,200 bytes; sim data is outside the state, its hash and snapshots; `sim_data_hash` is in recordings, reports and the room's hash-stream header and changes with the room's data only; the dot map's is 0 | test x64, arm64: sim-data | 1, 2 |
 | 6 | `render-graph` | Q1's oracles: any declaration order gives one graph or one error; culling, bypass, continues and pooling as ADR-0019 says; labels set. `Graph::new`, `Graph::fixed` and 1b's counters unchanged | test x64: render-graph (`graph_order`, `graph_errors`, `pool`, `bypass`); native x5: tests (`bypass_render`, `transients`) | 3 |
@@ -574,7 +583,7 @@ shots' SHA-256s still begin `c6cb0547eb48a67e`, `bd264452cd2f5ef4`,
 | Item | Built | Picked up by |
 |---|---|---|
 | Q1 (T1), `eng-gpu` | `Graph::sorted` and the rest of decision 5, in "What already exists"; ADR-0019 | T8 (several writes, `Format`, timestamps); G4 (ADR-0019); G5 (protect its tests) |
-| Q2 (T2), `kit-fps` | `ground_move` and decision 3. Its review found a slope-climbing blocker (air control plus an unchecked stepped move), fixed to the decision as written | T5 (exact contact, flat-ground proptest over the grid), T7, O12, O13 |
+| Q2 (T2), `kit-fps` | `ground_move` and decision 3. Its review found a slope-climbing blocker (air control plus an unchecked stepped move), fixed to the decision as written | T5 (contact, flat-ground proptest over the grid), T7, O12, O13 |
 | Q3 (T3), `eng-input` | `LookSettings` and `MouseLook`, decision 9 | T15 (live angles, `--sensitivity`, pitch limit); G5 |
 | Q4 (T4), `eng-render` | Camera, sprite rotations, palette LUT and Bayer matrix | T9 (near distance), T10 (LUT indexing), T11; G5 |
 
@@ -584,13 +593,13 @@ Three planning tasks, so that every gate of the first sitting has its inputs
 ready; sitting 1 waits until all three are done. Like the queue, they change
 no protected path on `main`: they commit ADR drafts (`docs/adr/` is not
 protected) and patch files under `docs/rungs/2/patches/`, tested in a
-scratch clone. **State at 46aa0e3:** T0a is in progress (its ADRs are being
-drafted; none is in `docs/adr/` yet); T0 and T0b are not started.
+scratch clone. **State now:** T0a is drafted (ADR-0020 to ADR-0024 in
+`docs/adr/`, uncommitted) and under review; T0 and T0b are not started.
 
 | Task | Builds | Done when |
 |---|---|---|
 | T0 | The G2 patch: skeletons of the four crates (crate roots with the required attributes, `Cargo.toml` with `[lints] workspace = true`), their `architecture.toml` entries and new edges, and `overflow-checks` for `eng-collision-grid`, in one commit's worth, since `arch-check` fails on a listed crate that does not exist as on one not listed (1b's T0). The shim crate's lines are a separate patch, so O3's other answers apply without it | `quick` green in a scratch clone with the patch applied, with and without the shim patch |
-| T0a (in progress) | ADR drafts, all "Proposed": ADR-0020 (the first-person passes and the GPU scene layout, decision 6; it also records difference 1, the palette after the tone map and the k×k upscale in `present`, amending ADR-0003 and ADR-0017); ADR-0021 (`unsafe` in the shim, decision 11); ADR-0022 (the platform contract: `Control`'s requests and `Window::refresh_rate`, with decision 10's migration notes); ADR-0023 (maps and sim data, decision 1); ADR-0024 (traces stop at exact contact, decision 2, with migration notes); and the ADR index | `docs-check` and `typos` pass; each names what it amends and how it migrates; a fresh `reviewer` reads them against this plan |
+| T0a (drafted, under review) | ADR drafts, all "Proposed": ADR-0020 (the first-person passes and the GPU scene layout, decision 6; it also records difference 1, the palette after the tone map and the k×k upscale in `present`, amending ADR-0003 and ADR-0017); ADR-0021 (`unsafe` in the shim, decision 11); ADR-0022 (the platform contract: `Control`'s requests and `Window::refresh_rate`, with decision 10's migration notes); ADR-0023 (maps and sim data, decision 1); ADR-0024 (traces stop at contact: exactly on axis faces, within `CONTACT_GAP` off them; decision 2, with migration notes); and the ADR index | `docs-check` and `typos` pass; each names what it amends and how it migrates; a fresh `reviewer` reads them against this plan |
 | T0b | The G3 patch: crate batch 3 in `deny.toml`'s allow-list, the wrapper ban for `objc2-game-controller` (naming the shim crate, or `eng-platform-winit` if O3 picks a module), a `clarify` entry if `bincode-next`'s licence needs one, `_typos.toml` if needed. Also a separate parry3d patch, resolved against the real lock, so O4's other answer can be applied at the same sitting | `cargo deny check` passes in a scratch clone that adds batch 3's crates to `eng-bench` and the shim crate with T0's patch and this one applied, and again with the parry3d patch |
 
 **If the owner answers O3-O5 otherwise at sitting 1:**
@@ -674,10 +683,10 @@ here, because a note left only in an entry gets lost (1b lesson).
 |---|---|---|---|
 | T0, T0a, T0b | none | "Before the first sitting" | as there |
 | T1-T4 | none | the queue, built | as built |
-| T5 | G2, G4 (ADR-0024); G3 if O4 picks parry3d | `eng-collision-grid` (decision 2), exact contact in `eng-collision-api`'s conformance suite, the brute-force oracle test (to be protected), RISC-V. **Carry:** `BoxRoom`'s clamp lands a hull exactly on a wall (`dot-corner` asserts `x == 7.75`); the grid does the same in f64. **Carry (Q2):** with box worlds a tie that keeps the stepped move cannot be told apart, so the grid run is what guards decision 3's tie rule | criterion 3's tests pass; `arch-check` passes; `kit-fps`'s `flat_ground_gives_pmoves_result_bit_for_bit` (through `same_as_pmove`) passes over the grid too |
+| T5 | G2, G4 (ADR-0024); G3 if O4 picks parry3d | `eng-collision-grid` (decision 2); ADR-0024's contact rule and `CONTACT_GAP` in `eng-collision-api` and its conformance suite; the brute-force oracle test (to be protected); RISC-V. **Carry:** `BoxRoom`'s clamp lands a hull exactly on a wall (`dot-corner` asserts `x == 7.75`); the grid does the same on axis faces. **Carry (Q2):** with contact exact, both outcomes of decision 3's step-move tie give the same bits on flat ground in any world, so a flat-ground run cannot guard the tie rule. It matters only where a downward trace's end depends on where it starts: floors off the axes, under `CONTACT_GAP` | criterion 3's tests pass; `arch-check` passes; `kit-fps`'s `flat_ground_gives_pmoves_result_bit_for_bit` (through `same_as_pmove`) passes over the grid too; if the grid has floors off the axes, a test there checks the tie rule |
 | T6 | G4 (ADR-0023) | Maps and sim data (decision 1): constant resources and `Sim::sim_data_hash`; `GameMaps` and the new entry points; `--map`; the map and sim data in recordings, hash-stream headers and reports; `replay verify` choosing the map by its hash. Patch: xtask replay reads `map` from `scenarios.toml`. **Carry:** "Protected tests that pin today's APIs" | the dot streams are byte-identical; a sim with a constant resource snapshots and hashes its state without it; `hash_equality.rs`, `never_panic.rs`, `twin.rs`, `version.rs` and `exit_codes.rs` pass unchanged |
 | T7 | T2, T5, T6 | The `room` map in `game-testbed-sim` (the room, spawns, things, `ground_move`); the room's input scripts, **committed directly** (they are not protected, and replay rejects only `.assert.toml` files no scenario names, `replay.rs:92-109`), so T15, T16 and A3 can use them; and one patch, `room-scenarios.patch`, with the three `scenarios.toml` entries (`room-walk`, `room-ledge`, `room-corner`), their `*.assert.toml` and their hash streams. **The streams wait in the patch:** committed before their scenarios, `xtask replay` reports `[E-HASH] … in committed but not in <target>` and `quick` goes red. The owner applies it at G5 with T6's replay patch; an agent then runs `quick` and commits. **Carry:** `[sim]` budgets are 4,096 state bytes and 16 entities. **Carry (Q2, O12):** the room has no angled wall; if O12 fixes `slide` anyway, the dot streams may change; regenerate only if they do, with the owner's approval | criterion 5's tests; in a scratch clone with both patches applied, `quick` is green and the room streams match on the targets this Mac can run (arm64, Docker x64, QEMU riscv) |
-| T8 | T1, G4 (ADR-0020), O11 | `eng-gpu`: a running pass with several colour targets and a depth target; `Format` widened (decision 5); textures; the per-frame uniform; the scene layout (decision 6); timestamps per pass if O11 says so, asking for `TIMESTAMP_QUERY` only when the adapter has it. **Carry:** Q1 already built the pool in `Targets` and `LoadOp::Load`; 1b's one instance buffer per frame and one input bind group per pass are what megabuffers replace; exposure needs the uniform (ADR-0017); the surface format stays `Bgra8UnormSrgb`; new report data goes in new `gpu` keys, never in `per_frame` or `capabilities`, and `tier` stays 0 (`shot_video.rs`) | offscreen depth, several-target and texture-array tests on Metal and Docker lavapipe; `counters.rs` and Q1's tests unchanged |
+| T8 | T1, G4 (ADR-0020), O11 | `eng-gpu`: a running pass with several colour targets and a depth target; `Format` widened (decision 5); textures; the per-frame uniform; the scene layout (decision 6); timestamps per pass if O11 says so, asking for `TIMESTAMP_QUERY` only when the adapter has it. **Carry:** Q1 already built the pool in `Targets` and `LoadOp::Load`; 1b's one instance buffer per frame and one input bind group per pass are what megabuffers replace; exposure needs the uniform (ADR-0017); the surface format stays `Bgra8UnormSrgb`; new report data goes in new `gpu` keys, never in `per_frame` or `capabilities`, and `tier` stays 0 (`shot_video.rs`); `FrameCounters` cannot gain fields (`counters.rs` builds it by literal at lines 140, 166, 199 and 223), so per-pass times and the pool's count come back in a new type beside it | offscreen depth, several-target and texture-array tests on Metal and Docker lavapipe; `counters.rs` and Q1's tests unchanged |
 | T9 | T4, T8 | `eng-render`: the `opaque` and `sky` passes, camera-relative chunk draws, `info`. **Carry (Q4):** the plan sets no near distance; Q4's tests use one under 1 m, and the 0.25 m hull half-width bounds it from above, so pick it here (0.1 m suggested) | a known room renders with depth probes as computed on the CPU |
 | T10 | T9 | `eng-render`: the `light`, `fog`, `tonemap` (decision 7) and `palette` passes, the `.gpl` reader, the k×k present, the switches. **Carry (Q4):** sampling `toned` (`Rgba8UnormSrgb`) returns linear values, so the palette pass reads it through an `Rgba8Unorm` view or re-encodes first | decision 13's checks pass on Metal and lavapipe |
 | T11 | T9 | `eng-render`: the `sprites` pass (decision 4), continuing `opaque`. Built beside T10 in separate modules; T10 lands first if both touch `renderer.rs` | criterion 8's tests |
@@ -788,7 +797,7 @@ the owner applies it. **Three sittings, each with its inputs ready:**
 | G1 | 1 | this plan; `docs/rungs/2/acceptance.json` | Approve; write the criteria in 1b's format; decide O1-O13 and A1-A5. `current.txt` stays `1b` (O1) | everything after it |
 | G2 | 1 | `architecture.toml`; root `Cargo.toml` `[profile]` | Apply T0's patch: the four crates and their edges; `[profile.release.package.eng-collision-grid] overflow-checks = true`; one commit with the skeletons | T5, T12, T14, T17 |
 | G3 | 1 | `deny.toml`; `_typos.toml` if needed | Apply T0b's patch: crate batch 3, the `objc2-game-controller` wrapper ban, a `clarify` entry if needed (a parry3d batch too, if O4 picks it) | T14, T17 (T5 with parry3d) |
-| G4 | 1 | ADRs (rule decisions) | Accept, change or refuse ADR-0019 (graph), ADR-0020 (first-person passes, difference 1, and the scene layout), ADR-0021 (`unsafe` in the shim), ADR-0022 (platform contract), ADR-0023 (maps and sim data), ADR-0024 (exact contact); and 1b's ADR-0017 | T5, T6, T8, T13, T14 |
+| G4 | 1 | ADRs (rule decisions) | Accept, change or refuse ADR-0019 (graph), ADR-0020 (first-person passes, difference 1, and the scene layout), ADR-0021 (`unsafe` in the shim), ADR-0022 (platform contract), ADR-0023 (maps and sim data), ADR-0024 (contact and `CONTACT_GAP`); and 1b's ADR-0017 | T5, T6, T8, T13, T14 |
 | G5 | 2 | `xtask/**` | Docs-lint; `bench`; `mutants`; `notices` and `dist`; replay reads `map` (T6); new `test` steps (collision, movement, sim-data, render-graph, sprites, mouse-look) and `native` steps (window-room, look, dist); `gpu-budgets` also renders a room shot; mutants' `in-diff` and `rung-diff`; proof video adds `room.apng`; selftest cases; summary and acceptance for the new jobs; `arch-check` refuses `allow(unsafe_code)` outside the shim crate | criteria 1-21 |
 | G5 | 2 | `.github/workflows/**` | The `bench` job (valgrind, `gungraun-runner` =0.20.0); the `mutants` job (`cargo-mutants` =27.1.0, four shards, a weekly `schedule` and a manual dispatch for `rung-diff`); `cargo-mutants` in the `selftest` job too, for `violation:mutant-missed`; `cargo-about` =0.9.3 in `lint`; `dist` artifacts on three runners; `room.apng`; actions pinned by SHA, `permissions: {}` | the new jobs exist |
 | G5 | 2 | `scenarios.toml`, `**/*.assert.toml` | T7's `room-scenarios.patch`, applied with T6's replay patch: the room's scenarios, assertions and hash streams in one commit (its input scripts are already committed) | 1, 2, 4 |
@@ -878,7 +887,7 @@ they are not in `deny.toml`. Versions were checked with `cargo search` and
 |---|---|
 | Palette quantization turns tiny adapter differences into whole palette steps, so FLIP may fail first-person shots off lavapipe | per-shot limits; the exact checks of decision 13 hold on every adapter; `room-look-off` is the shot that compares shading |
 | GCMouse: `unsafe`, units and signs unverified, and no mouse on macos-26 | the shim's logic is tested with a fake source; real callbacks are checked on the owner's Mac (T14, G7) |
-| winit 0.30: `Locked` is missing on Windows and X11, `Confined` on macOS | the fallback order covers all four; the report names the mode used |
+| winit 0.30.13: `Locked` is missing on X11 only (Windows has it, `platform_impl/windows/window.rs:443`), `Confined` on macOS | Locked, then Confined, covers every platform; the report names the mode used |
 | Under Xvfb, `xdotool`'s relative motion may not reach XInput2 raw events | the window step checks the grab mode and frames, not mouse motion; mouse look is tested headless |
 | AGENTS.md is at 150 of 150 lines | T22 rewrites lines rather than adding them; docs-lint checks what stays |
 | A room snapshot over 1,200 bytes | sim data stays out of state (decision 1); criterion 5 checks it |

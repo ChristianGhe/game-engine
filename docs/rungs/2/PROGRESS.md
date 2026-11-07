@@ -598,3 +598,55 @@ ADR-0024 and its Amendment 1)
   - The two reviews took 740k tokens in all.
   - It counts as one session (16 of 52), though it cost about twice a
     typical task.
+
+**T9: the first-person `opaque` and `sky` passes** (7573f4b; ADR-0020)
+- **Built** by one builder in a worktree pinned to 262abb7:
+  - `FirstPersonRenderer`, a `Graph::sorted` graph. `opaque` writes
+    albedo, `info` and depth; `light` and `tonemap` are stand-ins for
+    T10; `sky` continues `light` where depth is 0; `present` runs only
+    with a surface.
+  - `WorldVertex`, `Chunk::quad` (corners minus the origin, in f64) and
+    `GpuWorld`.
+  - `info`: region and class in word 0, object id in word 1, (0, 0) for
+    nothing drawn.
+  - `NEAR_PLANE` = 0.1 m, with its bound written down.
+  - The material goes per vertex, so each drawn chunk is one instance
+    record, as ADR-0020 words it.
+  - In `eng-gpu`, new items only: `Targets::read_transient` and its
+    refusal rules.
+- **The test:** a room 10⁹ m from the origin, 52,974 depth probes against
+  an f64 CPU ray cast. The worst probe used 3% of its tolerance. `info`
+  is checked exactly and sky depth is 0. Breaking any of these on purpose
+  fails it: an f32 subtraction, a wrong near plane, the `info` words
+  swapped, culling off, depth writes off.
+- **Unchanged:** 1b's four shots (0 differing pixels on Metal),
+  `counters.rs` and T8's tests. Not run on lavapipe, because Docker was
+  off. CI's Linux native job runs `first_person.rs` at the next push.
+- **Review:** a fresh reviewer approved it with no blockers (10 min,
+  166k tokens, 46 calls). The builder's own reviewer had run before it.
+  The non-blocking points are carries in the plan's T10, T11, T12, T15,
+  T16, T21 and T22 rows. Two matter most:
+  - the near-plane bound is not enforced, so `--fov` and fullscreen must
+    respect it (T15);
+  - readback's bypass paths have no test yet (T10).
+- **G5's protection row** now names T9's test files.
+- **A fault in T8's timing, found by `quick` after the cherry-pick:**
+  - **What happened:** on Metal, under the full suite's load, `pass_times`
+    once read a `tonemap` time of 3.9e15 ns. The pass's start timestamp
+    was unwritten (0) while its end was real. It failed 0 of 30 runs
+    alone.
+  - **Fixed on `main`:** `PassTime::nanoseconds` is now `Option<u64>`,
+    and `None` for a 0 timestamp or an end before its start. Criterion
+    21 already allows null per pass.
+  - **The tests:** a unit test covers the rule, and `pass_times.rs` now
+    accepts `None` but no impossible value, over four timed frames.
+- **The lock test's flake, for the owner:** in the T6 and T9 builders'
+  `quick` runs on this Mac, `run_lock::tests::a_killed_holder_leaves_no_stale_lock`
+  failed once each. Each time it passed alone at once.
+  - **Ruled out:** a collision between clones (each scratch directory
+    carries its process's PID), and a PID not yet written (the child
+    writes it before it says it holds the lock).
+  - **Where it is:** the test is in protected `xtask/`. It has not failed
+    on CI.
+- **Cost:** the builder took 52 min, 404k tokens and 141 calls. It counts
+  as one session (17 of 52).

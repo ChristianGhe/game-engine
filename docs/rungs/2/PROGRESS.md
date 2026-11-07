@@ -744,3 +744,43 @@ ADR-0024 and its Amendment 1)
   7 of 7.
 - **Cost:** the builder took about 2 h in three runs and 290k tokens. The
   review and re-check took 345k. It counts as one session (19 of 52).
+
+**T10: light, fog, tone map and palette** (6797251, follow-up 9003155;
+decisions 7, 8 and 13; ADR-0020)
+- **Built** by one builder in a worktree pinned to 7e59fc6:
+  - the graph `opaque, light, sky, fog, tonemap, palette, present`, with
+    T9's node names kept and 10 graphs built in advance for the
+    switches;
+  - **light:** a region's Doom level over 8, fake contrast on axis walls,
+    and falloff by distance from the eye, through a 32-step lux table;
+  - **fog:** `1 - e^(-density·distance)`;
+  - **tone map:** Khronos PBR Neutral after the EV100 exposure;
+  - **palette:** Q4's 32³ LUT read from the scene's 64 px array, with
+    4x4 Bayer dither;
+  - the strict `.gpl` reader;
+  - the k×k upscale: `Targets::upscaled`, in eng-gpu, centred with a
+    black border.
+- **Decision 13's checks pass on Metal.** They have not run on lavapipe
+  yet: Docker was off. CI run 42398105940 on `agent/rung2` is their
+  first lavapipe run.
+- **The tone curve:** at worst 0.85 of an 8-bit level from a CPU
+  reference, written independently from Khronos's definition.
+- **Unchanged:** 1b's four shots (0 differing pixels).
+- **Review:** a fresh reviewer found the 1b paths safe and PBR Neutral
+  correct (11 min, 211k tokens). It asked for one test gap to be closed
+  before merge: nothing pinned the light model's or the fog's numbers.
+  - **The follow-up** adds `light_model.rs`, a CPU oracle over about
+    52,500 pixels a run. It caught six mutations: the contrast sign, the
+    falloff sign, falloff along the view axis, `round` for `floor`, a
+    doubled fog density, and another region's fog colour.
+  - **Also fixed:** reads now use the graph the last frame actually
+    rendered.
+- **A proposal for the owner:** decision 13 says fog is monotone "with
+  depth". For fog by distance from the eye that is false along a row
+  across a wall seen at an angle, so the check orders probes by distance
+  from the eye. The proposed wording is now in the plan.
+- **Carries** are in the plan's T11, T12, T15, T16, T21 and T22 rows.
+  G5's protection row names T10's tests.
+- **Checked on `main`:** `ENG_REQUIRE_GPU=1 quick` 7 of 7.
+- **Cost:** the builder took 42 + 25 min, 467k tokens, 160 calls. It
+  counts as one session (20 of 52).

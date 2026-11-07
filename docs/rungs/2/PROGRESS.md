@@ -691,3 +691,11 @@ ADR-0024 and its Amendment 1)
 - **CI:** `main` at eadf677 was pushed to `agent/rung2`; that run is
   42390944638.
 - **Sessions:** 18 of 52.
+- **Later in the session:**
+  - **CI run 42390944638** on `agent/rung2` (eadf677) is green on every
+    job. T5 to T9 pass on all five native runners, both test targets,
+    RISC-V (the grid's core tests), wasm and selftest.
+  - **T7's carries** are now in the plan's T12, T15, T16 and T22 rows, and
+    its tests are in G5's protection row.
+  - **T13's builder** was stopped by the usage limit partway, and resumed
+    after the reset.

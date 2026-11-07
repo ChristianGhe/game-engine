@@ -699,3 +699,48 @@ ADR-0024 and its Amendment 1)
     its tests are in G5's protection row.
   - **T13's builder** was stopped by the usage limit partway, and resumed
     after the reset.
+
+**T13: the platform contract** (d7b1e14, follow-up 277d7cf; ADR-0022)
+- **Built** by one builder in a worktree pinned to b8a8582. The usage
+  limit stopped it once, and it resumed after the reset.
+  - **The contract:** `Control::grab_cursor(bool) -> CursorGrab`,
+    `Control::set_fullscreen(bool) -> bool` and
+    `Window::refresh_rate() -> Option<u32>` (millihertz). All have
+    default bodies, so every existing implementer compiles unchanged.
+  - **Headless** records each request with the clock's time.
+  - **winit:**
+    - borderless fullscreen;
+    - a grab tries Locked, then Confined, and only with focus;
+    - mouse buttons and the wheel, with macOS natural scrolling;
+    - raw motion only with focus, and off on macOS until T14's shim.
+- **For the owner at G5:** `docs/rungs/2/patches/t13-conformance.patch`
+  (SHA-256 `797639f9e26dd11d…`): the new suite, `conformance/requests.rs`
+  and its `mod` line, and three test files. In a scratch clone with the
+  patch, `ENG_REQUIRE_DISPLAY=1 quick` was 7 of 7.
+- **Review: one blocker.** The code changed two rules of the accepted
+  ADR-0022:
+  - the platform, not eng-app, frees the cursor before `FocusLost`;
+  - a grab asked for without focus waits for focus.
+
+  The owner is away, so the rules stay as built and are written up as
+  **Amendment 1 (Proposed)** in ADR-0022. Undoing them, if the owner
+  refuses, is a small change in `eng-platform-winit/src/request.rs`.
+- **The follow-up also:**
+  - shows the cursor again after a failed grab;
+  - adds eight unit tests of the grab's rules against a fake window;
+  - fixes a second bug it found. winit sends a `FocusLost` before a new
+    window's first `FocusGained`, which dropped a grab asked for at the
+    window's creation.
+
+  A re-check confirmed that each rule's regression fails a test.
+- **Open:**
+  - Under X11's `Confined` grab, each raw motion arrived twice (with
+    XTEST under Xvfb).
+  - Xvfb reports no refresh rate.
+  - Leaving fullscreen during macOS's enter animation is lost.
+
+  All three are carries in T15's row, which now also needs T14.
+- **Checked on `main`:** `ENG_REQUIRE_GPU=1 ENG_REQUIRE_DISPLAY=1 quick`
+  7 of 7.
+- **Cost:** the builder took about 2 h in three runs and 290k tokens. The
+  review and re-check took 345k. It counts as one session (19 of 52).

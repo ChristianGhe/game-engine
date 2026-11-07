@@ -949,7 +949,7 @@ owner; the test is in protected `xtask/`)
   - a base the branch controls, and state read after the head's code ran.
 - **A merge slip on `main`, mine:**
   - **What happened:** the first cherry-pick conflicted with T14 in the
-    root `Cargo.toml`. The guard refused my edits to the unparseable
+    root `Cargo.toml`. The guard refused my edits to the unparsable
     file, and the next command, chained with `;`, committed it with its
     conflict markers.
   - **Repaired before any push:** the markers were removed, `main` was

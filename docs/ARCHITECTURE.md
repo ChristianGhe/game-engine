@@ -113,7 +113,8 @@ Platform::run(&mut app):  start ─▶ window (windowed only)
 - Events (`PlatformEvent`) are plain data: physical keys (`Key`, by W3C
   `code`), raw mouse motion, mouse buttons, the wheel, gamepad buttons and
   axes, focus, resize, occlusion and close requests. Mouse and gamepad
-  events exist already, so rungs 2 and 6 need no contract change.
+  events existed before rung 2; its cursor grab, fullscreen and refresh
+  rate were a contract change (ADR-0022).
 - The clock is `Control::now()`: an `Instant`, nanoseconds since the run
   started, never going back. Each `frame` answers `Wake::At(t)` or
   `Wake::OnEvent`, so ticks come from the timer, not from presenting
@@ -121,6 +122,11 @@ Platform::run(&mut app):  start ─▶ window (windowed only)
 - `Control::exit()` ends the run: only `stop` follows, and the rest of
   the batch is dropped. A close request is an event like any other: the
   platform keeps running until the app exits.
+- `Control::grab_cursor(bool)` answers the grab in force (`CursorGrab`)
+  and `Control::set_fullscreen(bool)` whether it was taken; they act on
+  the window from `App::window` on. `Window::refresh_rate()` is its
+  monitor's, in millihertz. Default bodies answer `None` and `false`;
+  headless records the requests (ADR-0022 and its proposed Amendment 1).
 - The window seam (ADR-0016) is `window::Window`, the one part that names
   `raw-window-handle`'s traits. A windowed platform hands an
   `Arc<dyn Window>` to `App::window` once, after `start`; wgpu's safe

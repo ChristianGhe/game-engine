@@ -210,14 +210,12 @@ impl ApplicationHandler for Run<'_> {
     }
 
     fn device_event(&mut self, event_loop: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
-        // Raw motion only with focus, as the app was last told of it.
-        if !self.live() || !self.requests.focused() {
+        if !self.live() {
             return;
         }
-        if let DeviceEvent::MouseMotion { delta } = event
-            && map::RAW_MOTION
-        {
-            self.deliver(event_loop, map::motion(delta));
+        // Raw motion only with focus, as the app was last told of it.
+        if let Some(event) = map::device_event(&event, self.requests.focused()) {
+            self.deliver(event_loop, event);
         }
     }
 

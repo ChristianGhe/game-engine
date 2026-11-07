@@ -54,8 +54,10 @@ pub trait Control {
     /// frees the cursor before [`PlatformEvent::FocusLost`] arrives. It
     /// never grabs unasked, so an app that wants the grab back asks again
     /// on [`PlatformEvent::FocusGained`]. A grab asked for while the window
-    /// lacks focus may wait for it (winit's does, as in `App::window`,
-    /// before the window shows), answering `None` until then.
+    /// lacks focus may wait for it, answering `None` until then, and take
+    /// when focus comes; winit's does, as in `App::window`, before the
+    /// window shows. Freeing drops a waiting grab. (ADR-0022's Amendment 1,
+    /// proposed.)
     fn grab_cursor(&mut self, grab: bool) -> CursorGrab {
         let _ = grab;
         CursorGrab::None

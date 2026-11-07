@@ -23,7 +23,7 @@
 //!   the time nor anything else that tells the copies apart, so both pass.
 
 use eng_platform_api::{Key, MouseButton, PhysicalSize, PlatformEvent, WheelDelta};
-use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
+use winit::event::{DeviceEvent, ElementState, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{KeyCode, PhysicalKey};
 
 /// Whether winit's device motion is the contract's raw motion here: not on
@@ -225,6 +225,16 @@ pub(crate) const fn motion((dx, dy): (f64, f64)) -> PlatformEvent {
     PlatformEvent::MouseMotion { dx, dy }
 }
 
+/// The contract's event for one of winit's device events, given whether
+/// the window has focus as the app was last told: raw motion, only with
+/// focus and only where [`RAW_MOTION`]. The rest are left out.
+pub(crate) const fn device_event(event: &DeviceEvent, focused: bool) -> Option<PlatformEvent> {
+    match event {
+        DeviceEvent::MouseMotion { delta } if focused && RAW_MOTION => Some(motion(*delta)),
+        _ => None,
+    }
+}
+
 /// Whether macOS's natural scrolling is on, from the output of `defaults
 /// read -g com.apple.swipescrolldirection`: `None` (no such key, or no
 /// output) is the system's default, on.
@@ -414,7 +424,41 @@ mod tests {
             motion((3.0, -1.5)),
             PlatformEvent::MouseMotion { dx: 3.0, dy: -1.5 }
         );
-        assert_eq!(RAW_MOTION, !cfg!(target_os = "macos"));
+    }
+
+    #[test]
+    fn raw_motion_comes_only_with_focus_and_not_on_macos() {
+        let moved = DeviceEvent::MouseMotion { delta: (3.0, -1.5) };
+        assert_eq!(device_event(&moved, false), None, "without focus");
+        let with_focus = device_event(&moved, true);
+        if cfg!(target_os = "macos") {
+            assert_eq!(with_focus, None, "macOS's comes from the GCMouse shim");
+        } else {
+            assert_eq!(
+                with_focus,
+                Some(PlatformEvent::MouseMotion { dx: 3.0, dy: -1.5 })
+            );
+        }
+        let others = [
+            DeviceEvent::Added,
+            DeviceEvent::Removed,
+            DeviceEvent::MouseWheel {
+                delta: MouseScrollDelta::LineDelta(0.0, 1.0),
+            },
+            DeviceEvent::Motion {
+                axis: 0,
+                value: 2.0,
+            },
+            DeviceEvent::Button {
+                button: 1,
+                state: ElementState::Pressed,
+            },
+        ];
+        for event in &others {
+            for focused in [false, true] {
+                assert_eq!(device_event(event, focused), None, "{event:?}");
+            }
+        }
     }
 
     #[test]

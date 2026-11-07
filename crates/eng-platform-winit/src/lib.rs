@@ -51,12 +51,13 @@
 //!   accelerated and coalesced: there it comes from the GCMouse shim
 //!   (rung 2, task T14). No gamepad events until gilrs (rung 6).
 //!   `map.rs` has the details.
-//! - **Requests** (ADR-0022). Borderless fullscreen on the window's
-//!   monitor, at once. A cursor grab hides the cursor, moves it to the
-//!   middle of the window and tries winit's `Locked`, then `Confined`
-//!   (X11 has no lock), but holds only while the window has focus: asked
+//! - **Requests** (ADR-0022, with its proposed Amendment 1). Borderless
+//!   fullscreen on the window's monitor, at once. A cursor grab hides the
+//!   cursor, moves it to the middle of the window and tries winit's
+//!   `Locked`, then `Confined` (X11 has no lock; if neither takes, the
+//!   cursor shows again), but holds only while the window has focus: asked
 //!   for without focus (as in `App::window`, before the window shows) it
-//!   waits for focus and answers `None` until then, and focus loss frees
+//!   waits for focus, answering `None` until then, and focus loss frees
 //!   the cursor, so the app asks again on `FocusGained`. The end of a run
 //!   frees it too. `request.rs` says why. The window's refresh rate is its
 //!   monitor's, as winit reads it.

@@ -32,8 +32,9 @@ impl eng_platform_api::window::Window for WinitWindow {
         PhysicalSize::new(size.width, size.height)
     }
 
-    /// From the monitor winit says the window is on. macOS knows none for
-    /// a window not yet shown (during `App::window`).
+    /// From the monitor winit says the window is on. On macOS 26 (an M2
+    /// Pro) it is known already in `App::window`, before the window shows;
+    /// under Xvfb it is `None`.
     fn refresh_rate(&self) -> Option<u32> {
         self.0.current_monitor()?.refresh_rate_millihertz()
     }

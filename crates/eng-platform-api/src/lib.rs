@@ -49,8 +49,10 @@
 //! callback on; before it, and with no window, they change nothing and
 //! answer [`CursorGrab::None`] or `false`. A grab never outlives focus: the
 //! platform frees the cursor before [`PlatformEvent::FocusLost`], and never
-//! grabs or changes fullscreen unasked. [`App::stop`] gets `&dyn Control`,
-//! so no request is made there; the window, and its grab, go with the run.
+//! grabs or changes fullscreen unasked. A grab asked for without focus may
+//! wait for it, answering `None` until then (ADR-0022's Amendment 1,
+//! proposed). [`App::stop`] gets `&dyn Control`, so no request is made
+//! there; the window, and its grab, go with the run.
 //!
 //! [`conformance::check`] checks these rules on any platform, and
 //! [`conformance::check_scripted`] checks event delivery, exact times and

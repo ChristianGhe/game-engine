@@ -121,10 +121,14 @@ contract has none of these at HEAD:
 - A first-person `play` can lock and hide the cursor and go fullscreen;
   its report names the grab in force, fullscreen and the refresh rate
   (criterion 10). Under Xvfb, whether winit reports a refresh rate is a
-  guess T13 checks; with none, frames come once per tick.
-- Headless tests see requests through the record, not through the screen:
-  "focus loss frees the cursor" is a `grab_cursor(false)` after
-  `FocusLost` in the record.
+  guess T13 checks; with none, frames come once per tick. (T13 found
+  none: Amendment 1.)
+- Headless tests see requests through the record, not through the screen.
+  Under Amendment 1 (proposed) the platform frees the cursor on focus loss
+  itself, so "focus loss frees the cursor" no longer shows as a
+  `grab_cursor(false)` after `FocusLost` in the record: one is there only
+  if the app makes it. winit's unit tests (`request.rs`) check the
+  freeing instead.
 - A later platform (SDL3, spec 6.3) implements the three methods or
   inherits the defaults.
 
@@ -165,3 +169,76 @@ contract has none of these at HEAD:
 The platform layer moves to SDL3; winit's next major changes grab modes
 or monitors; HDR or variable refresh rate needs more than one number; or
 gamepads (rung 6) need requests of their own.
+
+## Amendment 1 (Proposed, for the owner; T13 found)
+
+- **Status:** Proposed (for the owner; T13 found). The decision above
+  stays Accepted until the owner takes or refuses this.
+- **What:** two of the decision's rules, as T13 built them, and what T13
+  found on real windows. Neither changes the contract's methods or types.
+- **Who:** Claude's proposal, from rung 2 task T13 and its review
+  (2026-11-07). The owner decides.
+
+**Two rules, as built.**
+
+- **The platform frees the cursor on focus loss.** The decision says "The
+  platform never grabs, frees or changes fullscreen unasked" and "eng-app
+  frees the cursor on `FocusLost`". winit frees it itself, before
+  `FocusLost` reaches the app (`eng-platform-winit/src/request.rs`,
+  `Requests::focus_lost`), and at the end of a run. It still never grabs
+  or changes fullscreen unasked. Why: macOS's lock is the whole system's
+  (winit's `Locked` stops the cursor following the mouse everywhere, not
+  only over the window), so a grab left in force after another app takes
+  focus keeps the user's cursor from that app until ours reacts, and a
+  stalled app never reacts. The lock also outlives the window, hence the
+  end of a run.
+- **A grab asked for without focus waits for it.** The decision says a
+  request in `App::window` takes effect and `grab_cursor` returns the grab
+  in force. winit's grab asked for while the window lacks focus, as it
+  always does in `App::window` (the window is not shown yet), answers
+  `CursorGrab::None`, the grab then in force, and is taken when focus
+  comes, before `FocusGained` reaches the app; `grab_cursor(false)` drops
+  it. winit reports a `FocusLost` before a new window's first
+  `FocusGained` (seen on macOS 26 and under Xvfb), so a loss while the
+  window already lacks focus leaves the grab waiting. Why: X11 cannot grab
+  a window that is not viewable (`XGrabPointer` answers
+  `GrabNotViewable`), and on macOS a lock taken without focus would hold
+  the cursor while another app has it, which the first rule forbids.
+  Fullscreen is unchanged: asked for in `App::window`, it is taken at
+  once and asked again once the window shows if it did not land.
+
+**What eng-app does.** It grabs on `FocusGained`, as the decision says,
+and reads the grab in force from that answer, not from `App::window`'s,
+which on winit is `None`. It may still call `grab_cursor(false)` on
+`FocusLost`: the cursor is already free, the call answers `None`, and
+nothing changes. On a new window's first `FocusLost` it drops a grab still
+waiting from `App::window`, and the grab on `FocusGained` replaces it.
+
+**Found by T13.**
+
+- **Leaving fullscreen during macOS's enter animation is lost.** On
+  macOS 26 (an M2 Pro), `set_fullscreen(false)` asked at the first
+  full-size `Resized` after `set_fullscreen(true)` answered `true`, but the
+  window stayed fullscreen while winit took it as windowed; asked two
+  seconds later, it left. winit's queueing during a transition did not
+  keep it. An app should not toggle fullscreen during the animation; the
+  fullscreen check in T13's G5 patch waits two seconds.
+- **Where `App::window`'s requests were checked: macOS only.** The
+  by-hand checks `grab_with_focus` and `fullscreen`
+  (`eng-platform-winit/tests/requests.rs`, in
+  `docs/rungs/2/patches/t13-conformance.patch`) pass on macOS 26. Under
+  Xvfb without a window manager no focus comes, so `grab_with_focus`
+  cannot run. There `examples/events.rs`, given focus by `xdotool`, got
+  `Confined` asking again on `FocusGained`, and its `set_fullscreen(true)`
+  in `App::window` answered `true` but no `Resized` came (X11 fullscreen
+  needs a window manager). Windows and Wayland are unchecked.
+- **Refresh rate.** macOS 26 reports 120000 mHz already in `App::window`,
+  before the window shows. Under Xvfb (Debian trixie, arm64, in Docker,
+  screen 1280x720x24) winit reports `None` in `App::window` and in the
+  first frame, so first-person frames there come once per tick.
+- **X11 doubles raw motion under the grab.** With `Confined` (an X
+  pointer grab), the X server sends winit each raw motion twice from the
+  same device; without the grab, once (Xvfb, XTEST input). SDL drops a raw
+  motion with the same X time and deltas as the one before, but winit
+  0.30 passes neither on, so both reach the app (`map.rs`). Mouse look on
+  X11 would turn twice as far until this is handled.

@@ -16,6 +16,11 @@ struct Frame {
     ray_up: vec4<f32>,
     sky_horizon: vec4<f32>,
     sky_zenith: vec4<f32>,
+    look: vec4<f32>,
+    switches: vec4<u32>,
+    light_steps: array<vec4<f32>, 8>,
+    region_light: array<vec4<f32>, 4>,
+    region_fog: array<vec4<f32>, 16>,
 }
 
 struct Instance {

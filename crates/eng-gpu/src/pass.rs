@@ -57,7 +57,9 @@ pub trait Pass {
 #[derive(Clone, Copy, Default)]
 pub struct FrameInput<'a> {
     /// A window's image, for a [`Target::Surface`] graph's present pass to
-    /// draw into, as [`Graph::render_to`] does. It must be the targets' size.
+    /// draw into, as [`Graph::render_to`] does. It must be the targets'
+    /// [`Targets::surface_size`]: their size, unless they are
+    /// [`Targets::upscaled`].
     /// Without one a surface graph draws into the targets' offscreen
     /// surface.
     pub surface: Option<&'a SurfaceFrame>,
@@ -305,7 +307,10 @@ impl Graph {
     /// Like [`Graph::render`], with a window's image as the
     /// [`Resource::Surface`]: a [`Target::Surface`] graph's present pass
     /// draws into `frame`, which the caller then presents
-    /// ([`crate::WindowSurface::present`]). `frame` must be the targets' size.
+    /// ([`crate::WindowSurface::present`]). `frame` must be the targets'
+    /// [`Targets::surface_size`]: their size, unless they are
+    /// [`Targets::upscaled`], whose present pass draws each texel as k×k
+    /// pixels of it.
     pub fn render_to(
         &self,
         gpu: &Gpu,
@@ -338,11 +343,18 @@ impl Graph {
                     "a window's image needs a surface graph, and this one renders offscreen".into(),
                 ));
             }
-            if frame.size() != targets.size() {
-                let ((fw, fh), (tw, th)) = (frame.size(), targets.size());
-                return Err(GpuError::Surface(format!(
-                    "the window's image is {fw}x{fh}, but the targets are {tw}x{th}"
-                )));
+            if frame.size() != targets.surface_size() {
+                let ((fw, fh), (tw, th)) = (frame.size(), targets.surface_size());
+                let message = if targets.upscale() == 1 {
+                    format!("the window's image is {fw}x{fh}, but the targets are {tw}x{th}")
+                } else {
+                    format!(
+                        "the window's image is {fw}x{fh}, but the targets present into {tw}x{th} \
+                         (upscaled {}x)",
+                        targets.upscale()
+                    )
+                };
+                return Err(GpuError::Surface(message));
             }
         }
         self.encode(gpu, targets, input, passes)

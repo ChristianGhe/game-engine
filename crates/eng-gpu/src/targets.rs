@@ -7,9 +7,14 @@
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+mod upscale;
+
+pub(crate) use upscale::Present;
+
 use crate::error::GpuError;
 use crate::gpu::Gpu;
 use crate::graph::{Format, Plan, PooledTexture};
+use crate::readback::Image;
 use crate::timing::{FrameStats, Timing};
 use crate::{Resource, Transient};
 
@@ -62,6 +67,9 @@ fn transient_format(format: Format) -> wgpu::TextureFormat {
 pub struct Targets {
     width: u32,
     height: u32,
+    /// The window image these targets present into, and at what scale
+    /// (`upscale.rs`): the targets' own size, 1:1, unless made upscaled.
+    present: Present,
     scene: wgpu::TextureView,
     output_texture: wgpu::Texture,
     output: wgpu::TextureView,
@@ -109,7 +117,7 @@ fn nth_of_kind(plan: &Plan, index: usize) -> (Kind, usize) {
 impl Targets {
     /// Targets of `width` by `height` pixels, each from 1 to 8,192.
     pub fn new(gpu: &Gpu, width: u32, height: u32) -> Result<Self, GpuError> {
-        Self::make(gpu, width, height, false)
+        Self::make(gpu, width, height, false, Present::same(width, height))
     }
 
     /// Like [`Targets::new`], plus an offscreen texture in the surface's
@@ -118,29 +126,25 @@ impl Targets {
     /// [`Targets::read_surface`] reads back what its present pass drew. A
     /// window's own surface ([`crate::WindowSurface`]) presents instead.
     pub fn with_offscreen_surface(gpu: &Gpu, width: u32, height: u32) -> Result<Self, GpuError> {
-        Self::make(gpu, width, height, true)
+        Self::make(gpu, width, height, true, Present::same(width, height))
     }
 
-    fn make(gpu: &Gpu, width: u32, height: u32, surface: bool) -> Result<Self, GpuError> {
+    /// Targets of `width` by `height` that present into a window image of
+    /// `present`'s size, with an offscreen stand-in for it of that size if
+    /// `surface` is set.
+    fn make(
+        gpu: &Gpu,
+        width: u32,
+        height: u32,
+        surface: bool,
+        present: Present,
+    ) -> Result<Self, GpuError> {
         let fits = |side: u32| (1..=MAX_SIDE).contains(&side);
         if !fits(width) || !fits(height) {
             return Err(GpuError::Size { width, height });
         }
         let create = |label: &str, format: wgpu::TextureFormat, usage: wgpu::TextureUsages| {
-            gpu.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage,
-                view_formats: &[],
-            })
+            create_texture(gpu, label, (width, height), format, usage)
         };
         let drawn = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
         let (scene, output_texture, surface) = gpu
@@ -153,10 +157,14 @@ impl Targets {
                         drawn | wgpu::TextureUsages::COPY_SRC,
                     ),
                     // Like a swapchain image, it can be drawn into but not
-                    // read by a pass; the copy is for readback.
+                    // read by a pass; the copy is for readback. It has the
+                    // window image's size, which upscaled targets
+                    // are smaller than.
                     surface.then(|| {
-                        create(
+                        create_texture(
+                            gpu,
                             "surface",
+                            present.size(),
                             SURFACE_FORMAT,
                             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
                         )
@@ -167,6 +175,7 @@ impl Targets {
         Ok(Self {
             width,
             height,
+            present,
             scene: labelled_view(&scene, "scene"),
             output: labelled_view(&output_texture, "output"),
             output_texture,
@@ -332,33 +341,39 @@ impl Targets {
     /// frames submitted before. A wait longer than [`READBACK_LIMIT`] fails
     /// with [`GpuError::Wgpu`] instead of blocking for ever.
     pub fn read_output(&self, gpu: &Gpu) -> Result<Image, GpuError> {
-        self.read(gpu, &self.output_texture)
+        self.read(gpu, &self.output_texture, self.size())
     }
 
     /// Copies the offscreen surface back to the CPU, as
     /// [`Targets::read_output`] does the output: RGBA8 in that order,
-    /// sRGB-encoded, though the surface stores B, G, R, A. Without a surface
-    /// it fails with [`GpuError::NoSurface`].
+    /// sRGB-encoded, though the surface stores B, G, R, A, at
+    /// [`Targets::surface_size`]. Without a surface it fails with
+    /// [`GpuError::NoSurface`].
     pub fn read_surface(&self, gpu: &Gpu) -> Result<Image, GpuError> {
         let (texture, _) = self.surface.as_ref().ok_or(GpuError::NoSurface)?;
-        let mut image = self.read(gpu, texture)?;
+        let mut image = self.read(gpu, texture, self.surface_size())?;
         for pixel in image.rgba8.as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
         }
         Ok(image)
     }
 
-    /// The bytes of a texture of this size with four bytes a pixel, as
-    /// stored.
-    fn read(&self, gpu: &Gpu, texture: &wgpu::Texture) -> Result<Image, GpuError> {
-        let row = self.width * 4;
+    /// The bytes of a `width` by `height` texture with four bytes a pixel,
+    /// as stored.
+    fn read(
+        &self,
+        gpu: &Gpu,
+        texture: &wgpu::Texture,
+        (width, height): (u32, u32),
+    ) -> Result<Image, GpuError> {
+        let row = width * 4;
         let stride =
             row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let buffer = gpu
             .scoped(|| {
                 let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("readback"),
-                    size: u64::from(stride) * u64::from(self.height),
+                    size: u64::from(stride) * u64::from(height),
                     usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                     mapped_at_creation: false,
                 });
@@ -374,12 +389,12 @@ impl Targets {
                         layout: wgpu::TexelCopyBufferLayout {
                             offset: 0,
                             bytes_per_row: Some(stride),
-                            rows_per_image: Some(self.height),
+                            rows_per_image: Some(height),
                         },
                     },
                     wgpu::Extent3d {
-                        width: self.width,
-                        height: self.height,
+                        width,
+                        height,
                         depth_or_array_layers: 1,
                     },
                 );
@@ -410,18 +425,42 @@ impl Targets {
         let mapped = buffer
             .get_mapped_range(..)
             .map_err(|e| GpuError::Wgpu(format!("reading the readback: {e}")))?;
-        let mut rgba8 = Vec::with_capacity(row as usize * self.height as usize);
+        let mut rgba8 = Vec::with_capacity(row as usize * height as usize);
         for line in mapped.chunks_exact(stride as usize) {
             rgba8.extend_from_slice(&line[..row as usize]);
         }
         drop(mapped);
         buffer.unmap();
         Ok(Image {
-            width: self.width,
-            height: self.height,
+            width,
+            height,
             rgba8,
         })
     }
+}
+
+/// A 2D texture of `width` by `height`, one level, named `label`.
+fn create_texture(
+    gpu: &Gpu,
+    label: &str,
+    (width, height): (u32, u32),
+    format: wgpu::TextureFormat,
+    usage: wgpu::TextureUsages,
+) -> wgpu::Texture {
+    gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage,
+        view_formats: &[],
+    })
 }
 
 /// A view of all of `texture`, named `label` in GPU debuggers.
@@ -430,37 +469,4 @@ fn labelled_view(texture: &wgpu::Texture, label: &str) -> wgpu::TextureView {
         label: Some(label),
         ..wgpu::TextureViewDescriptor::default()
     })
-}
-
-/// The output's pixels: RGBA8, sRGB-encoded as the output stores them, rows
-/// top first, with no padding.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Image {
-    pub width: u32,
-    pub height: u32,
-    /// `width * height * 4` bytes.
-    pub rgba8: Vec<u8>,
-}
-
-impl Image {
-    /// The pixel in column `x` and row `y`; (0, 0) is the top left.
-    ///
-    /// # Panics
-    ///
-    /// Outside the image.
-    pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
-        assert!(
-            x < self.width && y < self.height,
-            "pixel ({x}, {y}) is outside a {}x{} image",
-            self.width,
-            self.height
-        );
-        let at = (y as usize * self.width as usize + x as usize) * 4;
-        [
-            self.rgba8[at],
-            self.rgba8[at + 1],
-            self.rgba8[at + 2],
-            self.rgba8[at + 3],
-        ]
-    }
 }

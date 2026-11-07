@@ -4,10 +4,10 @@
 // Each test file uses some of these.
 #![allow(dead_code)]
 
-use eng_math::{BAngle, WorldPos, sin_cos_f64, sqrt_f64};
+use eng_math::{BAngle, Ev100, WorldPos, sin_cos_f64, sqrt_f64};
 use eng_render::{
-    Chunk, ColourTag, FirstPersonCamera, FirstPersonScene, Info, LinearRgb, Material, NEAR_PLANE,
-    SceneTexture, Sky, SurfaceClass,
+    Chunk, ColourTag, FirstPersonCamera, FirstPersonScene, Info, LIGHT_STEP_LUX, LinearRgb, Look,
+    Material, NEAR_PLANE, RegionLook, SceneTexture, Sky, SurfaceClass,
 };
 
 /// A quad of the room: an axis-aligned rectangle facing one way along its
@@ -222,22 +222,40 @@ pub fn materials() -> Vec<Material> {
 /// Where the camera stands in the room: at x 1, y 3, eyes 1 5/8 m up.
 pub const EYE: [f64; 3] = [1.0, 3.0, 1.625];
 
+/// The sky, in nits.
 pub const SKY: Sky = Sky {
     horizon: LinearRgb {
-        r: 0.25,
-        g: 0.4,
-        b: 0.7,
+        r: 10.0,
+        g: 16.0,
+        b: 28.0,
     },
     zenith: LinearRgb {
-        r: 0.02,
-        g: 0.06,
-        b: 0.3,
+        r: 0.8,
+        g: 2.4,
+        b: 12.0,
     },
 };
 
+/// The camera's exposure: 38.4 nits map to 1.
+pub const EV100: f64 = 5.0;
+
+/// The room's light, region 0, and the step's, region 1: Doom levels 200
+/// and 160, light steps 25 and 20.
+pub const REGIONS: [RegionLook; 2] = [
+    RegionLook {
+        light: 200,
+        ..RegionLook::DEFAULT
+    },
+    RegionLook {
+        light: 160,
+        ..RegionLook::DEFAULT
+    },
+];
+
 /// The camera at [`EYE`] with the room's corner at `corner`: yaw -22.5°
 /// (a sixteenth of a turn clockwise of +X), pitch 5.625° up, a 90°
-/// vertical field of view and the near plane eng-render picked.
+/// vertical field of view and the near plane eng-render picked, every look
+/// feature off.
 pub fn scene(corner: [f64; 3]) -> FirstPersonScene {
     FirstPersonScene {
         camera: FirstPersonCamera {
@@ -248,7 +266,17 @@ pub fn scene(corner: [f64; 3]) -> FirstPersonScene {
             near: NEAR_PLANE,
         },
         sky: SKY,
+        ev100: Ev100(EV100 as f32),
+        look: Look::OFF,
+        regions: REGIONS.to_vec(),
     }
+}
+
+/// The lux of region `region`'s light with every look feature off: its
+/// level over 8 is a whole step here.
+pub fn region_lux(region: u16) -> f64 {
+    let step = usize::from(REGIONS[usize::from(region)].light / 8);
+    f64::from(LIGHT_STEP_LUX[step])
 }
 
 /// The camera in f64, worked out from AGENTS.md's conventions rather than
@@ -378,17 +406,6 @@ pub fn sky_colour(sky: &Sky, ray: [f64; 3]) -> [f64; 3] {
     ]
 }
 
-/// A linear value encoded as an 8-bit sRGB code, unrounded.
-pub fn srgb_code(linear: f64) -> f64 {
-    let c = eng_math::clamp_f64(linear, 0.0, 1.0) as f32;
-    let encoded = if c <= 0.003_130_8 {
-        c * 12.92
-    } else {
-        1.055 * eng_math::pow(c, 1.0 / 2.4) - 0.055
-    };
-    f64::from(encoded) * 255.0
-}
-
 /// What the CPU says a pixel shows, from rays through its centre and a
 /// quarter pixel either way across and down.
 pub enum Seen {
@@ -430,10 +447,4 @@ pub fn depth_tolerance(face: &Face, camera: &Camera64, cx: f64, cy: f64) -> f64 
     let across = eng_math::max_f64(change(SNAP, 0.0), change(-SNAP, 0.0));
     let down = eng_math::max_f64(change(0.0, SNAP), change(0.0, -SNAP));
     1e-5 * d + across + down
-}
-
-/// Whether `got`'s colour is within one level of `want` in each channel,
-/// and opaque.
-pub fn near_colour(got: [u8; 4], want: [f64; 3]) -> bool {
-    got[3] == 255 && (0..3).all(|c| (f64::from(got[c]) - want[c]).abs() <= 1.0)
 }

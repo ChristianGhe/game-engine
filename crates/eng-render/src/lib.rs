@@ -45,17 +45,27 @@
 //!   acceptance feature `gpu-report-budgets`).
 //!
 //! Rung 2's first-person pipeline (`render-retro`, ADR-0020), beside the
-//! top-down view and sharing nothing with it but the clamp and blit shaders:
-//! - **[`FirstPersonRenderer`]** (task T9) draws a [`GpuWorld`] as a
-//!   [`FirstPersonScene`] sees it, through eng-gpu's sorted graph: `opaque`
-//!   draws the world's [`Chunk`]s, each placed by one instance record of
-//!   its origin minus the eye taken in f64, into linear albedo, reversed-Z
-//!   depth (`near / distance ahead`, 0 where nothing was drawn) and `info`
-//!   ([`Info`]: region, [`SurfaceClass`] and object id in two `u32`s);
-//!   `light` is albedo as it is until T10; `sky` draws the [`Sky`] where
-//!   the depth is 0; then rung 1b's clamp into the output. Its
-//!   [`FirstPersonRenderer::read_depth`] and
-//!   [`FirstPersonRenderer::read_info`] read those targets back.
+//! top-down view and sharing nothing with it but the blit shader:
+//! - **[`FirstPersonRenderer`]** (tasks T9 and T10) draws a [`GpuWorld`]
+//!   as a [`FirstPersonScene`] sees it, through eng-gpu's sorted graph:
+//!   `opaque` draws the world's [`Chunk`]s, each placed by one instance
+//!   record of its origin minus the eye taken in f64, into linear albedo,
+//!   reversed-Z depth (`near / distance ahead`, 0 where nothing was drawn)
+//!   and `info` ([`Info`]: region, [`SurfaceClass`] and object id in two
+//!   `u32`s); `light` lights the albedo by its region's light in lux
+//!   ([`RegionLook`], [`LIGHT_STEP_LUX`]) into luminance in nits; `sky`
+//!   draws the [`Sky`] where the depth is 0; `fog` moves each pixel toward
+//!   its region's fog with distance; `tonemap` exposes by the scene's
+//!   EV100 ([`exposure`]) and maps by Khronos PBR Neutral (plan decision
+//!   7); `palette` maps the display colours through a [`PaletteLut`]
+//!   (decision 8) into the output; and `present` blits it, k×k into a
+//!   window for eng-gpu's upscaled targets. Each look feature switches off
+//!   alone ([`Look`]), fog and palette by bypassing their passes; with all
+//!   off the image is the plain pipeline's
+//!   ([`FirstPersonRenderer::render_plain`]). Its
+//!   [`FirstPersonRenderer::read_depth`], [`FirstPersonRenderer::read_info`],
+//!   [`FirstPersonRenderer::read_lit`] and
+//!   [`FirstPersonRenderer::read_fogged`] read those targets back.
 //! - **[`FirstPersonCamera`]**: an f64 eye, [`BAngle`](eng_math::BAngle)
 //!   yaw and pitch, a vertical field of view and a near plane
 //!   ([`NEAR_PLANE`], 0.1 m), made ready for an aspect ratio as a
@@ -65,7 +75,9 @@
 //!   sees, by plan decision 4's integer rule, and [`RotationSheet`]'s
 //!   mirror flags for sheets that draw only 5.
 //! - **[`PaletteLut`]**: the palette look's 32x32x32 table, baked from
-//!   sRGB colours by OKLab distance, and the [`BAYER_4X4`] dither matrix.
+//!   sRGB colours by OKLab distance, and the [`BAYER_4X4`] dither matrix;
+//!   **[`GplPalette`]** reads the colours from GIMP's plain-text `.gpl`
+//!   format, strictly.
 //!
 //! Their floats go through eng-math only, as the simulation's do, so the
 //! numbers do not depend on the target's own maths library.
@@ -74,6 +86,7 @@
 mod camera;
 mod error;
 mod first_person;
+mod gpl;
 mod palette;
 mod renderer;
 mod scene;
@@ -83,9 +96,11 @@ pub use camera::{Clip, FirstPersonCamera, Mat4, NEAR_PLANE, ViewBasis, ViewProj}
 pub use eng_gpu::{ColourTag, FrameCounters, Material, SceneTexture, Texels, TextureSlot};
 pub use error::RenderError;
 pub use first_person::{
-    Chunk, FirstPersonRenderer, FirstPersonScene, GpuWorld, Info, Sky, SurfaceClass, WorldMesh,
-    WorldVertex,
+    CONTRAST_STEPS, Chunk, DITHER_CODES, FirstPersonRenderer, FirstPersonScene, GpuWorld, Info,
+    LIGHT_FALLOFF, LIGHT_STEP_LUX, LIGHT_STEPS, LOW_RESOLUTION, Look, MAX_REGIONS, RegionLook, Sky,
+    SurfaceClass, WorldMesh, WorldVertex, exposure,
 };
+pub use gpl::GplPalette;
 pub use palette::{
     BAYER_4X4, LUT_CELLS, LUT_SIDE, MAX_PALETTE_COLOURS, Oklab, PaletteError, PaletteLut, Srgb8,
     bayer, bayer4_offset, lut_cell_centre, srgb_to_linear,

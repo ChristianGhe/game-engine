@@ -301,3 +301,107 @@ fn a_transient_is_read_only_where_its_texture_still_holds_it() {
             .is_err_and(|e| e.to_string().contains("the last one failed"))
     );
 }
+
+const TONED: Transient = Transient::new("toned", Format::Rgba8UnormSrgb);
+const MAP: PassNode = node("map", &[], &[Resource::Transient(TONED)]);
+const LOOK: PassNode = PassNode {
+    bypassable: true,
+    ..node("look", &[Resource::Transient(TONED)], &[Resource::Output])
+};
+
+/// Readback's two bypass paths (rung 2, T10; first used by the first-person
+/// fog and palette passes): a transient whose writer is switched off is
+/// read from its input's texture, which its readers read; one bypassed into
+/// a built-in resource is refused, naming it.
+#[test]
+fn a_bypassed_transient_reads_its_input_or_names_the_resource_it_went_into() {
+    let Some(gpu) = rig::gpu() else { return };
+    let fullscreen = |wgsl: &str, entry: &str, target: Resource| {
+        gpu.fullscreen_pipeline(&FullscreenDesc {
+            label: entry,
+            wgsl,
+            entry,
+            target,
+        })
+        .unwrap_or_else(|e| panic!("{e}"))
+    };
+    let targets = rig::targets(&gpu, 8, 4);
+    let read = |graph: &Graph, transient| {
+        targets
+            .read_transient(&gpu, graph, transient)
+            .unwrap_or_else(|e| panic!("{e}"))
+    };
+
+    // A chain whose first step is switched off: its write, `pong`, takes
+    // `ping`'s texture.
+    let step_1 = PassNode {
+        bypassable: true,
+        ..STEP_1
+    };
+    let nodes = [START, step_1, STEP_2, OUT];
+    let off = Graph::sorted_without(&nodes, &["step-1"], Target::Offscreen)
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(off.bypassed(), ["step-1"]);
+    let mut start = Clear(START.decl(), rgba(0.5, 0.5, 0.5, 1.0));
+    let mut step = Fullscreen(
+        step_1.decl(),
+        fullscreen(BRIGHTEN, "brighten_fragment", Resource::Transient(PONG)),
+    );
+    let mut again = Fullscreen(
+        STEP_2.decl(),
+        fullscreen(
+            BRIGHTEN,
+            "brighten_fragment",
+            Resource::Transient(PING_AGAIN),
+        ),
+    );
+    let mut out = Fullscreen(
+        OUT.decl(),
+        fullscreen(COPY_WGSL, "copy_fragment", Resource::Output),
+    );
+    off.render(
+        &gpu,
+        &targets,
+        &mut [&mut start, &mut step, &mut again, &mut out],
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let half = |value: u16| {
+        let [lo, hi] = value.to_le_bytes();
+        [lo, hi, lo, hi, lo, hi, HALF_ONE[0], HALF_ONE[1]]
+    };
+    let (pong, ping) = (read(&off, PONG), read(&off, PING));
+    assert_eq!(pong, ping);
+    // 0.5, not brightened: the step did not run, and the next one read it.
+    assert_eq!(pong.texel(3, 2), half(0x3800));
+    assert_eq!(read(&off, PING_AGAIN).texel(3, 2), half(0x3A00));
+
+    // A look pass bypassed into the output: the map draws there, and its
+    // `toned` has no texture of its own to read.
+    let mut map = Clear(MAP.decl(), rgba(0.25, 0.5, 1.0, 1.0));
+    let mut look = Fullscreen(
+        LOOK.decl(),
+        fullscreen(COPY_WGSL, "copy_fragment", Resource::Output),
+    );
+    let on = Graph::sorted(&[MAP, LOOK], Target::Offscreen).unwrap_or_else(|e| panic!("{e}"));
+    on.render(&gpu, &targets, &mut [&mut map, &mut look])
+        .unwrap_or_else(|e| panic!("{e}"));
+    let toned = read(&on, TONED);
+    let output = targets.read_output(&gpu).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(toned.texel(1, 1), output.pixel(1, 1));
+    let off = Graph::sorted_without(&[MAP, LOOK], &["look"], Target::Offscreen)
+        .unwrap_or_else(|e| panic!("{e}"));
+    off.render(&gpu, &targets, &mut [&mut map, &mut look])
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        targets.read_transient(&gpu, &off, TONED).map(drop),
+        Err(eng_gpu::GpuError::Readback {
+            transient: "toned",
+            message: "it is drawn into `output`, bypassed; read that instead".into(),
+        })
+    );
+    assert_eq!(
+        targets.read_output(&gpu).unwrap_or_else(|e| panic!("{e}")),
+        output,
+        "the map drew into the output"
+    );
+}

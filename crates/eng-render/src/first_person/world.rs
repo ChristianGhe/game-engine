@@ -11,11 +11,16 @@
 
 use std::ops::Range;
 
-use eng_gpu::{Attribute, Gpu, Material, Scene, SceneDesc, SceneTexture, TextureSlot};
+use eng_gpu::{Attribute, ColourTag, Gpu, Material, Scene, SceneDesc, SceneTexture, TextureSlot};
 use eng_math::WorldPos;
 
 use super::info::{Info, SurfaceClass};
-use crate::RenderError;
+use crate::{PaletteLut, RenderError};
+
+/// The palette table's layers: its 32,768 cells, 64x64 a layer.
+const PALETTE_LAYERS: usize = 8;
+/// The side of the scene textures the palette table is cut into.
+const PALETTE_SIDE: u32 = 64;
 
 /// The layout of [`WorldVertex`] as the opaque pass reads it: position,
 /// texture coordinates, material, then `info`'s two words.
@@ -144,6 +149,9 @@ pub(crate) struct ChunkDraw {
 pub struct GpuWorld {
     pub(crate) scene: Scene,
     pub(crate) chunks: Vec<ChunkDraw>,
+    /// The palette table's first layer in the 64 px sRGB array, if the
+    /// world was loaded with one.
+    pub(crate) palette: Option<u32>,
 }
 
 impl GpuWorld {
@@ -158,6 +166,27 @@ impl GpuWorld {
     /// material or `info`. eng-gpu's own refusals (textures,
     /// [`eng_gpu::Gpu::scene`]) come back as `[E-GPU]`.
     pub fn load(gpu: &Gpu, mesh: &WorldMesh<'_>) -> Result<Self, RenderError> {
+        Self::upload(gpu, mesh, None)
+    }
+
+    /// Like [`GpuWorld::load`], with the palette look's table, which the
+    /// palette pass reads: `palette`'s 32x32x32 cells as eight 64 px sRGB
+    /// layers after `mesh`'s own textures (so [`GpuWorld::texture_slot`]
+    /// numbers them [`WorldMesh::textures`]' length on). The 64 px sRGB
+    /// array then holds 8 layers more, of its 256.
+    pub fn load_with_palette(
+        gpu: &Gpu,
+        mesh: &WorldMesh<'_>,
+        palette: &PaletteLut,
+    ) -> Result<Self, RenderError> {
+        Self::upload(gpu, mesh, Some(palette))
+    }
+
+    fn upload(
+        gpu: &Gpu,
+        mesh: &WorldMesh<'_>,
+        palette: Option<&PaletteLut>,
+    ) -> Result<Self, RenderError> {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
         let mut chunks = Vec::new();
@@ -187,14 +216,56 @@ impl GpuWorld {
                 });
             }
         }
+        let table = palette.map(PaletteLut::to_rgba8).unwrap_or_default();
+        let layer_bytes = (PALETTE_SIDE * PALETTE_SIDE * 4) as usize;
+        let mut textures = mesh.textures.to_vec();
+        textures.extend(table.chunks_exact(layer_bytes).map(|rgba8| SceneTexture {
+            side: PALETTE_SIDE,
+            tag: ColourTag::Srgb,
+            rgba8,
+        }));
         let scene = gpu.scene(&SceneDesc {
             label: mesh.label,
             vertices: &vertices,
             indices: &indices,
             materials: mesh.materials,
-            textures: mesh.textures,
+            textures: &textures,
         })?;
-        Ok(Self { scene, chunks })
+        // The n-th texture of a side and tag is layer n, so the table's
+        // eight follow one another.
+        let palette = match palette {
+            Some(_) => {
+                let first = mesh.textures.len();
+                let layers: Vec<Option<u32>> = (first..first + PALETTE_LAYERS)
+                    .map(|index| scene.slot(index).map(|slot| slot.layer))
+                    .collect();
+                let start = layers[0].unwrap_or(0);
+                let consecutive = (0u32..)
+                    .zip(&layers)
+                    .all(|(n, layer)| *layer == Some(start + n));
+                if !consecutive {
+                    return Err(RenderError::Scene {
+                        shape: None,
+                        problem: format!(
+                            "the palette table's layers are {layers:?}, not eight in a row"
+                        ),
+                    });
+                }
+                Some(start)
+            }
+            None => None,
+        };
+        Ok(Self {
+            scene,
+            chunks,
+            palette,
+        })
+    }
+
+    /// Whether it was loaded with a palette table
+    /// ([`GpuWorld::load_with_palette`]), which the palette look needs.
+    pub fn has_palette(&self) -> bool {
+        self.palette.is_some()
     }
 
     /// The bytes written to the GPU when it loaded ([`Scene::bytes`]).
@@ -203,8 +274,8 @@ impl GpuWorld {
     }
 
     /// Where texture `index` of [`WorldMesh::textures`] went: its array and
-    /// layer, for a pass that reads a texture as data (such as T10's
-    /// palette table).
+    /// layer, for a pass that reads a texture as data. The palette table's
+    /// eight layers follow the mesh's own textures.
     pub fn texture_slot(&self, index: usize) -> Option<TextureSlot> {
         self.scene.slot(index)
     }

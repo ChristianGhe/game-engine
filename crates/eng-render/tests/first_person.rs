@@ -4,7 +4,9 @@
 //! meters from the origin, is drawn; then every pixel that a CPU ray cast
 //! in f64 calls unambiguous is checked: its depth against `near / distance
 //! ahead`, its `info` against the face's, its colour against the face's
-//! texture or the sky's. Without an adapter each test skips, unless
+//! texture or the sky's, lit by its region's light, exposed and tone mapped
+//! as the CPU reference does it (`tone/mod.rs`; T10), with every look
+//! feature off. Without an adapter each test skips, unless
 //! `ENG_REQUIRE_GPU=1` (CI) makes it fail.
 //!
 //! **The depth tolerance** at a pixel is `1e-5 * depth`, plus how much the
@@ -23,6 +25,7 @@
 //! On an M2 Pro (Metal) the worst pixel used 3% of its tolerance.
 
 mod room;
+mod tone;
 
 use eng_gpu::{Gpu, GpuError, GpuOptions, Image, Targets};
 use eng_math::{BAngle, WorldPos};
@@ -30,7 +33,8 @@ use eng_render::{
     Chunk, FirstPersonCamera, FirstPersonRenderer, FirstPersonScene, FrameCounters, GpuWorld, Info,
     NEAR_PLANE, SurfaceClass, Texels, WorldMesh,
 };
-use room::{AROUND, Camera64, Seen, depth_tolerance, near_colour, seen};
+use room::{AROUND, Camera64, Seen, depth_tolerance, seen};
+use tone::within_one;
 
 fn gpu() -> Option<Gpu> {
     match Gpu::new(&GpuOptions::from_env()) {
@@ -124,8 +128,11 @@ fn a_known_room_renders_with_depth_info_and_sky_as_the_cpu_computes_them() {
                 Seen::Edge => edges += 1,
                 Seen::Sky => {
                     sky += 1;
-                    let want = room::sky_colour(&room::SKY, ray).map(room::srgb_code);
-                    if depth != 0.0 || info != Some(Info::NONE) || !near_colour(pixel, want) {
+                    // The look's sky is flat: the horizon's colour.
+                    let horizon = room::SKY.horizon;
+                    let nits = [horizon.r, horizon.g, horizon.b].map(f64::from);
+                    let want = tone::toned_codes(nits, room::EV100);
+                    if depth != 0.0 || info != Some(Info::NONE) || !within_one(pixel, want) {
                         failures.push(format!(
                             "({x}, {y}) should be sky {want:.1?}: depth {depth}, info {info:?}, \
                              colour {pixel:?}"
@@ -161,8 +168,10 @@ fn a_known_room_renders_with_depth_info_and_sky_as_the_cpu_computes_them() {
                             room::floor_half(camera.eye, around, ta)
                                 == room::floor_half(camera.eye, ray, t)
                         });
-                    let want = room::face_colour(face, camera.eye, ray, t).map(f64::from);
-                    if colour_known && !near_colour(pixel, want) {
+                    let albedo = room::face_colour(face, camera.eye, ray, t);
+                    let lux = room::region_lux(face.info.region);
+                    let want = tone::toned_codes(tone::lambert(albedo, lux), room::EV100);
+                    if colour_known && !within_one(pixel, want) {
                         failures.push(format!(
                             "({x}, {y}) on face {}: colour {pixel:?}, texture {want:?}",
                             face.info.id
@@ -207,9 +216,10 @@ fn a_known_room_renders_with_depth_info_and_sky_as_the_cpu_computes_them() {
     }
     assert!(sky >= 5_000, "only {sky} sky pixels");
     assert!(edges < W * H / 20, "{edges} edge pixels");
-    // Two chunk draws, then light, sky and the tone map: four pipelines;
-    // opaque, light and sky bind the frame and the scene or their reads,
-    // the tone map its input; the 144-byte uniform and two records.
+    // Two chunk draws, then light, sky and the tone map, fog and the
+    // palette bypassed: four pipelines; opaque binds the frame and the
+    // scene, the others the frame and their reads; the 624-byte uniform
+    // and two records.
     let counters = frame.counters;
     assert_eq!(
         (
@@ -218,7 +228,7 @@ fn a_known_room_renders_with_depth_info_and_sky_as_the_cpu_computes_them() {
             counters.bind_group_switches,
             counters.upload_bytes
         ),
-        (5, 4, 7, 144 + 2 * 16)
+        (5, 4, 8, 624 + 2 * 16)
     );
 }
 
@@ -258,7 +268,7 @@ fn with_a_surface_the_frame_is_presented_too() {
             counters.pipeline_switches,
             counters.bind_group_switches
         ),
-        (6, 5, 8)
+        (6, 5, 9)
     );
 }
 
@@ -342,7 +352,7 @@ fn holes_in_the_corner(gpu: &Gpu, renderer: &FirstPersonRenderer, near: f32) -> 
                     fov_y: BAngle::QUARTER,
                     near,
                 },
-                sky: room::SKY,
+                ..room::scene([0.0; 3])
             };
             renderer
                 .render(gpu, &targets, &world, &scene)

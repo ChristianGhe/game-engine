@@ -1,7 +1,8 @@
 //! The palette look's CPU half (spec 6.7; rung 2 plan, decision 8): a 3D
 //! lookup table baked from a list of sRGB colours by OKLab distance, and
 //! the Bayer matrix for the optional ordered dither. The palette pass
-//! itself, and the plain-text palette reader (task T10), live elsewhere.
+//! (`palette.wgsl`) and the plain-text palette reader (`gpl.rs`) came with
+//! task T10.
 //!
 //! - **What the table maps.** The palette pass runs after the tone map, on
 //!   display colours: 8-bit sRGB codes. The table has [`LUT_SIDE`] = 32
@@ -129,6 +130,9 @@ pub enum PaletteError {
     /// The palette lists more colours than one byte can index.
     /// `[E-PALETTE]`
     TooMany { count: usize },
+    /// A palette file's line `line` (counted from 1) breaks the format
+    /// ([`crate::GplPalette::parse`]). `[E-PALETTE]`
+    Format { line: usize, problem: String },
 }
 
 impl fmt::Display for PaletteError {
@@ -140,6 +144,7 @@ impl fmt::Display for PaletteError {
                 "[E-PALETTE] the palette lists {count} colours; at most \
                  {MAX_PALETTE_COLOURS} fit one-byte indices"
             ),
+            Self::Format { line, problem } => write!(f, "[E-PALETTE] line {line}: {problem}"),
         }
     }
 }

@@ -92,6 +92,11 @@
 //!   format, `Bgra8UnormSrgb`, standing in for a window's: a
 //!   [`Target::Surface`] graph then renders whole, and
 //!   [`Targets::read_surface`] reads back what it presented, in RGBA order.
+//!   [`Targets::upscaled`] makes targets for rung 2's low internal
+//!   resolution (ADR-0020): the window's size over an integer k, rounded
+//!   down, whose present pass draws each texel as k×k pixels of the
+//!   window's image ([`Targets::surface_size`]), centred, the remainder
+//!   black.
 //! - **[`WindowSurface`]**: a window's own surface, from [`Gpu::with_window`]
 //!   on an adapter that can present to it, in `Bgra8UnormSrgb`, or
 //!   `Bgra8Unorm` drawn through an sRGB view (`[E-GPU]` if it offers
@@ -144,7 +149,7 @@ pub use instanced::{Attribute, InstancedDesc, InstancedPipeline};
 pub use layout::MAX_COLOUR_TARGETS;
 pub use mesh::{MeshDesc, MeshDraw, MeshPipeline};
 pub use pass::{FrameInput, LinearRgba, Pass, PassRecorder};
-pub use readback::Texels;
+pub use readback::{Image, Texels};
 pub use report::{Backend, Capabilities, DeviceType, GpuReport};
 pub use scene::{
     ColourTag, InstanceRecord, MAX_TEXTURE_LAYERS, Material, Scene, SceneDesc, SceneTexture,
@@ -152,5 +157,5 @@ pub use scene::{
 };
 pub use screen::{ScreenDesc, ScreenPipeline};
 pub use surface::{SurfaceFrame, WindowSurface};
-pub use targets::{Image, READBACK_LIMIT, Targets};
+pub use targets::{READBACK_LIMIT, Targets};
 pub use timing::{FrameStats, PassTime};

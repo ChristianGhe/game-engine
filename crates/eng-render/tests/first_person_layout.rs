@@ -1,15 +1,21 @@
-//! The first-person view's CPU side (rung 2, task T9), no GPU needed:
-//! `info`'s packing, the world vertex and chunk layouts, the per-frame
-//! uniform's declaration in every shader, the camera's rays, and the near
-//! plane's bounds.
+//! The first-person view's CPU side (rung 2, tasks T9 and T10), no GPU
+//! needed: `info`'s packing, the world vertex and chunk layouts, the
+//! per-frame uniform's declaration in every shader, the constants the
+//! shaders repeat, the camera's rays, and the near plane's bounds.
 
 use eng_math::{BAngle, WorldPos, sin_cos_f64, sqrt_f64};
-use eng_render::{Chunk, FirstPersonCamera, Info, NEAR_PLANE, SurfaceClass, WorldVertex};
+use eng_render::{
+    BAYER_4X4, Chunk, FirstPersonCamera, Info, LIGHT_STEPS, MAX_REGIONS, NEAR_PLANE, SurfaceClass,
+    WorldVertex,
+};
 use proptest::prelude::*;
 
 const OPAQUE_WGSL: &str = include_str!("../src/opaque.wgsl");
 const SKY_WGSL: &str = include_str!("../src/sky.wgsl");
-const UNLIT_WGSL: &str = include_str!("../src/unlit.wgsl");
+const LIGHT_WGSL: &str = include_str!("../src/light.wgsl");
+const FOG_WGSL: &str = include_str!("../src/fog.wgsl");
+const TONEMAP_WGSL: &str = include_str!("../src/pbr_neutral.wgsl");
+const PALETTE_WGSL: &str = include_str!("../src/palette.wgsl");
 
 fn class() -> impl Strategy<Value = SurfaceClass> {
     (0..SurfaceClass::ALL.len()).prop_map(|i| SurfaceClass::ALL[i])
@@ -142,10 +148,10 @@ fn frame_struct(wgsl: &str) -> Option<&str> {
 #[test]
 fn every_first_person_shader_declares_the_uniform_alike() {
     let opaque = frame_struct(OPAQUE_WGSL).expect("opaque.wgsl declares the uniform");
-    assert_eq!(frame_struct(SKY_WGSL), Some(opaque));
-    // The interim light reads no uniform yet.
-    assert_eq!(frame_struct(UNLIT_WGSL), None);
-    // Nine 16-byte rows, as `first_person/frame.rs` writes them.
+    for wgsl in [SKY_WGSL, LIGHT_WGSL, FOG_WGSL, TONEMAP_WGSL, PALETTE_WGSL] {
+        assert_eq!(frame_struct(wgsl), Some(opaque));
+    }
+    // 39 16-byte rows, as `first_person/frame.rs` writes them.
     let fields: Vec<&str> = opaque
         .lines()
         .skip(1)
@@ -161,8 +167,47 @@ fn every_first_person_shader_declares_the_uniform_alike() {
             "ray_up: vec4<f32>,",
             "sky_horizon: vec4<f32>,",
             "sky_zenith: vec4<f32>,",
+            "look: vec4<f32>,",
+            "switches: vec4<u32>,",
+            "light_steps: array<vec4<f32>, 8>,",
+            "region_light: array<vec4<f32>, 4>,",
+            "region_fog: array<vec4<f32>, 16>,",
         ]
     );
+    // The arrays hold what eng-render sizes them for.
+    assert_eq!(LIGHT_STEPS, 8 * 4);
+    assert_eq!(MAX_REGIONS, 4 * 4);
+    for wgsl in [LIGHT_WGSL, FOG_WGSL] {
+        assert!(wgsl.contains("const LAST_REGION: u32 = 15u;"));
+    }
+}
+
+#[test]
+fn the_shaders_repeat_the_crates_constants() {
+    // The palette pass's Bayer matrix, row by row.
+    let start = PALETTE_WGSL
+        .find("const BAYER_4X4: array<u32, 16> = array<u32, 16>(")
+        .expect("palette.wgsl declares the matrix");
+    let end = start + PALETTE_WGSL[start..].find(");").expect("the matrix ends");
+    let values: Vec<u8> = PALETTE_WGSL[start..end]
+        .split_once('(')
+        .map(|(_, list)| list)
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.trim_end_matches('u').parse().expect("a u32 literal"))
+        .collect();
+    assert_eq!(values, BAYER_4X4.concat());
+    // The class codes the light pass reads.
+    assert!(LIGHT_WGSL.contains(&format!(
+        "const WALL_FACING_X: u32 = {}u;",
+        SurfaceClass::WallFacingX.code()
+    )));
+    assert!(LIGHT_WGSL.contains(&format!(
+        "const WALL_FACING_Y: u32 = {}u;",
+        SurfaceClass::WallFacingY.code()
+    )));
 }
 
 fn camera(yaw: u32, pitch: u32, fov: u32) -> FirstPersonCamera {

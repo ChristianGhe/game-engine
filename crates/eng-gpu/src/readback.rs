@@ -1,7 +1,8 @@
 //! Reading a transient back (rung 2, T9): what a graph's last frame left in
 //! one of its transients, such as the first-person `depth` and `info`, for
 //! depth probes, id checks and frame records (plan addition A1). Rung 1b's
-//! readback of the output and the surface is `targets.rs`'s, unchanged.
+//! readback of the output and the surface is `targets.rs`'s, unchanged, and
+//! gives the [`Image`] defined here.
 
 use crate::error::GpuError;
 use crate::gpu::Gpu;
@@ -247,4 +248,37 @@ fn copy_back(
     drop(mapped);
     buffer.unmap();
     Ok(bytes)
+}
+
+/// The output's pixels: RGBA8, sRGB-encoded as the output stores them, rows
+/// top first, with no padding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Image {
+    pub width: u32,
+    pub height: u32,
+    /// `width * height * 4` bytes.
+    pub rgba8: Vec<u8>,
+}
+
+impl Image {
+    /// The pixel in column `x` and row `y`; (0, 0) is the top left.
+    ///
+    /// # Panics
+    ///
+    /// Outside the image.
+    pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
+        assert!(
+            x < self.width && y < self.height,
+            "pixel ({x}, {y}) is outside a {}x{} image",
+            self.width,
+            self.height
+        );
+        let at = (y as usize * self.width as usize + x as usize) * 4;
+        [
+            self.rgba8[at],
+            self.rgba8[at + 1],
+            self.rgba8[at + 2],
+            self.rgba8[at + 3],
+        ]
+    }
 }

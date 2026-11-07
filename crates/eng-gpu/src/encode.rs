@@ -20,6 +20,9 @@ struct Views<'a> {
     colours: Vec<&'a wgpu::TextureView>,
     depth: Option<&'a wgpu::TextureView>,
     reads: Vec<&'a wgpu::TextureView>,
+    /// Where in its target the pass draws, `[x, y, width, height]`, if not
+    /// all of it: the present pass of upscaled targets.
+    viewport: Option<[f32; 4]>,
 }
 
 impl Graph {
@@ -114,10 +117,16 @@ impl Graph {
                 .iter()
                 .map(|&r| view(r))
                 .collect::<Result<_, _>>()?;
+            let viewport = if decl.writes.contains(&Resource::Surface) {
+                targets.present_viewport()
+            } else {
+                None
+            };
             views.push(Views {
                 colours,
                 depth,
                 reads,
+                viewport,
             });
         }
         // Every 1b instance of the frame, in the order the passes draw them.

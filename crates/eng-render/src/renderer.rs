@@ -175,9 +175,8 @@ impl Pass for TopDown<'_> {
     }
 }
 
-/// The tone map or the present blit: one fullscreen draw. The first-person
-/// graph draws its interim tone map and its blit with it too.
-pub(crate) struct Fullscreen<'a>(pub(crate) PassDecl, pub(crate) &'a FullscreenPipeline);
+/// The tone map or the present blit: one fullscreen draw.
+struct Fullscreen<'a>(PassDecl, &'a FullscreenPipeline);
 
 impl Pass for Fullscreen<'_> {
     fn decl(&self) -> PassDecl {

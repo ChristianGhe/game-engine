@@ -105,6 +105,11 @@ impl Frame<'_> {
             occlusion_query_set: None,
             multiview_mask: None,
         });
+        // Upscaled targets' present pass: the clear covers the whole window
+        // image, the draws only the scaled output.
+        if let Some([x, y, width, height]) = views.viewport {
+            pass.set_viewport(x, y, width, height, 0.0, 1.0);
+        }
         let mut state = PassState::default();
         for command in &rec.commands {
             match command {

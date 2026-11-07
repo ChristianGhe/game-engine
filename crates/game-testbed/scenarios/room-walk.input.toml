@@ -1,0 +1,40 @@
+# A tour of the room from spawn S0 (1.5, 4.5), facing east: south of the
+# pillar, north up the step and onto the platform, west off it, then to a
+# stop under the skylight; look up into it, then toward the alcove.
+# 600 ticks (10 s). The room's layout: game-testbed-sim, src/room/layout.rs.
+version = 1
+
+[[segment]]
+ticks = 30
+forward = 127
+yaw_deg = -45.0
+
+[[segment]]
+ticks = 90
+forward = 127
+yaw_deg = 0.0
+
+# Up the step (0.2 m) at x = 9.3, then onto the platform (0.4 m).
+[[segment]]
+ticks = 80
+forward = 127
+yaw_deg = 90.0
+
+# Across the platform and off its west side, a 0.4 m drop that snaps down.
+[[segment]]
+ticks = 80
+forward = 127
+yaw_deg = 195.0
+
+# Stop under the skylight.
+[[segment]]
+ticks = 120
+
+[[segment]]
+ticks = 100
+pitch_deg = 60.0
+
+[[segment]]
+ticks = 100
+yaw_deg = -30.0
+pitch_deg = 0.0

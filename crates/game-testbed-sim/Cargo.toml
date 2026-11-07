@@ -1,6 +1,6 @@
 [package]
 name = "game-testbed-sim"
-description = "The testbed game's simulation: the headless dot."
+description = "The testbed game's simulation: the headless dot and the room."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 eng-collision-api.workspace = true
+eng-collision-grid.workspace = true
 eng-core.workspace = true
 eng-ecs.workspace = true
 eng-math.workspace = true
@@ -17,7 +18,8 @@ eng-sim.workspace = true
 kit-fps.workspace = true
 
 [dev-dependencies]
-
+eng-net-transport.workspace = true
+eng-net-wire.workspace = true
 
 [lints]
 workspace = true

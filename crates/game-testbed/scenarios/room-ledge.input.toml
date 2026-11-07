@@ -1,0 +1,14 @@
+# From spawn S0 (1.5, 4.5), run south-east into the ledge's north face
+# (0.6 m, more than a step), slide east along it, then push straight into
+# it. 300 ticks. The room's layout: game-testbed-sim, src/room/layout.rs.
+version = 1
+
+[[segment]]
+ticks = 120
+forward = 127
+yaw_deg = -25.0
+
+[[segment]]
+ticks = 180
+forward = 127
+yaw_deg = -90.0

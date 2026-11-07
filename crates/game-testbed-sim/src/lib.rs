@@ -1,12 +1,18 @@
 //! The testbed game's simulation: the content engine CI exercises.
 //!
-//! Rung 1a, "headless dot": one dot per player in an 8 m by 6 m room, moved
-//! by [`PlayerCommand`](eng_core::PlayerCommand)s through `kit-fps`. A dot's
-//! start position comes from the gameplay random stream, so the seed matters.
+//! Two maps (rung 2 plan, decision 1):
+//! - `dots`, [`build`], rung 1a's "headless dot": one dot per player in an
+//!   8 m by 6 m room, moved by [`PlayerCommand`](eng_core::PlayerCommand)s
+//!   through `kit-fps`. A dot's start position comes from the gameplay
+//!   random stream, so the seed matters. It has no sim data.
+//! - `room`, [`room::build`], rung 2's first-person hall over a collision
+//!   grid, whose geometry is sim data ([`room`]).
 #![no_std]
 #![forbid(unsafe_code)]
 
 extern crate alloc;
+
+pub mod room;
 
 use alloc::vec::Vec;
 

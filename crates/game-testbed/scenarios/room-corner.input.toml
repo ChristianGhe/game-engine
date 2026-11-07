@@ -1,0 +1,15 @@
+# From spawn S0 (1.5, 4.5), run east-south-east south of the pillar and
+# into the alcove, then turn south-east: along its south wall into its
+# back corner, and keep pushing. 300 ticks. The room's layout:
+# game-testbed-sim, src/room/layout.rs.
+version = 1
+
+[[segment]]
+ticks = 170
+forward = 127
+yaw_deg = -15.0
+
+[[segment]]
+ticks = 130
+forward = 127
+yaw_deg = -35.0

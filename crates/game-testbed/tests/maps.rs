@@ -3,8 +3,8 @@
 //! data, so every 1b command line, stream, dump and recording keeps its
 //! bytes; an unknown map exits 64 with `[E-MAP]`; reports name the map, its
 //! protocol and sim-data hash, and the files read; `replay verify` picks a
-//! map by the recording's sim-data hash. A map with sim data is tested in
-//! eng-cli (`src/maps/tests.rs`) until the room lands.
+//! map by the recording's sim-data hash. `room`, the map with sim data, is
+//! `tests/room.rs`'s.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -128,7 +128,7 @@ fn an_unknown_map_exits_64_before_anything_runs() {
         args.extend(["--map", "nowhere"]);
         let out = probe(&dir, &args);
         assert_eq!(out.status.code(), Some(64), "{args:?}: {}", text(&out));
-        let expected = "[E-USAGE] [E-MAP] unknown map \"nowhere\"; game-testbed has dots";
+        let expected = "[E-USAGE] [E-MAP] unknown map \"nowhere\"; game-testbed has dots, room\n";
         assert!(text(&out).contains(expected), "{args:?}: {}", text(&out));
         for file in ["r.json", "w.json", "s.png", "v.apng"] {
             assert!(!dir.join(file).exists(), "{args:?} wrote {file}");
@@ -166,9 +166,11 @@ fn a_dot_recording_has_no_sim_data_and_replays_on_dots() {
         &["replay", "verify", "other.rec", "--report", "o.json"],
     );
     assert_eq!(out.status.code(), Some(64), "{}", text(&out));
+    // Every map is listed with its hash; the room's is pinned in
+    // game-testbed-sim's `tests/sim_data.rs`.
     let expected = "[E-RECORDING-BUILD] recordings are valid only for the build that made \
                     them: sim_data_hash recorded 0x0123456789abcdef, and no map of this build \
-                    has it (dots 0x0000000000000000)";
+                    has it (dots 0x0000000000000000, room 0x";
     assert!(text(&out).contains(expected), "{}", text(&out));
     assert!(!dir.join("o.json").exists());
 }

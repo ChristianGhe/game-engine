@@ -721,9 +721,12 @@ name = "game-testbed-sim"
 version = "0.1.0"
 dependencies = [
  "eng-collision-api",
+ "eng-collision-grid",
  "eng-core",
  "eng-ecs",
  "eng-math",
+ "eng-net-transport",
+ "eng-net-wire",
  "eng-schema-core",
  "eng-sim",
  "kit-fps",

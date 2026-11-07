@@ -250,7 +250,8 @@ fn meet(axes: &[Axis], s: [f64; 3], e: [f64; 3]) -> Meet {
     }
 }
 
-/// Of the edges entered between `s` and `e`, the latest entered whose
+/// Of the edges entered between `s` and `e`, or touched at `q` within
+/// `4 * NOISE` per meter, the latest entered whose
 /// projection at `q` is nearer its entry face than its exit face.
 fn edge_at_entry(axes: &[Axis], s: [f64; 3], e: [f64; 3], q: [f64; 3]) -> Option<(usize, bool)> {
     let mut best: Option<(f64, usize, bool)> = None;
@@ -261,6 +262,13 @@ fn edge_at_entry(axes: &[Axis], s: [f64; 3], e: [f64; 3], q: [f64; 3]) -> Option
         let p = a.project(q);
         let (entry, exit) = if lo { (a.lo, a.hi) } else { (a.hi, a.lo) };
         let near = (p - entry).abs() <= (p - exit).abs();
+        // Touching its entry face at `q` (a vertex contact) counts as entered.
+        let touching = (p - entry).abs() <= (q[0].abs() + q[1].abs() + 1.0) * NOISE * 4.0;
+        let enter = if enter == f64::NEG_INFINITY && touching {
+            0.0
+        } else {
+            enter
+        };
         if enter > f64::NEG_INFINITY && near && best.is_none_or(|(t, ..)| enter > t) {
             best = Some((enter, j, lo));
         }
@@ -312,7 +320,7 @@ fn sweep(axes: &[Axis], s: [f64; 3], e: [f64; 3], d: [f64; 3]) -> Option<Hit> {
                 return None;
             }
         }
-        Meet::Enter(rest, _, j, lo) => {
+        Meet::Enter(rest, rest_out, j, lo) => {
             if snap.is_some() {
                 if rest > 0.0 && j >= 3 {
                     (snap, normal) = attribute(&axes[j], lo);
@@ -321,7 +329,9 @@ fn sweep(axes: &[Axis], s: [f64; 3], e: [f64; 3], d: [f64; 3]) -> Option<Hit> {
                 {
                     match edge_at_entry(axes, s, e, q) {
                         Some((j, lo)) => (snap, normal) = attribute(&axes[j], lo),
-                        None if !inside(axes, e) => return None,
+                        None if !inside(axes, e) && sliver(axes, q, e, rest, rest_out) => {
+                            return None;
+                        }
                         None => {}
                     }
                 }
@@ -429,4 +439,19 @@ impl CollisionWorld for Brute {
 fn sliding(axis: &Axis, a: [f64; 3], b: [f64; 3]) -> bool {
     let noise = |c: [f64; 3]| (c[0].abs() + c[1].abs() + 1.0) * NOISE;
     (axis.project(b) - axis.project(a)).abs() <= noise(a) + noise(b)
+}
+
+/// A sliver: midway through the overlap `(t0, t1)` from `q` to `e`, inside
+/// by less than 2^-40 m per meter of coordinate on some axis.
+fn sliver(axes: &[Axis], q: [f64; 3], e: [f64; 3], t0: f64, t1: f64) -> bool {
+    let t = (max_f64(t0, 0.0) + min_f64(t1, 1.0)) * 0.5;
+    let mut c = [0.0; 3];
+    for i in 0..3 {
+        c[i] = q[i] + (e[i] - q[i]) * t;
+    }
+    let thin = (c[0].abs() + c[1].abs() + c[2].abs() + 1.0) / 1_099_511_627_776.0;
+    axes.iter().any(|a| {
+        let p = a.project(c);
+        min_f64(p - a.lo, a.hi - p) < thin
+    })
 }

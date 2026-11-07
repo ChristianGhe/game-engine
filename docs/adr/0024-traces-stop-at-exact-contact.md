@@ -174,3 +174,59 @@
 Level 2's BVH or a third-party physics crate implements the contract;
 slopes (format v2) put floors off the axes; or `CONTACT_GAP` proves too
 loose or too tight.
+
+## Amendment 1
+
+- **Status:** Accepted (the owner, 2026-11-07, after T5's independent review)
+- **What:** changes how `conformance::check` verifies the decision above,
+  and records how the grid meets it. The decision itself is unchanged.
+- **Who:** Owner decided, on Claude's proposal from rung 2 task T5 and its
+  follow-up, from cases that `eng-collision-grid`'s proptests, its review
+  and an independent review (an exact rational oracle written from
+  decision 2 and this ADR) found.
+
+**Two rules of the check, loosened.**
+
+- **One ulp on, the hit axis alone.** On an axis, the check moves `end`
+  one ulp towards the end point on every axis where they differ, as above,
+  and now also accepts moving it on the hit axis alone. A hull's corner on
+  the end of a wall off the axes, moving down and a little west, is hit on
+  Y exactly on the face: one ulp down is inside the wall, but one ulp down
+  and west is not, because the wedge of wall ahead is narrower than an ulp
+  (`crates/eng-collision-grid/tests/corners.rs`,
+  `a_hull_corner_on_a_walls_end_is_solid_one_ulp_on_along_the_hit_axis`).
+  The rule as written rejected that correct trace. A world that stops a
+  skin short still fails both versions
+  (`crates/eng-collision-api/tests/room.rs`).
+- **"Faces along the motion", off the axes.** The check required
+  `normal · travel <= 0` for every hit. Off the axes it now allows up to
+  `CONTACT_GAP` (m); on an axis it is still 0. A hull stopped against a
+  diamond's 45-degree edge, then moved a quarter meter along it, starts
+  within rounding of the face; the motion seems to leave the face by
+  8e-17 m while its end is inside by rounding, so the hit's f32 normal
+  faces along the motion by that much (`corners.rs`,
+  `sliding_along_a_face_off_the_axes_from_contact_keeps_the_contract`). A
+  hull within `CONTACT_GAP` of a face is in contact with it, so the
+  contract's own tolerance covers it. Tests pin both sides: a normal off
+  the axes facing along the motion by 2^-19 m fails, by 2^-21 m passes,
+  and one on an axis facing along it fails (`room.rs`).
+
+**Vertex contacts.** Where a hull's corner meets a primitive's corner, or
+the end of an edge off the axes, the solid just ahead is a wedge and one
+ulp on can still be free. The grid then gives the hit to an edge off the
+axes that the stop touches at its entry face within `4 * NOISE` per meter
+of coordinate (`NOISE` = 2^-48), with that edge's normal, so the gap rule
+applies. Only if there is none, and the solid ahead is a sliver by depth
+(midway through the rest of the motion's overlap the hull is inside by
+less than 2^-40 m per meter of coordinate on some axis), is the hit a
+graze. Before this rule, the grid let 5 of 5,368 traces starting at vertex
+contacts on maps off the axes pass through 1.3 cm to 43 cm of solid
+(`crates/eng-collision-grid/tests/vertices.rs`). The grid's proptests now
+also check that the hull, shrunk by 1e-6 m, stays free on the traced
+segment before the hit.
+
+**f32 normals.** The grid uses each edge's unit normal rounded to f32 as
+its separating axis, so each solid is a superset of the authored one by
+about 4e-8 times the edge's length. The contact promise holds exactly
+against the grid's own geometry; against the authored face it holds
+within `CONTACT_GAP` for edges up to about 20 m.

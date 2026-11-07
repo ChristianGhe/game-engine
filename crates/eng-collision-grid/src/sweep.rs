@@ -247,7 +247,7 @@ pub(crate) fn sweep(
                 return Sweep::Miss;
             }
         }
-        Cross::Enter(rest, _, j, lo) => {
+        Cross::Enter(rest, rest_out, j, lo) => {
             if snap.is_some() {
                 if rest > 0.0 && j >= 3 {
                     // An edge off the axes is still ahead: at a corner of
@@ -256,11 +256,15 @@ pub(crate) fn sweep(
                 } else if !inside(shape, axes, hull, ulp_towards(q, e, None))
                     && !inside(shape, axes, hull, ulp_towards(q, e, Some(k)))
                 {
-                    // The solid ahead is thinner than an ulp: an edge exactly
-                    // at its entry blocks, or else this is a graze.
+                    // The solid ahead may be thinner than an ulp: an edge at
+                    // its entry or touching the stop (a vertex contact)
+                    // blocks; or else, if the solid is a sliver by depth, this
+                    // is a graze.
                     match edge_at_entry(shape, axes, h, s, e, q) {
                         Some((j, lo)) => (snap, normal) = attribute(shape, axes, h, j, lo),
-                        None if grazed() => return Sweep::Miss,
+                        None if grazed() && sliver(shape, axes, h, q, e, rest, rest_out) => {
+                            return Sweep::Miss;
+                        }
                         None => {}
                     }
                 }
@@ -270,9 +274,11 @@ pub(crate) fn sweep(
     Sweep::Hit(Hit { t, q, snap, normal })
 }
 
-/// Of the edges off the axes entered between `s` and `e`, the latest
-/// entered whose projection at `q` is nearer its entry face than its exit
-/// face, and whether it is entered through `lo`.
+/// Of the edges off the axes entered between `s` and `e`, or that `q`
+/// touches at their entry face within `4 * NOISE` per meter (a vertex
+/// contact, counted as entered at 0), the latest entered whose projection at
+/// `q` is nearer its entry face than its exit face, and whether it is
+/// entered through `lo`.
 fn edge_at_entry(
     shape: &Shape,
     axes: &[Axis],
@@ -290,6 +296,12 @@ fn edge_at_entry(
         let p = g.project(q);
         let (entry, exit) = if lo { (g.lo, g.hi) } else { (g.hi, g.lo) };
         let near = (p - entry).abs() <= (p - exit).abs();
+        let touching = (p - entry).abs() <= (q[0].abs() + q[1].abs() + 1.0) * NOISE * 4.0;
+        let enter = if enter == f64::NEG_INFINITY && touching {
+            0.0
+        } else {
+            enter
+        };
         if enter > f64::NEG_INFINITY && near && best.is_none_or(|(t, ..)| enter > t) {
             best = Some((enter, j, lo));
         }
@@ -369,4 +381,30 @@ fn sliding(shape: &Shape, axes: &[Axis], h: [f64; 3], k: usize, a: [f64; 3], b: 
     let g = grown(shape, axes, h, k);
     let noise = |c: [f64; 3]| (c[0].abs() + c[1].abs() + 1.0) * NOISE;
     (g.project(b) - g.project(a)).abs() <= noise(a) + noise(b)
+}
+
+/// Whether the hull, midway through the overlap `(t0, t1)` of the motion
+/// from `q` to `e`, is inside the primitive by less than 2^-40 m per meter of
+/// coordinate on some axis: a sliver, not solid.
+fn sliver(
+    shape: &Shape,
+    axes: &[Axis],
+    h: [f64; 3],
+    q: [f64; 3],
+    e: [f64; 3],
+    t0: f64,
+    t1: f64,
+) -> bool {
+    let t = (max_f64(t0, 0.0) + min_f64(t1, 1.0)) * 0.5;
+    let c = [
+        q[0] + (e[0] - q[0]) * t,
+        q[1] + (e[1] - q[1]) * t,
+        q[2] + (e[2] - q[2]) * t,
+    ];
+    let thin = (c[0].abs() + c[1].abs() + c[2].abs() + 1.0) / 1_099_511_627_776.0;
+    (0..axis_count(shape)).any(|k| {
+        let g = grown(shape, axes, h, k);
+        let p = g.project(c);
+        min_f64(p - g.lo, g.hi - p) < thin
+    })
 }

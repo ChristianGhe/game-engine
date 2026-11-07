@@ -433,14 +433,38 @@ fn step() -> impl Strategy<Value = Goal> {
     prop_oneof![3 => by, 2 => place().prop_map(Goal::To), 3 => aim]
 }
 
+/// How far inside solid a point on the way may be (m): the hull shrunk by
+/// this on every side must stay free on the traced segment before the hit,
+/// at `SAMPLES` evenly spaced points from the start to the hit fraction.
+/// Grazes (`GRAZE`), slides (`NOISE`) and slivers go far less deep.
+const THROUGH: f32 = 1.0e-6;
+const SAMPLES: u32 = 32;
+
 /// Checks each trace of a chain from `start`, each from where the last
-/// stopped, often in contact.
+/// stopped, often in contact: the conformance suite, and no pass-through.
 fn chain(world: &Grid, start: WorldPos, steps: &[Goal], hull: &BoxHull) {
+    let h = hull.half_extents;
+    let shrunk = BoxHull {
+        half_extents: Vec3::new(h.x - THROUGH, h.y - THROUGH, h.z - THROUGH),
+    };
     let mut from = start;
     for goal in steps {
         let to = goal.from(from, world, hull);
         conformance::check(world, from, to, hull);
-        from = world.trace(from, to, hull).end;
+        let tr = world.trace(from, to, hull);
+        for i in 0..=SAMPLES {
+            let t = tr.fraction * f64::from(i) / f64::from(SAMPLES);
+            let p = at(
+                from.x + (to.x - from.x) * t,
+                from.y + (to.y - from.y) * t,
+                from.z + (to.z - from.z) * t,
+            );
+            assert!(
+                !world.overlaps(p, &shrunk),
+                "the trace from {from:?} to {to:?} ({tr:?}) passes through solid at {p:?}"
+            );
+        }
+        from = tr.end;
     }
 }
 

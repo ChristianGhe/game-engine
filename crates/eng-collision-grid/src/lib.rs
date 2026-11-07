@@ -12,7 +12,11 @@
 //! edge). On each axis the primitive's projection, grown by the hull's, is
 //! an open interval `(lo, hi)`: on X it is `(min_x - hx, max_x + hx)`, off
 //! the axes `(min - r, max + r)` with `r = |nx| hx + |ny| hy`. A hull on the
-//! boundary only touches, and is free.
+//! boundary only touches, and is free. The f32-rounded edge normals make each
+//! solid a superset of the authored one by about 4e-8 times the edge's
+//! length, so the contact promise holds against the grid's own geometry, and
+//! against the authored face only within `CONTACT_GAP` for edges up to about
+//! 20 m.
 //!
 //! **A trace**, from `s` to `e`, in f64 with IEEE basic operations only:
 //!
@@ -43,9 +47,13 @@
 //!    rounding: the hit becomes the edge's. If a hit on X, Y or Z leaves the
 //!    stop moved one ulp towards `e` (on every axis where they differ, or on
 //!    the hit axis alone, as the conformance check does) still free, the
-//!    solid ahead is thinner than an ulp: the hit becomes that of the latest
-//!    entered edge whose projection is nearer its entry face than its exit
-//!    face, or else it is a graze.
+//!    solid ahead is thinner than an ulp, or a wedge at a vertex contact. The
+//!    hit becomes that of the latest entered edge whose projection is nearer
+//!    its entry face than its exit face; an edge the stop touches at its
+//!    entry face within `4 * NOISE` per meter counts as entered at once (a
+//!    vertex contact). With no such edge, the hit is a graze only if the
+//!    solid is a sliver by depth: midway through the rest's overlap, the hull
+//!    is inside by less than 2^-40 m per meter of coordinate on some axis.
 //! 5. **The first hit wins:** the smallest fraction, ties to the lower
 //!    primitive index (the walls in order, then the slabs). A start inside
 //!    anything is `start_solid`.
@@ -57,9 +65,9 @@
 //!    times; then the fraction backs off along the path by `t·ε`, doubling up
 //!    to [`BACKOFF_STEPS`] times, to a free point, which is set on the hit
 //!    face if that is free too. The start is free, so this ends there at the
-//!    latest; a stop off the hit face breaks the contact rule, which the
-//!    tests have seen only for a hull's corner grazing a slab's corner in 3D
-//!    (about once in a million aimed proptest cases).
+//!    latest. A stop off the hit face would break the contact rule; since
+//!    the vertex-contact rule of step 4, no test has seen one (two runs of 3
+//!    million aimed proptest cases).
 //!
 //! The grid only finds candidates: the primitives listed in the cells under
 //! the hull's swept bounds, visited in cell order (row-major, south to north,

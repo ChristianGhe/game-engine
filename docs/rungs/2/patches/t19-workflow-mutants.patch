@@ -1,14 +1,16 @@
 diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
-index 70c947b68e05f7c43b241fd465b876316abac4f1..98c60e19f61b259963ba43bee3f754fa5fe3b838 100644
+index 70c947b68e05f7c43b241fd465b876316abac4f1..2b502367833a3e1ad43b2f1689a720f7d339526d 100644
 --- a/.github/workflows/ci.yml
 +++ b/.github/workflows/ci.yml
-@@ -16,11 +16,19 @@ on:
+@@ -16,11 +16,21 @@ on:
      # build caches and save none, so they cannot push main's out of the
      # repository's 10 GB.
      branches: [main, "agent/**"]
 +  # The mutants job's rung-diff step (rung 2, decision 15) runs on these two,
-+  # weekly on main (Mondays, 04:23 UTC) and when the owner starts it. Every
-+  # other job runs too, so the run's acceptance covers every criterion.
++  # weekly on main (Mondays, 04:23 UTC) and when the owner starts it. The
++  # other jobs run too, but for any whose `if` needs a push or a pull
++  # request to compare with (such as a bench job), so the run's acceptance
++  # covers the rest.
 +  schedule:
 +    - cron: "23 4 * * 1"
 +  workflow_dispatch:
@@ -23,7 +25,7 @@ index 70c947b68e05f7c43b241fd465b876316abac4f1..98c60e19f61b259963ba43bee3f754fa
    cancel-in-progress: true
  
  env:
-@@ -169,6 +177,9 @@ jobs:
+@@ -169,6 +179,9 @@ jobs:
        - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
          with:
            tool: cargo-deny@0.20.2
@@ -33,7 +35,7 @@ index 70c947b68e05f7c43b241fd465b876316abac4f1..98c60e19f61b259963ba43bee3f754fa
        - run: cargo xtask ci --job selftest
        - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
          if: always()
-@@ -180,6 +191,63 @@ jobs:
+@@ -180,6 +193,69 @@ jobs:
        - if: always()
          run: rm -rf target/selftest
  
@@ -69,8 +71,14 @@ index 70c947b68e05f7c43b241fd465b876316abac4f1..98c60e19f61b259963ba43bee3f754fa
 +          save-if: ${{ github.ref == 'refs/heads/main' }}
 +      - name: cargo-mutants 27.1.0
 +        run: cargo install --locked cargo-mutants@27.1.0
++      # Incremental builds here, unlike the workflow's default: each mutant
++      # rebuilds one crate, in half the time so (0.9 s against 1.7 s on a
++      # Mac, T19; the tests take longer). The 20-minute box is unproven on
++      # these 4-vCPU runners: shard 3/4 of rung 2's diff, 194 mutants, took
++      # 10 minutes on an M-series Mac.
 +      - name: cargo xtask ci --job mutants
 +        env:
++          CARGO_INCREMENTAL: "1"
 +          ENG_MUTANTS_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
 +          ENG_MUTANTS_SHARD: ${{ matrix.shard }}/4
 +        run: cargo xtask ci --job mutants
@@ -97,7 +105,7 @@ index 70c947b68e05f7c43b241fd465b876316abac4f1..98c60e19f61b259963ba43bee3f754fa
    # The five native runners (spec 8.2): build, test with a GPU and a display,
    # replay, render, open a window. Each runner's adapter is spec 8.3's:
    # lavapipe on Linux (the pinned build on x64), WARP on Windows, the
-@@ -331,7 +399,7 @@ jobs:
+@@ -331,7 +407,7 @@ jobs:
    # Cross-architecture equality across the PR tier and the native jobs, the
    # measured durations, and the CI-computed acceptance status.
    summary:
@@ -106,7 +114,7 @@ index 70c947b68e05f7c43b241fd465b876316abac4f1..98c60e19f61b259963ba43bee3f754fa
      if: always()
      runs-on: ubuntu-24.04
      timeout-minutes: 30
-@@ -370,7 +438,7 @@ jobs:
+@@ -370,7 +446,7 @@ jobs:
  
    # The one check to require on main: green only if every job above is.
    ci:

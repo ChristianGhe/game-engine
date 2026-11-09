@@ -1,9 +1,9 @@
 diff --git a/.claude/agents/test-auditor.md b/.claude/agents/test-auditor.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..1da39dcdd560903b2f23a3c6a554b1a0db3d5e82
+index 0000000000000000000000000000000000000000..a0517b98fd595424b3e1adb22d05c2622d9543b4
 --- /dev/null
 +++ b/.claude/agents/test-auditor.md
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,76 @@
 +---
 +name: test-auditor
 +description: Read-only look at the mutants cargo-mutants reports missed, from the mutants job (in-diff, rung-diff) or a `cargo xtask mutants` run. Sorts each into a real test gap or an equivalent mutant, naming the test a gap needs and the exclusion an equivalent one could get. Never edits or excludes anything, and never decides pass or fail.
@@ -61,7 +61,12 @@ index 0000000000000000000000000000000000000000..1da39dcdd560903b2f23a3c6a554b1a0
 +
 +   xtask fixes proptest's seed (`PROPTEST_RNG_SEED=1`) so verdicts repeat.
 +   A mutant that a property test catches only under other seeds is a gap:
-+   name the fixed case that would catch it every time.
++   name the fixed case that would catch it every time. Two were seen in
++   T19: `sweep.rs:382:56` and `383:53` (`replace + with -` in `sliding`),
++   missed under seed 1 and caught under some random seeds.
++
++   cargo-mutants never mutates functions that `macro_rules!` generates, so
++   code made by a macro has no mutants at all: no miss there means nothing.
 +4. You may settle a claim by experiment in a scratch clone outside the
 +   checkout (`git clone` into your scratchpad): apply the mutant's diff, run
 +   the package's tests, or write the test you propose and show it fails on

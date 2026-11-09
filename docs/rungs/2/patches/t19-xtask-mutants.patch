@@ -21,7 +21,7 @@ index e66c6a4dd217a509f9bb1625f06facb66546037c..614fe7f271f2b83b400e39d8c8a8b4d6
      let mut out = Vec::new();
      let (mut i, mut line) = (0, 1);
 diff --git a/xtask/src/ci.rs b/xtask/src/ci.rs
-index 27de6902583dab2676c3af16e89dce78535b9ea3..06cdd7a53bc4ec01b449c39222b46d9d0d0462d3 100644
+index 27de6902583dab2676c3af16e89dce78535b9ea3..28ad2769b3be5347dac12f0bed9d8e2a4515c9a0 100644
 --- a/xtask/src/ci.rs
 +++ b/xtask/src/ci.rs
 @@ -13,8 +13,8 @@ use crate::{arch, ci_durations, ci_native, ci_report, ci_verdicts, docs, replay,
@@ -55,8 +55,30 @@ index 27de6902583dab2676c3af16e89dce78535b9ea3..06cdd7a53bc4ec01b449c39222b46d9d
          "native" => {
              ci_native::steps(&root, &mut steps);
              return ci_report::finish(&root, name, steps, started, ci_native::extra(&root));
+@@ -318,8 +322,9 @@ fn riscv(root: &Path, steps: &mut Steps) -> Result<(), String> {
+ 
+ /// The last job: cross-architecture equality of the downloaded hash streams,
+ /// the PR tier's and the native jobs', each against the committed streams
+-/// (criterion 7), and the measured durations of the PR tier and of the
+-/// native jobs (criterion 13).
++/// (criterion 7), the measured durations of the PR tier and of the native
++/// jobs (criterion 13), and a mutants report from every shard (criterion
++/// 19, `mutants.rs`).
+ fn summary(root: &Path, steps: &mut Steps) {
+     let incoming = root.join("target/ci/in");
+     steps.run("compare-hashes", || {
+@@ -347,6 +352,9 @@ fn summary(root: &Path, steps: &mut Steps) {
+     });
+     steps.run("pr-duration", || ci_durations::pr_tier(root));
+     steps.run("native-duration", || ci_durations::native_tier(root));
++    steps.run("mutants-shards", || {
++        crate::mutants::shard_reports(&incoming)
++    });
+ }
+ 
+ /// An artifact holds `<triple>/*.txt`; use the directory with the streams.
 diff --git a/xtask/src/main.rs b/xtask/src/main.rs
-index 0dc409da5819a062d86d8e76aea06b2e41f0ee2b..5a8120ce5be80ff243400c62a7769224915803f1 100644
+index 0dc409da5819a062d86d8e76aea06b2e41f0ee2b..5047af011fe0ecb81d8c9858d600d169398347c9 100644
 --- a/xtask/src/main.rs
 +++ b/xtask/src/main.rs
 @@ -25,12 +25,16 @@ mod guard_tools;
@@ -85,17 +107,18 @@ index 0dc409da5819a062d86d8e76aea06b2e41f0ee2b..5a8120ce5be80ff243400c62a7769224
  cargo xtask arch-check                 layering, core-set purity, crate-root attributes
  cargo xtask size-check                 warn over 500 lines, fail over 1000
  cargo xtask docs-check                 AGENTS.md at most 150 lines, no CLAUDE.md
-@@ -52,6 +56,9 @@ cargo xtask acceptance DIR             compute acceptance `passes` from CI job r
+@@ -52,6 +56,10 @@ cargo xtask acceptance DIR             compute acceptance `passes` from CI job r
  cargo xtask oracle-check --base REV --head REV
                                         CI: protected changes need the owner
  cargo xtask push [--dry-run] <name>    agents: send HEAD to agent/<name> on GitHub
 +cargo xtask mutants [--in-diff | --rung-diff] [--base REV] [--shard K/N] [--time-box MIN]
 +                                       cargo-mutants on the core crates' diff from the push's base
-+                                       or (--rung-diff) from the commit that added the rung's plan
++                                       or (--rung-diff) from the commit that added the rung's plan;
++                                       tracked files only: `git add` new ones first
  cargo xtask hook <guard|verify|fmt|stop|session-start>
                                         Claude Code hooks (run the prebuilt copy)
  cargo xtask install-hooks [--if-stale] build the hook binary from main";
-@@ -86,6 +93,8 @@ fn main() -> ExitCode {
+@@ -86,6 +94,8 @@ fn main() -> ExitCode {
          ["acceptance", dir] => util::root().and_then(|root| acceptance::compute(&root, dir)),
          ["oracle-check", "--base", base, "--head", head] => oracle::check(base, head),
          ["push", rest @ ..] => push::main(rest),
@@ -106,17 +129,21 @@ index 0dc409da5819a062d86d8e76aea06b2e41f0ee2b..5a8120ce5be80ff243400c62a7769224
          ["hook", "session-start"] => hooks::session_start(),
 diff --git a/xtask/src/mutants.rs b/xtask/src/mutants.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..86aebc11ead2431a2ade87f856341d453a8397fa
+index 0000000000000000000000000000000000000000..0bc394191b7b8dd6fcb7b7aedec9df6a52e9dbb7
 --- /dev/null
 +++ b/xtask/src/mutants.rs
-@@ -0,0 +1,483 @@
+@@ -0,0 +1,494 @@
 +//! `cargo xtask mutants` and `ci --job mutants` (rung 2, decision 15; spec
 +//! 7.2): cargo-mutants over the core crates' changed code.
 +//!
 +//! - `in-diff` mutates what a push changed: the diff from the push's base
 +//!   (`mutants_git::resolve`, taken as the bench job takes it) to the working
-+//!   tree, over the core crates' Rust files. When no core crate changed the
-+//!   step is pending (1b's X2): not a pass, and it fails no job.
++//!   tree, over the core crates' tracked Rust files (a local run warns of
++//!   untracked ones, `[W-MUTANTS-UNTRACKED]`). When no core crate changed
++//!   the step is pending (1b's X2): not a pass, and it fails no job. A
++//!   change that selects no mutants (tests or comments only) passes.
++//! - The summary's `mutants-shards` step needs a report from every shard
++//!   ([`shard_reports`]), since acceptance reads only the reports it finds.
 +//! - `rung-diff` mutates the current rung's core changes: the diff from the
 +//!   commit that added `docs/rungs/<rung>/plan.md`. `ci --job mutants` runs
 +//!   it on the weekly schedule and a manual dispatch (`GITHUB_EVENT_NAME`
@@ -393,8 +420,9 @@ index 0000000000000000000000000000000000000000..86aebc11ead2431a2ade87f856341d45
 +/// cargo-mutants on `shard` of the mutants in the core crates' diff from
 +/// `base` (its SHA, and where it came from) to the working tree, held to
 +/// `minutes`; `found` gets the counts and the misses. Pending when no core
-+/// crate changed; failed by any `mutants::skip` in one, changed or not. The
-+/// selftest `mutant-missed` runs this as the job does.
++/// crate changed; failed by any `mutants::skip` in one, changed or not.
++/// Untracked files are in no diff: a warning names any. The selftest
++/// `mutant-missed` runs this as the job does.
 +pub(crate) fn diff_step(
 +    root: &Path,
 +    step: &str,
@@ -404,12 +432,19 @@ index 0000000000000000000000000000000000000000..86aebc11ead2431a2ade87f856341d45
 +    found: &mut Map<String, Value>,
 +) -> Result<Done, String> {
 +    let short = &base[..base.len().min(12)];
-+    let base_line = format!("base {short}, {from}");
++    let mut base_line = format!("base {short}, {from}");
 +    found.insert("base".into(), json!(base));
 +    found.insert("base_from".into(), json!(from));
 +    found.insert("shard".into(), json!(shard.to_string()));
 +    let core = ci::core_crates(root)?;
 +    crate::mutants_skip::check(root, &core)?;
++    let untracked = git::untracked_rust(root, &core)?;
++    if !untracked.is_empty() {
++        base_line.push_str(&format!(
++            "; [W-MUTANTS-UNTRACKED] not mutated, as untracked (git add them): {}",
++            untracked.join(", ")
++        ));
++    }
 +    let changed = git::core_changes(root, base, &core)?;
 +    found.insert("core_files_changed".into(), json!(changed.len()));
 +    if changed.is_empty() {
@@ -446,9 +481,12 @@ index 0000000000000000000000000000000000000000..86aebc11ead2431a2ade87f856341d45
 +    let planned = list(root, step, &diff_file, &core, shard)?;
 +    found.insert("mutants".into(), json!(planned));
 +    if planned == 0 {
-+        return Ok(Done::Pass(format!(
-+            "shard {shard} has none of the diff's mutants; {base_line}"
-+        )));
++        let none = if shard.n > 1 {
++            format!("shard {shard} has none of the diff's mutants")
++        } else {
++            "no mutants in the diff: its core changes hold no code to mutate".into()
++        };
++        return Ok(Done::Pass(format!("{none}; {base_line}")));
 +    }
 +    let mut cmd = command(root, &diff_file, &core, shard);
 +    cmd.arg("--output").arg(&out);
@@ -520,12 +558,7 @@ index 0000000000000000000000000000000000000000..86aebc11ead2431a2ade87f856341d45
 +    let mut cmd = command(root, diff, core, shard);
 +    cmd.args(["--list", "--json"]);
 +    let text = util::run_quiet(root, &format!("mutants-{step}-list"), &mut cmd)?;
-+    let list: Value = serde_json::from_str(text.trim())
-+        .map_err(|e| format!("[E-MUTANTS] cargo mutants --list --json: {e}"))?;
-+    let list = list
-+        .as_array()
-+        .ok_or("[E-MUTANTS] cargo mutants --list --json: not a list")?;
-+    Ok(list.len() as u64)
++    listed(&text)
 +}
 +
 +/// Runs `cmd` with its output in `target/agent-logs/xtask-<name>.log`, and
@@ -586,19 +619,20 @@ index 0000000000000000000000000000000000000000..86aebc11ead2431a2ade87f856341d45
 +
 +#[path = "mutants_outcomes.rs"]
 +mod outcomes;
++pub use outcomes::shard_reports;
 +#[cfg(test)]
-+use outcomes::{Missed, Tally};
-+use outcomes::{tally, verdict};
++use outcomes::{Missed, Tally, shards_verdict};
++use outcomes::{listed, tally, verdict};
 +
 +#[cfg(test)]
 +#[path = "mutants_tests.rs"]
 +mod tests;
 diff --git a/xtask/src/mutants_git.rs b/xtask/src/mutants_git.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..efa822ea2c89d7574b32fcddc4127a5a3dc5a5f0
+index 0000000000000000000000000000000000000000..892bcfac3ddea105d2e47bea270c1239b3e7dbd5
 --- /dev/null
 +++ b/xtask/src/mutants_git.rs
-@@ -0,0 +1,191 @@
+@@ -0,0 +1,208 @@
 +//! The mutants job's git side (`mutants.rs`): the base of `in-diff` (the
 +//! push's, taken as the bench job takes it), the base of `rung-diff` (the
 +//! commit that added the current rung's `plan.md`), and the diff from a
@@ -765,6 +799,23 @@ index 0000000000000000000000000000000000000000..efa822ea2c89d7574b32fcddc4127a5a
 +    Ok(files)
 +}
 +
++/// The untracked Rust files under a core crate's directory, sorted: no diff
++/// from a commit shows them, so a local run leaves them unmutated until
++/// they are added (`git add`). On CI the tree is a checkout and has none.
++pub fn untracked_rust(root: &Path, core: &[String]) -> Result<Vec<String>, String> {
++    let dirs = crate_dirs(core);
++    let mut args = vec!["ls-files", "--others", "--exclude-standard", "-z", "--"];
++    args.extend(dirs.iter().map(String::as_str));
++    let names = git(root, &args)?;
++    let mut files: Vec<String> = names
++        .split('\0')
++        .filter(|name| name.ends_with(".rs"))
++        .map(str::to_string)
++        .collect();
++    files.sort();
++    Ok(files)
++}
++
 +/// The diff cargo-mutants reads (`--in-diff`): from `base` to the working
 +/// tree, which is what it copies and mutates, so the line numbers agree;
 +/// the core crates' Rust files only (in a pathspec `*` also matches `/`).
@@ -792,10 +843,10 @@ index 0000000000000000000000000000000000000000..efa822ea2c89d7574b32fcddc4127a5a
 +mod tests;
 diff --git a/xtask/src/mutants_git_tests.rs b/xtask/src/mutants_git_tests.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..3b7c4e2a42ef840991c091c396a552e8c9b0b762
+index 0000000000000000000000000000000000000000..e2c14ab5aea132b7c34b087c130408914876a387
 --- /dev/null
 +++ b/xtask/src/mutants_git_tests.rs
-@@ -0,0 +1,248 @@
+@@ -0,0 +1,324 @@
 +//! The mutants job's git side (`mutants_git.rs`) and its pending step, from
 +//! temporary repositories.
 +
@@ -807,7 +858,7 @@ index 0000000000000000000000000000000000000000..3b7c4e2a42ef840991c091c396a552e8
 +use serde_json::Map;
 +
 +use super::*;
-+use crate::mutants::{Shard, diff_step};
++use crate::mutants::{INSTALL, Shard, diff_step};
 +use crate::util::Done;
 +
 +fn git(dir: &Path, args: &[&str]) -> String {
@@ -888,6 +939,11 @@ index 0000000000000000000000000000000000000000..3b7c4e2a42ef840991c091c396a552e8
 +        ["crates/core-a/Cargo.toml", "crates/core-a/src/lib.rs"],
 +        "tracked core files, the working tree's edit included"
 +    );
++    assert_eq!(
++        untracked_rust(&dir, &core).unwrap(),
++        ["crates/core-b/src/deep/mod.rs"],
++        "the untracked file a local run warns of"
++    );
 +    // Prefixes and colour stay put whatever the repository's settings.
 +    git(&dir, &["config", "diff.noprefix", "true"]);
 +    git(&dir, &["config", "color.diff", "always"]);
@@ -928,6 +984,25 @@ index 0000000000000000000000000000000000000000..3b7c4e2a42ef840991c091c396a552e8
 +    };
 +    assert!(why.starts_with("no core crate changed"), "{why}");
 +    assert_eq!(found["core_files_changed"], 0);
++    assert!(!why.contains("UNTRACKED"), "{why}");
++    // An untracked core file is in no diff, so the step warns of it.
++    write(&dir, "crates/core-a/src/new.rs", "pub fn n() {}\n");
++    let step = diff_step(
++        &dir,
++        "in-diff",
++        (&base, "a test"),
++        Shard::WHOLE,
++        1,
++        &mut found,
++    );
++    let Ok(Done::Pending(why)) = step else {
++        panic!("{step:?}");
++    };
++    assert!(
++        why.contains("[W-MUTANTS-UNTRACKED] not mutated, as untracked (git add them): crates/core-a/src/new.rs"),
++        "{why}"
++    );
++    fs::remove_file(dir.join("crates/core-a/src/new.rs")).unwrap();
 +    commit(&dir, "crates/core-b/README.md", "notes\n");
 +    let step = diff_step(
 +        &dir,
@@ -1044,18 +1119,76 @@ index 0000000000000000000000000000000000000000..3b7c4e2a42ef840991c091c396a552e8
 +    assert!(resolve(&dir, &Request::Given("nope".into()), false).is_err());
 +    let _ = fs::remove_dir_all(&dir);
 +}
++
++/// A core change to tests only selects no mutants, which cargo-mutants
++/// lists as nothing at all, not `[]`: the step passes with no mutants
++/// instead of failing to read the list. `--list` builds nothing, but needs
++/// cargo-mutants; without it the test says so and checks nothing more.
++#[test]
++fn a_tests_only_core_change_has_no_mutants() {
++    let dir = repo();
++    write(&dir, "architecture.toml", "[crates.core-a]\ncore = true\n");
++    write(
++        &dir,
++        "Cargo.toml",
++        "[workspace]\nmembers = [\"crates/core-a\"]\nresolver = \"2\"\n",
++    );
++    write(
++        &dir,
++        "crates/core-a/Cargo.toml",
++        "[package]\nname = \"core-a\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
++    );
++    write(
++        &dir,
++        "Cargo.lock",
++        "version = 4\n\n[[package]]\nname = \"core-a\"\nversion = \"0.1.0\"\n",
++    );
++    let test = "#[test]\nfn a() {\n    assert_eq!(core_a::a(), 1);\n}\n";
++    let base = commit(&dir, "crates/core-a/tests/a.rs", test);
++    if crate::mutants::version(&dir).is_none() {
++        eprintln!("cargo-mutants is not installed ({INSTALL}): not checked");
++        let _ = fs::remove_dir_all(&dir);
++        return;
++    }
++    write(
++        &dir,
++        "crates/core-a/tests/a.rs",
++        &format!("{test}\n// One more case to come.\n#[test]\nfn b() {{}}\n"),
++    );
++    let mut found = Map::new();
++    let step = diff_step(
++        &dir,
++        "in-diff",
++        (&base, "a test"),
++        Shard::WHOLE,
++        1,
++        &mut found,
++    );
++    let Ok(Done::Pass(detail)) = step else {
++        panic!("{step:?}");
++    };
++    assert!(detail.starts_with("no mutants in the diff"), "{detail}");
++    assert_eq!(found["mutants"], 0);
++    let _ = fs::remove_dir_all(&dir);
++}
 diff --git a/xtask/src/mutants_outcomes.rs b/xtask/src/mutants_outcomes.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..092b6536f98f942761b7970ee459709a47b2ddeb
+index 0000000000000000000000000000000000000000..49be06b1bf2d319e356eb893dd6c5d9a1883fbc6
 --- /dev/null
 +++ b/xtask/src/mutants_outcomes.rs
-@@ -0,0 +1,140 @@
-+//! How a mutants step is judged (`mutants.rs`): cargo-mutants' `outcomes.json`,
-+//! as far as a run got, counted, and the step's verdict from the counts.
+@@ -0,0 +1,194 @@
++//! How a mutants step is judged (`mutants.rs`): cargo-mutants' list of a
++//! shard's mutants and its `outcomes.json`, as far as a run got, counted;
++//! the step's verdict from the counts; and the summary's check that every
++//! shard reported.
++
++use std::fs;
++use std::path::Path;
 +
 +use serde_json::{Value, json};
 +
-+use crate::util::Done;
++use super::SHARDS;
++use crate::util::{self, Done};
 +
 +/// A mutant the tests missed: cargo-mutants' name for it
 +/// (`file:line:column: replace … in function`) and its kind of change.
@@ -1190,12 +1323,60 @@ index 0000000000000000000000000000000000000000..092b6536f98f942761b7970ee459709a
 +    }
 +    Ok(Done::Pass(format!("{counts}; none missed")))
 +}
++
++/// The summary's `mutants-shards` step: each of the workflow's [`SHARDS`]
++/// shards left a mutants report among the artifacts downloaded to `dir`.
++/// Acceptance asks only that the reports it finds pass, so a shard whose job
++/// died before writing one would leave criterion 19 passing on the others;
++/// the criterion checks this step too.
++pub fn shard_reports(dir: &Path) -> Result<String, String> {
++    let found: Vec<Option<String>> = util::walk(dir)
++        .into_iter()
++        .filter(|p| p.extension().is_some_and(|e| e == "json"))
++        .filter_map(|p| serde_json::from_str::<Value>(&fs::read_to_string(p).ok()?).ok())
++        .filter(|r| r.get("report_version").is_some() && r["job"] == "mutants")
++        .map(|r| r["mutants"]["shard"].as_str().map(str::to_string))
++        .collect();
++    shards_verdict(&found, SHARDS)
++}
++
++/// Whether the reports' shards (`mutants.shard`, `None` when a report has
++/// none) include `k/n` for every `k`.
++pub fn shards_verdict(found: &[Option<String>], n: u32) -> Result<String, String> {
++    let missing: Vec<String> = (0..n)
++        .map(|k| format!("{k}/{n}"))
++        .filter(|want| !found.iter().any(|f| f.as_deref() == Some(want.as_str())))
++        .collect();
++    if missing.is_empty() {
++        Ok(format!("a mutants report from each of the {n} shards"))
++    } else {
++        Err(format!(
++            "[E-MUTANTS-SHARDS] no mutants report from shard {}; the reports found name {found:?}",
++            missing.join(", ")
++        ))
++    }
++}
++
++/// How many mutants `cargo mutants --list --json` printed. When the diff
++/// selects none (a change to tests, comments, `use` lines or a struct only)
++/// it prints nothing at all, not `[]`, which is no mutants, not an error.
++pub fn listed(stdout: &str) -> Result<u64, String> {
++    if stdout.trim().is_empty() {
++        return Ok(0);
++    }
++    let list: Value = serde_json::from_str(stdout.trim())
++        .map_err(|e| format!("[E-MUTANTS] cargo mutants --list --json: {e}"))?;
++    let list = list
++        .as_array()
++        .ok_or("[E-MUTANTS] cargo mutants --list --json: not a list")?;
++    Ok(list.len() as u64)
++}
 diff --git a/xtask/src/mutants_skip.rs b/xtask/src/mutants_skip.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..7132b1db79700103ecb2f237f877e17286a8a3b3
+index 0000000000000000000000000000000000000000..a08a6de1f96f153afb4f120939948cd504bb4a63
 --- /dev/null
 +++ b/xtask/src/mutants_skip.rs
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,62 @@
 +//! Exclusions live only in `.cargo/mutants.toml`, the owner's (`mutants.rs`).
 +//! cargo-mutants 27.1.0 also honours `#[mutants::skip]` in source, and
 +//! inside a `cfg_attr` with a bare condition: `#[cfg_attr(miri,
@@ -1230,11 +1411,13 @@ index 0000000000000000000000000000000000000000..7132b1db79700103ecb2f237f877e172
 +
 +/// Fails with one `[E-MUTANTS-SKIP] file:line` line for each
 +/// `mutants::skip` in a Rust file under one of the `core` crates'
-+/// directories (`crates/<name>/`, its tests too).
++/// directories (`crates/<name>/`, its tests too). Every directory, hidden
++/// ones and those named `target` included, as `arch.rs` reads sources: a
++/// `pub mod target;` reaches `src/target/mod.rs` with no `#[path]`.
 +pub fn check(root: &Path, core: &[String]) -> Result<(), String> {
 +    let mut found = Vec::new();
 +    for name in core {
-+        for file in util::walk(&root.join("crates").join(name)) {
++        for file in util::walk_all(&root.join("crates").join(name)) {
 +            if file.extension().is_none_or(|e| e != "rs") {
 +                continue;
 +            }
@@ -1258,10 +1441,10 @@ index 0000000000000000000000000000000000000000..7132b1db79700103ecb2f237f877e172
 +}
 diff --git a/xtask/src/mutants_tests.rs b/xtask/src/mutants_tests.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..90866699726df7475a1ba4d7c71cec30363a7495
+index 0000000000000000000000000000000000000000..afaec5bae831bb6cda8da1ffa8309f1e946bfa6d
 --- /dev/null
 +++ b/xtask/src/mutants_tests.rs
-@@ -0,0 +1,398 @@
+@@ -0,0 +1,464 @@
 +//! The mutants job (`mutants.rs`, `mutants_git.rs`): its command line, which
 +//! step a run makes real, the time box, how cargo-mutants' outcomes are
 +//! judged, the selftest's verdict and the workflow; the git side is in
@@ -1536,6 +1719,7 @@ index 0000000000000000000000000000000000000000..90866699726df7475a1ba4d7c71cec30
 +        format!("ENG_MUTANTS_SHARD: ${{{{ matrix.shard }}}}/{SHARDS}"),
 +        "fetch-depth: 0".into(),
 +        "cargo xtask ci --job mutants".into(),
++        "CARGO_INCREMENTAL: \"1\"".into(),
 +        "report-mutants-${{ matrix.shard }}".into(),
 +    ] {
 +        assert!(job.contains(&wanted), "the mutants job has no `{wanted}`");
@@ -1598,8 +1782,8 @@ index 0000000000000000000000000000000000000000..90866699726df7475a1ba4d7c71cec30
 +    assert_eq!(skips(not_counted), Vec::<usize>::new());
 +}
 +
-+/// Only the core crates' Rust files are scanned, their tests included, and
-+/// each use is named by file and line.
++/// Only the core crates' Rust files are scanned, their tests and a
++/// directory named `target` included, and each use is named by file and line.
 +#[test]
 +fn the_skip_scan_reads_the_core_crates_rust_files() {
 +    let dir = std::env::temp_dir().join(format!("xtask-mutants-skip-{}", std::process::id()));
@@ -1617,6 +1801,11 @@ index 0000000000000000000000000000000000000000..90866699726df7475a1ba4d7c71cec30
 +        "crates/core-a/tests/t.rs",
 +        "#[cfg_attr(miri, mutants::skip)]\nfn t() {}\n",
 +    );
++    // `pub mod target;` reaches it with no `#[path]`.
++    write(
++        "crates/core-a/src/target/mod.rs",
++        "//! Reached by `pub mod target;`.\n#[cfg_attr(miri, mutants::skip)]\npub fn t() {}\n",
++    );
 +    write("crates/core-a/notes.txt", "#[mutants::skip]\n");
 +    write(
 +        "crates/render/src/lib.rs",
@@ -1625,13 +1814,17 @@ index 0000000000000000000000000000000000000000..90866699726df7475a1ba4d7c71cec30
 +    let core = ["core-a".to_string(), "core-b".to_string()];
 +    let found = crate::mutants_skip::check(&dir, &core).unwrap_err();
 +    let lines: Vec<&str> = found.lines().collect();
-+    assert_eq!(lines.len(), 2, "{found}");
++    assert_eq!(lines.len(), 3, "{found}");
 +    assert!(
 +        lines[0].starts_with("[E-MUTANTS-SKIP] crates/core-a/src/lib.rs:3: "),
 +        "{found}"
 +    );
 +    assert!(
-+        lines[1].starts_with("[E-MUTANTS-SKIP] crates/core-a/tests/t.rs:1: "),
++        lines[1].starts_with("[E-MUTANTS-SKIP] crates/core-a/src/target/mod.rs:2: "),
++        "{found}"
++    );
++    assert!(
++        lines[2].starts_with("[E-MUTANTS-SKIP] crates/core-a/tests/t.rs:1: "),
 +        "{found}"
 +    );
 +    assert!(lines[0].ends_with("exclude it in .cargo/mutants.toml (the owner's) instead"));
@@ -1659,6 +1852,62 @@ index 0000000000000000000000000000000000000000..90866699726df7475a1ba4d7c71cec30
 +    }
 +    let whole = command(root, Path::new("core.diff"), &core, Shard::WHOLE);
 +    assert!(!whole.get_args().any(|a| a == "--shard"));
++}
++
++/// `--list --json` prints nothing when the diff selects no mutants.
++#[test]
++fn an_empty_list_is_no_mutants() {
++    assert_eq!(listed(""), Ok(0));
++    assert_eq!(listed(" \n"), Ok(0));
++    assert_eq!(listed("[]\n"), Ok(0));
++    assert_eq!(listed(r#"[{"name": "a"}, {"name": "b"}]"#), Ok(2));
++    assert!(listed("{}").unwrap_err().contains("not a list"));
++    assert!(listed("INFO No mutants").is_err());
++}
++
++/// Criterion 19 passes only with a report from every shard: one whose job
++/// died before writing a report fails the summary's `mutants-shards`.
++#[test]
++fn every_shard_must_leave_a_report() {
++    let shards = |list: &[&str]| -> Vec<Option<String>> {
++        list.iter().map(|s| Some(s.to_string())).collect()
++    };
++    let all = shards(&["2/4", "0/4", "3/4", "1/4"]);
++    assert_eq!(
++        shards_verdict(&all, 4),
++        Ok("a mutants report from each of the 4 shards".into())
++    );
++    let mut three = shards(&["0/4", "1/4", "3/4", "0/1"]);
++    three.push(None);
++    let missing = shards_verdict(&three, 4).unwrap_err();
++    assert!(
++        missing.starts_with("[E-MUTANTS-SHARDS] no mutants report from shard 2/4;"),
++        "{missing}"
++    );
++    assert!(
++        shards_verdict(&[], 4)
++            .unwrap_err()
++            .contains("shard 0/4, 1/4, 2/4, 3/4")
++    );
++    // From the artifacts as the summary downloads them, one directory each.
++    let dir = std::env::temp_dir().join(format!("xtask-mutants-in-{}", std::process::id()));
++    let _ = fs::remove_dir_all(&dir);
++    let report = |k: u32, job: &str| {
++        let path = dir.join(format!(
++            "report-{job}-{k}/{job}-x86_64-unknown-linux-gnu.json"
++        ));
++        fs::create_dir_all(path.parent().unwrap()).unwrap();
++        let text = json!({"report_version": 1, "job": job, "mutants": {"shard": format!("{k}/4")}});
++        fs::write(path, text.to_string()).unwrap();
++    };
++    for k in [0, 1, 3] {
++        report(k, "mutants");
++    }
++    report(2, "bench");
++    assert!(shard_reports(&dir).unwrap_err().contains("shard 2/4"));
++    report(2, "mutants");
++    assert!(shard_reports(&dir).is_ok());
++    let _ = fs::remove_dir_all(&dir);
 +}
 diff --git a/xtask/src/selftest.rs b/xtask/src/selftest.rs
 index 32aa2b97e9b13cc019471a7b1e901cd385f60699..3d51a07a2f8a8a153a5adfe00e25b8d3cc380c55 100644

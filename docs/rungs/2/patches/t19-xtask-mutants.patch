@@ -1,0 +1,1834 @@
+diff --git a/xtask/src/arch_scan.rs b/xtask/src/arch_scan.rs
+index e66c6a4dd217a509f9bb1625f06facb66546037c..614fe7f271f2b83b400e39d8c8a8b4d68ab74e74 100644
+--- a/xtask/src/arch_scan.rs
++++ b/xtask/src/arch_scan.rs
+@@ -18,12 +18,13 @@ const NEVER_SILENCED: [&str; 8] = [
+     "clippy::disallowed_macros",
+ ];
+ 
+-struct Token {
+-    text: String,
+-    line: usize,
++pub(crate) struct Token {
++    pub(crate) text: String,
++    pub(crate) line: usize,
+ }
+ 
+-fn tokens(src: &str) -> Vec<Token> {
++/// `src` as tokens, comments and literals skipped (also for `mutants_skip.rs`).
++pub(crate) fn tokens(src: &str) -> Vec<Token> {
+     let chars: Vec<char> = src.chars().collect();
+     let mut out = Vec::new();
+     let (mut i, mut line) = (0, 1);
+diff --git a/xtask/src/ci.rs b/xtask/src/ci.rs
+index 27de6902583dab2676c3af16e89dce78535b9ea3..06cdd7a53bc4ec01b449c39222b46d9d0d0462d3 100644
+--- a/xtask/src/ci.rs
++++ b/xtask/src/ci.rs
+@@ -13,8 +13,8 @@ use crate::{arch, ci_durations, ci_native, ci_report, ci_verdicts, docs, replay,
+ 
+ /// The jobs `cargo xtask ci --job` runs, as its error and the usage text
+ /// (`main.rs`) list them.
+-pub const JOBS: [&str; 8] = [
+-    "lint", "test", "riscv", "wasm", "selftest", "native", "summary", "all",
++pub const JOBS: [&str; 9] = [
++    "lint", "test", "riscv", "wasm", "selftest", "native", "mutants", "summary", "all",
+ ];
+ 
+ pub const RISCV: &str = "riscv64gc-unknown-linux-gnu";
+@@ -135,7 +135,7 @@ fn harness(root: &Path, step: &str, files: &[(&str, &str)]) -> Result<String, St
+     cargo_step(root, step, &args)
+ }
+ 
+-fn core_crates(root: &Path) -> Result<Vec<String>, String> {
++pub(crate) fn core_crates(root: &Path) -> Result<Vec<String>, String> {
+     let text = fs::read_to_string(root.join("architecture.toml")).map_err(|e| e.to_string())?;
+     let table: toml::Table = text.parse().map_err(|e: toml::de::Error| e.to_string())?;
+     let crates = table
+@@ -214,6 +214,10 @@ pub fn job(name: &str) -> Result<String, String> {
+             steps.run("wasm-check", || cargo_step(&root, "wasm-check", &args));
+         }
+         "selftest" => selftest::steps(&root, &mut steps),
++        "mutants" => {
++            let extra = crate::mutants::steps_into(&root, &mut steps);
++            return ci_report::finish(&root, name, steps, started, extra);
++        }
+         "native" => {
+             ci_native::steps(&root, &mut steps);
+             return ci_report::finish(&root, name, steps, started, ci_native::extra(&root));
+diff --git a/xtask/src/main.rs b/xtask/src/main.rs
+index 0dc409da5819a062d86d8e76aea06b2e41f0ee2b..5a8120ce5be80ff243400c62a7769224915803f1 100644
+--- a/xtask/src/main.rs
++++ b/xtask/src/main.rs
+@@ -25,12 +25,16 @@ mod guard_tools;
+ mod guard_vcs;
+ mod guard_words;
+ mod hooks;
++mod mutants;
++mod mutants_git;
++mod mutants_skip;
+ mod oracle;
+ mod push;
+ mod replay;
+ mod run_lock;
+ mod selftest;
+ mod selftest_golden;
++mod selftest_mutants;
+ mod shell;
+ mod size;
+ mod stamp;
+@@ -40,7 +44,7 @@ use std::process::ExitCode;
+ 
+ const USAGE: &str = "\
+ cargo xtask quick                      fmt, clippy, arch, size, docs, tests, replays
+-cargo xtask ci --job <job>             a CI job: lint test riscv wasm selftest native summary all
++cargo xtask ci --job <job>             a CI job: lint test riscv wasm selftest native mutants summary all
+ cargo xtask arch-check                 layering, core-set purity, crate-root attributes
+ cargo xtask size-check                 warn over 500 lines, fail over 1000
+ cargo xtask docs-check                 AGENTS.md at most 150 lines, no CLAUDE.md
+@@ -52,6 +56,9 @@ cargo xtask acceptance DIR             compute acceptance `passes` from CI job r
+ cargo xtask oracle-check --base REV --head REV
+                                        CI: protected changes need the owner
+ cargo xtask push [--dry-run] <name>    agents: send HEAD to agent/<name> on GitHub
++cargo xtask mutants [--in-diff | --rung-diff] [--base REV] [--shard K/N] [--time-box MIN]
++                                       cargo-mutants on the core crates' diff from the push's base
++                                       or (--rung-diff) from the commit that added the rung's plan
+ cargo xtask hook <guard|verify|fmt|stop|session-start>
+                                        Claude Code hooks (run the prebuilt copy)
+ cargo xtask install-hooks [--if-stale] build the hook binary from main";
+@@ -86,6 +93,8 @@ fn main() -> ExitCode {
+         ["acceptance", dir] => util::root().and_then(|root| acceptance::compute(&root, dir)),
+         ["oracle-check", "--base", base, "--head", head] => oracle::check(base, head),
+         ["push", rest @ ..] => push::main(rest),
++        ["mutants", rest @ ..] => mutants::parse(rest)
++            .and_then(|opts| run_lock::run(|| mutants::run(&util::root()?, &opts))),
+         ["hook", "fmt"] => hooks::fmt(),
+         ["hook", "stop"] => return hooks::stop(),
+         ["hook", "session-start"] => hooks::session_start(),
+diff --git a/xtask/src/mutants.rs b/xtask/src/mutants.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..86aebc11ead2431a2ade87f856341d453a8397fa
+--- /dev/null
++++ b/xtask/src/mutants.rs
+@@ -0,0 +1,483 @@
++//! `cargo xtask mutants` and `ci --job mutants` (rung 2, decision 15; spec
++//! 7.2): cargo-mutants over the core crates' changed code.
++//!
++//! - `in-diff` mutates what a push changed: the diff from the push's base
++//!   (`mutants_git::resolve`, taken as the bench job takes it) to the working
++//!   tree, over the core crates' Rust files. When no core crate changed the
++//!   step is pending (1b's X2): not a pass, and it fails no job.
++//! - `rung-diff` mutates the current rung's core changes: the diff from the
++//!   commit that added `docs/rungs/<rung>/plan.md`. `ci --job mutants` runs
++//!   it on the weekly schedule and a manual dispatch (`GITHUB_EVENT_NAME`
++//!   `schedule` or `workflow_dispatch`) and leaves it pending on every other
++//!   run; `in-diff` is pending on those two.
++//! - A missed mutant fails its step. Exclusions are the owner's, in
++//!   `.cargo/mutants.toml`, which cargo-mutants reads itself: it never makes
++//!   an excluded mutant, so every miss it reports is one no exclusion covers.
++//!   A mutant that times out is caught; one that does not build is unviable.
++//!   Exclusions live there only: a step fails first on any `mutants::skip`
++//!   attribute in a core crate (`[E-MUTANTS-SKIP]`, `mutants_skip.rs`),
++//!   which cargo-mutants would honour without the owner.
++//! - The job runs in shards (`ENG_MUTANTS_SHARD`, `k/n` with `k` from 0, as
++//!   cargo-mutants slices them), each held to a time box (`budgets.toml [ci]
++//!   mutants_shard_minutes`, else [`DEFAULT_MINUTES`]). A shard that reaches
++//!   it is interrupted and fails, with what it missed so far and how many it
++//!   left untested.
++//!
++//! Only the mutated package's tests run for each mutant (cargo-mutants'
++//! default), with proptest's seed fixed ([`PROPTEST_SEED`]), so that a
++//! verdict repeats on every run and machine. The step's report lists every
++//! missed mutant by file, line and operator; the full output is in
++//! `target/mutants/<step>/mutants.out/`, which the `test-auditor` subagent
++//! reads.
++
++use std::fs::{self, File};
++use std::io::Write;
++use std::path::Path;
++use std::process::{Child, Command, Stdio};
++use std::time::{Duration, Instant};
++
++use serde_json::{Map, Value, json};
++
++use crate::mutants_git as git;
++use crate::util::{self, Done, Steps};
++use crate::{acceptance, ci};
++
++/// The cargo-mutants the workflow installs (`cargo install --locked`):
++/// the output files read here are this version's.
++pub const VERSION: &str = "27.1.0";
++/// How to install it.
++pub const INSTALL: &str = "cargo install --locked cargo-mutants@27.1.0";
++/// The workflow's shards (`matrix.shard`, `ENG_MUTANTS_SHARD`).
++pub const SHARDS: u32 = 4;
++/// A shard's time box when `budgets.toml [ci]` sets none (decision 15).
++pub const DEFAULT_MINUTES: u64 = 20;
++/// How long an interrupted cargo-mutants gets to stop its tests.
++const GRACE: Duration = Duration::from_secs(60);
++/// `PROPTEST_RNG_SEED` for every run. With random seeds a property test
++/// caught a mutant on one run and missed it on the next (eng-collision-grid's
++/// oracle, T19), so a step's verdict would change with no change to the code.
++pub const PROPTEST_SEED: &str = "1";
++
++/// Which diff a step mutates.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum Scope {
++    /// From the push's base.
++    InDiff,
++    /// From the commit that added the current rung's `plan.md`.
++    RungDiff,
++}
++
++impl Scope {
++    /// The step's name in the job's report (`acceptance.json`'s checks).
++    pub fn step(self) -> &'static str {
++        match self {
++            Scope::InDiff => "in-diff",
++            Scope::RungDiff => "rung-diff",
++        }
++    }
++}
++
++/// One of `n` slices of the mutants, `k` counted from 0 (cargo-mutants'
++/// `--shard k/n`).
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct Shard {
++    pub k: u32,
++    pub n: u32,
++}
++
++impl Shard {
++    pub const WHOLE: Shard = Shard { k: 0, n: 1 };
++
++    /// `k/n`, with `k < n`.
++    pub fn parse(text: &str) -> Result<Shard, String> {
++        let bad = || format!("[E-MUTANTS] shard {text:?}: k/n with 0 <= k < n, such as 0/{SHARDS}");
++        let (k, n) = text.trim().split_once('/').ok_or_else(bad)?;
++        let (k, n) = (k.parse::<u32>(), n.parse::<u32>());
++        match (k, n) {
++            (Ok(k), Ok(n)) if k < n => Ok(Shard { k, n }),
++            _ => Err(bad()),
++        }
++    }
++}
++
++impl std::fmt::Display for Shard {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        write!(f, "{}/{}", self.k, self.n)
++    }
++}
++
++/// `cargo xtask mutants`'s command line.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct Options {
++    pub scope: Scope,
++    pub base: Option<String>,
++    pub shard: Shard,
++    pub minutes: Option<u64>,
++}
++
++/// `[--in-diff | --rung-diff] [--base REV] [--shard K/N] [--time-box MINUTES]`.
++pub fn parse(args: &[&str]) -> Result<Options, String> {
++    const USAGE: &str = "cargo xtask mutants [--in-diff | --rung-diff] [--base REV] \
++                         [--shard K/N] [--time-box MINUTES]";
++    let mut opts = Options {
++        scope: Scope::InDiff,
++        base: None,
++        shard: Shard::WHOLE,
++        minutes: None,
++    };
++    let mut rest = args.iter();
++    while let Some(&arg) = rest.next() {
++        let mut value = || {
++            rest.next()
++                .copied()
++                .ok_or(format!("{arg} needs a value\n{USAGE}"))
++        };
++        match arg {
++            "--in-diff" => opts.scope = Scope::InDiff,
++            "--rung-diff" => opts.scope = Scope::RungDiff,
++            "--base" => opts.base = Some(value()?.to_string()),
++            "--shard" => opts.shard = Shard::parse(value()?)?,
++            "--time-box" => {
++                let text = value()?;
++                let minutes = text.parse::<u64>().ok().filter(|m| *m > 0);
++                opts.minutes = Some(minutes.ok_or(format!("--time-box {text}: whole minutes"))?);
++            }
++            other => return Err(format!("unknown argument {other:?}\n{USAGE}")),
++        }
++    }
++    if opts.scope == Scope::RungDiff && opts.base.is_some() {
++        return Err(format!(
++            "--base is for --in-diff; rung-diff's base is the rung's plan\n{USAGE}"
++        ));
++    }
++    Ok(opts)
++}
++
++/// `cargo xtask mutants`: one step, real whatever the event.
++pub fn run(root: &Path, opts: &Options) -> Result<String, String> {
++    let minutes = opts.minutes.unwrap_or_else(|| time_box_minutes(root));
++    let step = opts.scope.step();
++    let mut steps = Steps::default();
++    steps.run_judged(step, || {
++        real_step(root, opts.scope, opts.base.as_deref(), opts.shard, minutes).0
++    });
++    let result = &steps.results[0];
++    let out = util::rel(root, &root.join("target/mutants").join(step));
++    if result.ok {
++        Ok(format!("{}\noutput: {out}", result.detail))
++    } else if result.pending {
++        Ok(format!("{step}: pending, not a pass"))
++    } else {
++        Err(format!("{step} failed; output: {out}"))
++    }
++}
++
++/// Why `scope` waits on a run of `event` (`GITHUB_EVENT_NAME`), or `None`
++/// when it runs: `rung-diff` on the schedule and a dispatch, `in-diff` on
++/// every other run.
++pub fn wait_reason(scope: Scope, event: Option<&str>) -> Option<String> {
++    let scheduled = matches!(event, Some("schedule" | "workflow_dispatch"));
++    let run = event.map_or("a local".to_string(), |e| format!("a {e}"));
++    match (scope, scheduled) {
++        (Scope::InDiff, true) => Some(format!(
++            "{run} run has no push to diff: in-diff runs on pushes and pull requests, \
++             rung-diff on this run (decision 15)"
++        )),
++        (Scope::RungDiff, false) => Some(format!(
++            "{run} run: rung-diff runs on the weekly schedule and a manual dispatch \
++             (decision 15); `cargo xtask mutants --rung-diff` runs it anywhere"
++        )),
++        _ => None,
++    }
++}
++
++/// `ci --job mutants`: both steps, one of them real by the event, on the
++/// shard `ENG_MUTANTS_SHARD` names (all of them when unset). Returns the
++/// report's `mutants` key.
++pub fn steps_into(root: &Path, steps: &mut Steps) -> Map<String, Value> {
++    let env = |key: &str| std::env::var(key).ok().filter(|v| !v.trim().is_empty());
++    let event = env("GITHUB_EVENT_NAME");
++    let shard = env("ENG_MUTANTS_SHARD").map_or(Ok(Shard::WHOLE), |s| Shard::parse(&s));
++    let minutes = time_box_minutes(root);
++    let mut summaries = Map::new();
++    for scope in [Scope::InDiff, Scope::RungDiff] {
++        let mut summary = Value::Null;
++        steps.run_judged(scope.step(), || {
++            let shard = shard.clone()?;
++            if let Some(why) = wait_reason(scope, event.as_deref()) {
++                return Ok(Done::Pending(why));
++            }
++            let (done, found) = real_step(root, scope, None, shard, minutes);
++            summary = found;
++            done
++        });
++        summaries.insert(scope.step().into(), summary);
++    }
++    let mut extra = Map::new();
++    extra.insert(
++        "mutants".into(),
++        json!({
++            "cargo_mutants": VERSION,
++            "event": event,
++            "shard": shard.as_ref().map(Shard::to_string).ok(),
++            "time_box_minutes": minutes,
++            "steps": summaries,
++        }),
++    );
++    extra
++}
++
++/// A shard's time box: `budgets.toml [ci] mutants_shard_minutes`, else
++/// [`DEFAULT_MINUTES`].
++pub fn time_box_minutes(root: &Path) -> u64 {
++    fs::read_to_string(root.join("budgets.toml"))
++        .ok()
++        .and_then(|text| minutes_in(&text))
++        .unwrap_or(DEFAULT_MINUTES)
++}
++
++/// `[ci] mutants_shard_minutes` in `budgets.toml`'s text, if positive.
++pub fn minutes_in(budgets: &str) -> Option<u64> {
++    let table: toml::Table = budgets.parse().ok()?;
++    let minutes = table
++        .get("ci")?
++        .get("mutants_shard_minutes")?
++        .as_integer()?;
++    u64::try_from(minutes).ok().filter(|m| *m > 0)
++}
++
++/// One step, run for real: its base, then [`diff_step`]. Returns how it
++/// ended and what it found, for the report.
++fn real_step(
++    root: &Path,
++    scope: Scope,
++    base: Option<&str>,
++    shard: Shard,
++    minutes: u64,
++) -> (Result<Done, String>, Value) {
++    let mut found = Map::new();
++    let result = (|| {
++        let (sha, from) = match scope {
++            Scope::InDiff => {
++                let event = std::env::var("ENG_MUTANTS_BASE").ok();
++                let github_ref = std::env::var("GITHUB_REF").ok();
++                let on_main = git::on_main(root, github_ref.as_deref());
++                git::resolve(root, &git::request(base, event.as_deref()), on_main)?
++            }
++            Scope::RungDiff => git::rung_start(root, &acceptance::current_rung(root)?)?,
++        };
++        diff_step(
++            root,
++            scope.step(),
++            (&sha, &from),
++            shard,
++            minutes,
++            &mut found,
++        )
++    })();
++    (result, Value::Object(found))
++}
++
++/// cargo-mutants on `shard` of the mutants in the core crates' diff from
++/// `base` (its SHA, and where it came from) to the working tree, held to
++/// `minutes`; `found` gets the counts and the misses. Pending when no core
++/// crate changed; failed by any `mutants::skip` in one, changed or not. The
++/// selftest `mutant-missed` runs this as the job does.
++pub(crate) fn diff_step(
++    root: &Path,
++    step: &str,
++    (base, from): (&str, &str),
++    shard: Shard,
++    minutes: u64,
++    found: &mut Map<String, Value>,
++) -> Result<Done, String> {
++    let short = &base[..base.len().min(12)];
++    let base_line = format!("base {short}, {from}");
++    found.insert("base".into(), json!(base));
++    found.insert("base_from".into(), json!(from));
++    found.insert("shard".into(), json!(shard.to_string()));
++    let core = ci::core_crates(root)?;
++    crate::mutants_skip::check(root, &core)?;
++    let changed = git::core_changes(root, base, &core)?;
++    found.insert("core_files_changed".into(), json!(changed.len()));
++    if changed.is_empty() {
++        return Ok(Done::Pending(format!(
++            "no core crate changed ({base_line}): nothing to mutate (decision 15)"
++        )));
++    }
++    let out = root.join("target/mutants").join(step);
++    let _ = fs::remove_dir_all(&out);
++    fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
++    let diff = git::rust_diff(root, base, &core)?;
++    if diff.trim().is_empty() {
++        found.insert("mutants".into(), json!(0));
++        return Ok(Done::Pass(format!(
++            "{} core files changed, none of them Rust: no mutants; {base_line}",
++            changed.len()
++        )));
++    }
++    let diff_file = out.join("core.diff");
++    fs::write(&diff_file, &diff).map_err(|e| format!("{}: {e}", diff_file.display()))?;
++    match version(root) {
++        Some(installed) if installed == VERSION => {}
++        Some(other) => {
++            return Err(format!(
++                "[E-MUTANTS] cargo-mutants {VERSION} is required, not {other}: {INSTALL}"
++            ));
++        }
++        None => {
++            return Err(format!(
++                "[E-MUTANTS] cargo-mutants is not installed: {INSTALL}"
++            ));
++        }
++    }
++    let planned = list(root, step, &diff_file, &core, shard)?;
++    found.insert("mutants".into(), json!(planned));
++    if planned == 0 {
++        return Ok(Done::Pass(format!(
++            "shard {shard} has none of the diff's mutants; {base_line}"
++        )));
++    }
++    let mut cmd = command(root, &diff_file, &core, shard);
++    cmd.arg("--output").arg(&out);
++    let started = Instant::now();
++    let limit = Duration::from_secs(minutes * 60);
++    let (code, stopped) = run_bounded(root, &format!("mutants-{step}"), &mut cmd, limit)?;
++    found.insert("seconds".into(), json!(started.elapsed().as_secs_f64()));
++    found.insert("time_box_reached".into(), json!(stopped));
++    let outcomes = out.join("mutants.out/outcomes.json");
++    let log = util::rel(
++        root,
++        &root.join(format!("target/agent-logs/xtask-mutants-{step}.log")),
++    );
++    let tally = fs::read_to_string(&outcomes)
++        .ok()
++        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
++        .map(|value| tally(&value))
++        .ok_or(format!(
++            "[E-MUTANTS] cargo-mutants (exit {code:?}) wrote no {}; see {log}",
++            util::rel(root, &outcomes)
++        ))?;
++    found.insert("tally".into(), tally.to_json());
++    verdict(&tally, planned, code, stopped, minutes)
++        .map_err(|e| format!("{e}; {base_line}"))
++        .map(|done| match done {
++            Done::Pass(d) => Done::Pass(format!("{d}; {base_line}")),
++            other => other,
++        })
++}
++
++/// The installed cargo-mutants' version, if any.
++pub fn version(root: &Path) -> Option<String> {
++    let out = util::cargo(root)
++        .args(["mutants", "--version"])
++        .output()
++        .ok()?;
++    let text = String::from_utf8_lossy(&out.stdout);
++    let found = text.trim().strip_prefix("cargo-mutants ")?;
++    out.status.success().then(|| found.to_string())
++}
++
++/// `cargo mutants` over the core crates' mutants in `diff`, on `shard`.
++fn command(root: &Path, diff: &Path, core: &[String], shard: Shard) -> Command {
++    let mut cmd = util::cargo(root);
++    cmd.arg("mutants").arg("--in-diff").arg(diff);
++    cmd.env("PROPTEST_RNG_SEED", PROPTEST_SEED);
++    // A deny lint must not make a mutant unviable (`unused_must_use`).
++    cmd.args(["--colors", "never", "--cap-lints", "true"]);
++    for name in core {
++        cmd.args(["--package", name]);
++    }
++    if shard.n > 1 {
++        cmd.args(["--shard", &shard.to_string()]);
++    }
++    if util::on_ci() {
++        cmd.arg("--cargo-arg=--locked");
++    }
++    cmd
++}
++
++/// How many mutants `shard` has, from cargo-mutants' own list.
++fn list(
++    root: &Path,
++    step: &str,
++    diff: &Path,
++    core: &[String],
++    shard: Shard,
++) -> Result<u64, String> {
++    let mut cmd = command(root, diff, core, shard);
++    cmd.args(["--list", "--json"]);
++    let text = util::run_quiet(root, &format!("mutants-{step}-list"), &mut cmd)?;
++    let list: Value = serde_json::from_str(text.trim())
++        .map_err(|e| format!("[E-MUTANTS] cargo mutants --list --json: {e}"))?;
++    let list = list
++        .as_array()
++        .ok_or("[E-MUTANTS] cargo mutants --list --json: not a list")?;
++    Ok(list.len() as u64)
++}
++
++/// Runs `cmd` with its output in `target/agent-logs/xtask-<name>.log`, and
++/// interrupts it at `limit`, as Ctrl-C would, so that it stops its tests
++/// and keeps the outcomes so far. Returns its exit code and whether the
++/// limit stopped it.
++fn run_bounded(
++    root: &Path,
++    name: &str,
++    cmd: &mut Command,
++    limit: Duration,
++) -> Result<(Option<i32>, bool), String> {
++    let dir = root.join("target/agent-logs");
++    let _ = fs::create_dir_all(&dir);
++    let path = dir.join(format!("xtask-{name}.log"));
++    let mut log = File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
++    let _ = writeln!(log, "$ {cmd:?}");
++    let err = log.try_clone().map_err(|e| e.to_string())?;
++    cmd.stdin(Stdio::null()).stdout(log).stderr(err);
++    let mut child = cmd
++        .spawn()
++        .map_err(|e| format!("cannot start {cmd:?}: {e}"))?;
++    let deadline = Instant::now() + limit;
++    if let Some(code) = wait_until(&mut child, deadline)? {
++        return Ok((code, false));
++    }
++    interrupt(&child);
++    if let Some(code) = wait_until(&mut child, Instant::now() + GRACE)? {
++        return Ok((code, true));
++    }
++    let _ = child.kill();
++    let status = child.wait().map_err(|e| e.to_string())?;
++    Ok((status.code(), true))
++}
++
++/// The child's exit code once it ends, or `None` at `deadline`.
++fn wait_until(child: &mut Child, deadline: Instant) -> Result<Option<Option<i32>>, String> {
++    loop {
++        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
++            return Ok(Some(status.code()));
++        }
++        if Instant::now() >= deadline {
++            return Ok(None);
++        }
++        std::thread::sleep(Duration::from_millis(250));
++    }
++}
++
++/// SIGINT on Unix, where cargo runs cargo-mutants in its own process;
++/// elsewhere the grace period ends in a kill.
++fn interrupt(child: &Child) {
++    if cfg!(unix) {
++        let _ = Command::new("kill")
++            .args(["-INT", &child.id().to_string()])
++            .status();
++    }
++}
++
++#[path = "mutants_outcomes.rs"]
++mod outcomes;
++#[cfg(test)]
++use outcomes::{Missed, Tally};
++use outcomes::{tally, verdict};
++
++#[cfg(test)]
++#[path = "mutants_tests.rs"]
++mod tests;
+diff --git a/xtask/src/mutants_git.rs b/xtask/src/mutants_git.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..efa822ea2c89d7574b32fcddc4127a5a3dc5a5f0
+--- /dev/null
++++ b/xtask/src/mutants_git.rs
+@@ -0,0 +1,191 @@
++//! The mutants job's git side (`mutants.rs`): the base of `in-diff` (the
++//! push's, taken as the bench job takes it), the base of `rung-diff` (the
++//! commit that added the current rung's `plan.md`), and the diff from a
++//! base to the working tree over the core crates.
++
++use std::path::Path;
++use std::process::Command;
++
++/// Where the `in-diff` base comes from.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum Request {
++    /// `--base REV`.
++    Given(String),
++    /// The push's `before`, or a pull request's base (`ENG_MUTANTS_BASE`).
++    Event(String),
++    /// Neither: the merge base of `HEAD` with `origin/main`.
++    MergeBase,
++}
++
++/// Which base to look for: `--base`, else the push's `before`, unless it is
++/// empty or all zeros (a new branch), else a merge base with `main`.
++pub fn request(arg: Option<&str>, event: Option<&str>) -> Request {
++    if let Some(rev) = arg {
++        return Request::Given(rev.to_string());
++    }
++    match event.map(str::trim) {
++        Some(sha) if !sha.is_empty() && !sha.bytes().all(|b| b == b'0') => {
++            Request::Event(sha.to_string())
++        }
++        _ => Request::MergeBase,
++    }
++}
++
++/// `git <args>` in `dir`: its stdout as it is, or its stderr.
++fn raw(dir: &Path, args: &[&str]) -> Result<String, String> {
++    let out = Command::new("git")
++        .arg("-C")
++        .arg(dir)
++        .args(args)
++        .output()
++        .map_err(|e| format!("git: {e}"))?;
++    if out.status.success() {
++        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
++    } else {
++        Err(format!(
++            "git {}: {}",
++            args.join(" "),
++            String::from_utf8_lossy(&out.stderr).trim()
++        ))
++    }
++}
++
++/// `git <args>` in `dir`: its trimmed stdout, or its stderr.
++pub fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
++    raw(dir, args).map(|s| s.trim().to_string())
++}
++
++/// The commit `rev` names, as a full SHA.
++pub fn commit(dir: &Path, rev: &str) -> Result<String, String> {
++    let spec = format!("{rev}^{{commit}}");
++    git(dir, &["rev-parse", "--verify", "--quiet", &spec])
++}
++
++/// Whether this run is for `main`, which only the owner pushes (ADR-0018):
++/// `github_ref` (CI's `GITHUB_REF`) is `refs/heads/main`, or, off CI, the
++/// branch checked out is `main`.
++pub fn on_main(root: &Path, github_ref: Option<&str>) -> bool {
++    match github_ref {
++        Some(r) => r == "refs/heads/main",
++        None => {
++            git(root, &["symbolic-ref", "--quiet", "--short", "HEAD"]).is_ok_and(|b| b == "main")
++        }
++    }
++}
++
++/// A shallow clone has neither the merge base nor the commit that added a
++/// file: its oldest commit seems to add every file it holds.
++fn whole_history(root: &Path) -> Result<(), String> {
++    match git(root, &["rev-parse", "--is-shallow-repository"]) {
++        Ok(shallow) if shallow == "false" => Ok(()),
++        Ok(_) => Err(
++            "[E-MUTANTS] this clone is shallow; fetch the whole history (CI: `fetch-depth: 0`)"
++                .into(),
++        ),
++        Err(e) => Err(format!("[E-MUTANTS] not a git checkout: {e}")),
++    }
++}
++
++/// The `in-diff` base for `request`, and where it came from. Off `main`
++/// (`on_main` false) the push's `before` is the branch's own previous tip,
++/// so the base is the merge base of `HEAD` with `origin/main`: a second push
++/// cannot hide a miss the first brought. On `main`, a `before` the clone
++/// lacks, or that is not an ancestor of `HEAD` (a force-push), gives way to
++/// that merge base too. `--base` is taken as given.
++pub fn resolve(root: &Path, request: &Request, on_main: bool) -> Result<(String, String), String> {
++    whole_history(root)?;
++    let merge_base = |note: &str| -> Result<(String, String), String> {
++        let main = ["origin/main", "main"]
++            .into_iter()
++            .find(|m| commit(root, m).is_ok())
++            .ok_or(
++                "[E-MUTANTS] no origin/main or main to take a merge base with; pass --base REV",
++            )?;
++        let sha = git(root, &["merge-base", "HEAD", main])?;
++        Ok((sha, format!("{note}the merge base of HEAD with {main}")))
++    };
++    match request {
++        Request::Given(rev) => commit(root, rev)
++            .map(|sha| (sha, format!("--base {rev}")))
++            .map_err(|_| format!("[E-MUTANTS] --base {rev} is not a commit here")),
++        Request::Event(_) if !on_main => merge_base("off main, not the push's before: "),
++        Request::Event(sha) => match commit(root, sha) {
++            Ok(full) if git(root, &["merge-base", "--is-ancestor", &full, "HEAD"]).is_ok() => {
++                Ok((full, "the push's before (ENG_MUTANTS_BASE)".into()))
++            }
++            Ok(_) => merge_base(&format!("{sha} is not an ancestor of HEAD; ")),
++            Err(_) => merge_base(&format!("{sha} is not in this clone; ")),
++        },
++        Request::MergeBase => merge_base(""),
++    }
++}
++
++/// The `rung-diff` base: the first commit that added
++/// `docs/rungs/<rung>/plan.md`, which holds every change of the rung.
++pub fn rung_start(root: &Path, rung: &str) -> Result<(String, String), String> {
++    whole_history(root)?;
++    let plan = format!("docs/rungs/{rung}/plan.md");
++    let added = git(
++        root,
++        &[
++            "log",
++            "--reverse",
++            "--diff-filter=A",
++            "--format=%H",
++            "--",
++            &plan,
++        ],
++    )?;
++    let sha = added
++        .lines()
++        .next()
++        .ok_or(format!("[E-MUTANTS] no commit here adds {plan}"))?;
++    Ok((sha.to_string(), format!("the commit that added {plan}")))
++}
++
++/// `crates/<name>/` for each core crate, the pathspecs of a core change.
++fn crate_dirs(core: &[String]) -> Vec<String> {
++    core.iter().map(|c| format!("crates/{c}/")).collect()
++}
++
++/// The tracked files that differ between `base` and the working tree under
++/// a core crate's directory, sorted.
++pub fn core_changes(root: &Path, base: &str, core: &[String]) -> Result<Vec<String>, String> {
++    let dirs = crate_dirs(core);
++    let mut args = vec!["diff", "--name-only", "--no-renames", "-z", base, "--"];
++    args.extend(dirs.iter().map(String::as_str));
++    let names = git(root, &args)?;
++    let mut files: Vec<String> = names
++        .split('\0')
++        .filter(|name| !name.is_empty())
++        .map(str::to_string)
++        .collect();
++    files.sort();
++    Ok(files)
++}
++
++/// The diff cargo-mutants reads (`--in-diff`): from `base` to the working
++/// tree, which is what it copies and mutates, so the line numbers agree;
++/// the core crates' Rust files only (in a pathspec `*` also matches `/`).
++/// Fixed prefixes and no colour, renames or external tools, whatever the
++/// git settings.
++pub fn rust_diff(root: &Path, base: &str, core: &[String]) -> Result<String, String> {
++    let globs: Vec<String> = core.iter().map(|c| format!("crates/{c}/*.rs")).collect();
++    let mut args = vec![
++        "diff",
++        "--no-color",
++        "--no-ext-diff",
++        "--no-textconv",
++        "--no-renames",
++        "--src-prefix=a/",
++        "--dst-prefix=b/",
++        base,
++        "--",
++    ];
++    args.extend(globs.iter().map(String::as_str));
++    raw(root, &args)
++}
++
++#[cfg(test)]
++#[path = "mutants_git_tests.rs"]
++mod tests;
+diff --git a/xtask/src/mutants_git_tests.rs b/xtask/src/mutants_git_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..3b7c4e2a42ef840991c091c396a552e8c9b0b762
+--- /dev/null
++++ b/xtask/src/mutants_git_tests.rs
+@@ -0,0 +1,248 @@
++//! The mutants job's git side (`mutants_git.rs`) and its pending step, from
++//! temporary repositories.
++
++use std::fs;
++use std::path::{Path, PathBuf};
++use std::process::Command;
++use std::sync::atomic::{AtomicU32, Ordering};
++
++use serde_json::Map;
++
++use super::*;
++use crate::mutants::{Shard, diff_step};
++use crate::util::Done;
++
++fn git(dir: &Path, args: &[&str]) -> String {
++    let out = Command::new("git")
++        .arg("-C")
++        .arg(dir)
++        .args(["-c", "user.name=t", "-c", "user.email=t@t"])
++        .args(["-c", "commit.gpgsign=false"])
++        .args(args)
++        .output()
++        .unwrap();
++    assert!(
++        out.status.success(),
++        "git {args:?}: {}",
++        String::from_utf8_lossy(&out.stderr)
++    );
++    String::from_utf8_lossy(&out.stdout).trim().to_string()
++}
++
++fn commit(dir: &Path, file: &str, text: &str) -> String {
++    write(dir, file, text);
++    git(dir, &["add", "-A"]);
++    git(dir, &["commit", "-q", "-m", file]);
++    git(dir, &["rev-parse", "HEAD"])
++}
++
++fn write(dir: &Path, file: &str, text: &str) {
++    let path = dir.join(file);
++    fs::create_dir_all(path.parent().unwrap()).unwrap();
++    fs::write(path, text).unwrap();
++}
++
++/// A repository on `main`: two core crates and one other, as
++/// `architecture.toml` lists them.
++fn repo() -> PathBuf {
++    static NEXT: AtomicU32 = AtomicU32::new(0);
++    let n = NEXT.fetch_add(1, Ordering::Relaxed);
++    let dir = std::env::temp_dir().join(format!("xtask-mutants-{}-{n}", std::process::id()));
++    let _ = fs::remove_dir_all(&dir);
++    fs::create_dir_all(&dir).unwrap();
++    // `-b`: git's default branch depends on the machine (Xcode's git: main).
++    git(&dir, &["init", "-q", "-b", "main"]);
++    write(
++        &dir,
++        "architecture.toml",
++        "[crates.core-a]\ncore = true\n[crates.core-b]\ncore = true\n[crates.render]\n",
++    );
++    write(
++        &dir,
++        "crates/core-a/src/lib.rs",
++        "pub fn a() -> u32 {\n    1\n}\n",
++    );
++    write(&dir, "crates/core-b/src/lib.rs", "pub fn b() {}\n");
++    commit(&dir, "crates/render/src/lib.rs", "pub fn r() {}\n");
++    dir
++}
++
++#[test]
++fn the_diff_is_the_core_crates_rust_files_from_the_base_to_the_working_tree() {
++    let dir = repo();
++    let base = git(&dir, &["rev-parse", "HEAD"]);
++    let core = vec!["core-a".to_string(), "core-b".to_string()];
++    assert!(core_changes(&dir, &base, &core).unwrap().is_empty());
++    commit(
++        &dir,
++        "crates/render/src/lib.rs",
++        "pub fn r() -> u8 {\n    0\n}\n",
++    );
++    commit(&dir, "crates/core-a/Cargo.toml", "[package]\n");
++    write(
++        &dir,
++        "crates/core-a/src/lib.rs",
++        "pub fn a() -> u32 {\n    2\n}\n",
++    );
++    write(&dir, "crates/core-b/src/deep/mod.rs", "untracked\n");
++    assert_eq!(
++        core_changes(&dir, &base, &core).unwrap(),
++        ["crates/core-a/Cargo.toml", "crates/core-a/src/lib.rs"],
++        "tracked core files, the working tree's edit included"
++    );
++    // Prefixes and colour stay put whatever the repository's settings.
++    git(&dir, &["config", "diff.noprefix", "true"]);
++    git(&dir, &["config", "color.diff", "always"]);
++    let diff = rust_diff(&dir, &base, &core).unwrap();
++    assert!(diff.contains("--- a/crates/core-a/src/lib.rs\n"), "{diff}");
++    assert!(diff.contains("+++ b/crates/core-a/src/lib.rs\n"), "{diff}");
++    assert!(diff.contains("+    2\n"), "{diff}");
++    assert!(
++        !diff.contains("Cargo.toml") && !diff.contains("render"),
++        "{diff}"
++    );
++    assert!(!diff.contains('\u{1b}'), "no colour codes");
++    let _ = fs::remove_dir_all(&dir);
++}
++
++/// "A push with no core change writes a pending step", and a core change
++/// with no Rust in it has no mutants: neither needs cargo-mutants.
++#[test]
++fn a_diff_without_core_changes_is_pending_and_one_without_rust_has_no_mutants() {
++    let dir = repo();
++    let base = git(&dir, &["rev-parse", "HEAD"]);
++    let head = commit(
++        &dir,
++        "crates/render/src/lib.rs",
++        "pub fn r() -> u8 {\n    0\n}\n",
++    );
++    let mut found = Map::new();
++    let step = diff_step(
++        &dir,
++        "in-diff",
++        (&base, "a test"),
++        Shard::WHOLE,
++        1,
++        &mut found,
++    );
++    let Ok(Done::Pending(why)) = step else {
++        panic!("{step:?}");
++    };
++    assert!(why.starts_with("no core crate changed"), "{why}");
++    assert_eq!(found["core_files_changed"], 0);
++    commit(&dir, "crates/core-b/README.md", "notes\n");
++    let step = diff_step(
++        &dir,
++        "in-diff",
++        (&head, "a test"),
++        Shard::WHOLE,
++        1,
++        &mut found,
++    );
++    let Ok(Done::Pass(detail)) = step else {
++        panic!("{step:?}");
++    };
++    assert!(detail.contains("none of them Rust: no mutants"), "{detail}");
++    // A `mutants::skip` in a core crate fails the step, even one that would
++    // be pending: only the owner's file excludes.
++    let skip = "#[cfg_attr(miri, mutants::skip)]\npub fn b() {}\n";
++    let last = commit(&dir, "crates/core-b/src/lib.rs", skip);
++    let step = diff_step(
++        &dir,
++        "in-diff",
++        (&last, "a test"),
++        Shard::WHOLE,
++        1,
++        &mut found,
++    );
++    let detail = step.unwrap_err();
++    assert!(
++        detail.starts_with("[E-MUTANTS-SKIP] crates/core-b/src/lib.rs:1: "),
++        "{detail}"
++    );
++    let _ = fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn rung_diff_starts_at_the_commit_that_added_the_plan() {
++    let dir = repo();
++    let added = commit(&dir, "docs/rungs/2/plan.md", "# Rung 2\n");
++    commit(&dir, "docs/rungs/2/plan.md", "# Rung 2, revised\n");
++    commit(
++        &dir,
++        "crates/core-a/src/lib.rs",
++        "pub fn a() -> u32 {\n    3\n}\n",
++    );
++    let (sha, from) = rung_start(&dir, "2").unwrap();
++    assert_eq!(sha, added, "the add, not a later edit");
++    assert_eq!(from, "the commit that added docs/rungs/2/plan.md");
++    let missing = rung_start(&dir, "3").unwrap_err();
++    assert!(
++        missing.contains("no commit here adds docs/rungs/3/plan.md"),
++        "{missing}"
++    );
++    // A shallow clone seems to add every file in its one commit.
++    let shallow = dir.with_extension("shallow");
++    let _ = fs::remove_dir_all(&shallow);
++    // `--no-local`: a local clone ignores `--depth`.
++    let (from, to) = (dir.to_string_lossy(), shallow.to_string_lossy());
++    let parent = dir.parent().unwrap();
++    git(
++        parent,
++        &["clone", "-q", "--no-local", "--depth", "1", &from, &to],
++    );
++    assert!(rung_start(&shallow, "2").unwrap_err().contains("shallow"));
++    let _ = fs::remove_dir_all(&shallow);
++    let _ = fs::remove_dir_all(&dir);
++}
++
++/// On `main` the push's `before`, when it is an ancestor of `HEAD`; off it,
++/// or for a `before` off the branch, the merge base with `main`.
++#[test]
++fn the_in_diff_base_on_and_off_main() {
++    let dir = repo();
++    let fork = git(&dir, &["rev-parse", "HEAD"]);
++    commit(&dir, "crates/core-a/src/main.rs", "fn main() {}\n");
++    git(&dir, &["checkout", "-q", "-b", "agent/x", &fork]);
++    let before = commit(
++        &dir,
++        "crates/core-b/src/lib.rs",
++        "pub fn b() -> u8 {\n    0\n}\n",
++    );
++    commit(
++        &dir,
++        "crates/core-b/src/lib.rs",
++        "pub fn b() -> u8 {\n    1\n}\n",
++    );
++    let event = Request::Event(before.clone());
++    assert_eq!(
++        resolve(&dir, &event, true).unwrap(),
++        (
++            before.clone(),
++            "the push's before (ENG_MUTANTS_BASE)".into()
++        )
++    );
++    let (sha, from) = resolve(&dir, &event, false).unwrap();
++    assert_eq!(sha, fork, "an agent branch's whole change");
++    assert_eq!(
++        from,
++        "off main, not the push's before: the merge base of HEAD with main"
++    );
++    let absent = "0123456789abcdef0123456789abcdef01234567";
++    let (sha, from) = resolve(&dir, &Request::Event(absent.into()), true).unwrap();
++    assert_eq!(sha, fork);
++    assert!(
++        from.starts_with(&format!("{absent} is not in this clone")),
++        "{from}"
++    );
++    let main = git(&dir, &["rev-parse", "main"]);
++    let (sha, from) = resolve(&dir, &Request::Event(main.clone()), true).unwrap();
++    assert_eq!(sha, fork, "main's tip is off this branch");
++    assert!(from.contains("is not an ancestor of HEAD"), "{from}");
++    assert_eq!(
++        resolve(&dir, &Request::Given("HEAD~1".into()), false).unwrap(),
++        (before, "--base HEAD~1".into())
++    );
++    assert!(resolve(&dir, &Request::Given("nope".into()), false).is_err());
++    let _ = fs::remove_dir_all(&dir);
++}
+diff --git a/xtask/src/mutants_outcomes.rs b/xtask/src/mutants_outcomes.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..092b6536f98f942761b7970ee459709a47b2ddeb
+--- /dev/null
++++ b/xtask/src/mutants_outcomes.rs
+@@ -0,0 +1,140 @@
++//! How a mutants step is judged (`mutants.rs`): cargo-mutants' `outcomes.json`,
++//! as far as a run got, counted, and the step's verdict from the counts.
++
++use serde_json::{Value, json};
++
++use crate::util::Done;
++
++/// A mutant the tests missed: cargo-mutants' name for it
++/// (`file:line:column: replace … in function`) and its kind of change.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct Missed {
++    pub name: String,
++    pub file: String,
++    pub line: u64,
++    pub genre: String,
++}
++
++/// What cargo-mutants' `outcomes.json` says.
++#[derive(Debug, Clone, Default, PartialEq, Eq)]
++pub struct Tally {
++    /// The unmutated tree's outcome (`Success` when its tests pass).
++    pub baseline: Option<String>,
++    pub tested: u64,
++    pub caught: u64,
++    pub timeout: u64,
++    pub unviable: u64,
++    pub missed: Vec<Missed>,
++}
++
++impl Tally {
++    pub fn to_json(&self) -> Value {
++        let missed: Vec<Value> = self
++            .missed
++            .iter()
++            .map(|m| json!({"name": m.name, "file": m.file, "line": m.line, "genre": m.genre}))
++            .collect();
++        json!({
++            "baseline": self.baseline, "tested": self.tested, "caught": self.caught,
++            "timeout": self.timeout, "unviable": self.unviable, "missed": missed,
++        })
++    }
++}
++
++/// Reads `outcomes.json`: the baseline, then one outcome per mutant tested
++/// (as far as an interrupted run got).
++pub fn tally(outcomes: &Value) -> Tally {
++    let mut tally = Tally::default();
++    let list = outcomes["outcomes"]
++        .as_array()
++        .map(Vec::as_slice)
++        .unwrap_or_default();
++    for outcome in list {
++        let summary = outcome["summary"].as_str().unwrap_or("?").to_string();
++        let Some(mutant) = outcome["scenario"].get("Mutant") else {
++            tally.baseline = Some(summary);
++            continue;
++        };
++        tally.tested += 1;
++        match summary.as_str() {
++            "CaughtMutant" => tally.caught += 1,
++            "Timeout" => tally.timeout += 1,
++            "Unviable" => tally.unviable += 1,
++            _ => tally.missed.push(Missed {
++                name: mutant["name"].as_str().unwrap_or("?").to_string(),
++                file: mutant["file"].as_str().unwrap_or("?").to_string(),
++                line: mutant["span"]["start"]["line"].as_u64().unwrap_or(0),
++                genre: mutant["genre"].as_str().unwrap_or("?").to_string(),
++            }),
++        }
++    }
++    tally
++}
++
++/// A step's verdict from its tally: `planned` mutants on the shard,
++/// cargo-mutants' exit `code`, and whether the time box of `minutes`
++/// `stopped` it. Every miss fails the step, each listed on its own line
++/// and the counts last (a report keeps a step's last lines).
++pub fn verdict(
++    tally: &Tally,
++    planned: u64,
++    code: Option<i32>,
++    stopped: bool,
++    minutes: u64,
++) -> Result<Done, String> {
++    let Tally {
++        tested,
++        caught,
++        timeout,
++        unviable,
++        ..
++    } = *tally;
++    let missed = tally.missed.len();
++    let untested = planned.saturating_sub(tested);
++    let counts = format!(
++        "{tested} of {planned} mutants tested: {caught} caught, {missed} missed, \
++         {timeout} timed out (caught), {unviable} unviable"
++    );
++    let time_box = format!("stopped at the {minutes}-minute time box with {untested} untested");
++    match tally.baseline.as_deref() {
++        Some("Success") => {}
++        Some(other) => {
++            return Err(format!(
++                "[E-MUTANTS] the unmutated tree's tests did not pass (baseline: {other}), \
++                 so no mutant was tested"
++            ));
++        }
++        None if stopped => return Err(format!("[E-MUTANTS-TIME] the baseline {time_box}")),
++        None => {
++            return Err(format!(
++                "[E-MUTANTS] cargo-mutants (exit {code:?}) ran no baseline"
++            ));
++        }
++    }
++    if missed > 0 {
++        let mut lines: Vec<String> = tally
++            .missed
++            .iter()
++            .map(|m| format!("{} [{}]", m.name, m.genre))
++            .collect();
++        let stop = if stopped {
++            format!("; {time_box}")
++        } else {
++            String::new()
++        };
++        lines.push(format!(
++            "[E-MUTANT-MISSED] {missed} missed, none excluded by .cargo/mutants.toml: \
++             {counts}{stop}"
++        ));
++        return Err(lines.join("\n"));
++    }
++    if stopped {
++        return Err(format!("[E-MUTANTS-TIME] {counts}; {time_box}"));
++    }
++    if untested > 0 || !matches!(code, Some(0 | 3)) {
++        return Err(format!(
++            "[E-MUTANTS] cargo-mutants exited {code:?}: {counts}, {untested} untested"
++        ));
++    }
++    Ok(Done::Pass(format!("{counts}; none missed")))
++}
+diff --git a/xtask/src/mutants_skip.rs b/xtask/src/mutants_skip.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..7132b1db79700103ecb2f237f877e17286a8a3b3
+--- /dev/null
++++ b/xtask/src/mutants_skip.rs
+@@ -0,0 +1,60 @@
++//! Exclusions live only in `.cargo/mutants.toml`, the owner's (`mutants.rs`).
++//! cargo-mutants 27.1.0 also honours `#[mutants::skip]` in source, and
++//! inside a `cfg_attr` with a bare condition: `#[cfg_attr(miri,
++//! mutants::skip)]` compiles without the `mutants` crate and still exempts
++//! the function, so an ordinary change could add one. So before a step runs,
++//! the core crates' Rust files are scanned for the path `mutants::skip` in
++//! code, and any use fails the step with `[E-MUTANTS-SKIP]`.
++//!
++//! The scan reads `arch_scan`'s tokens: a mention in a comment or a string
++//! literal exempts nothing and does not count, and spaces or line breaks
++//! inside the path do not hide it. A `use` of the path counts too.
++
++use std::fs;
++use std::path::Path;
++
++use crate::{arch_scan, util};
++
++/// The line of each `mutants::skip` path in `src`'s code.
++pub fn skips(src: &str) -> Vec<usize> {
++    let toks = arch_scan::tokens(src);
++    let text = |i: usize| toks.get(i).map_or("", |t| t.text.as_str());
++    (0..toks.len())
++        .filter(|&i| {
++            text(i) == "mutants"
++                && text(i + 1) == ":"
++                && text(i + 2) == ":"
++                && text(i + 3) == "skip"
++        })
++        .map(|i| toks[i].line)
++        .collect()
++}
++
++/// Fails with one `[E-MUTANTS-SKIP] file:line` line for each
++/// `mutants::skip` in a Rust file under one of the `core` crates'
++/// directories (`crates/<name>/`, its tests too).
++pub fn check(root: &Path, core: &[String]) -> Result<(), String> {
++    let mut found = Vec::new();
++    for name in core {
++        for file in util::walk(&root.join("crates").join(name)) {
++            if file.extension().is_none_or(|e| e != "rs") {
++                continue;
++            }
++            let Ok(src) = fs::read_to_string(&file) else {
++                continue;
++            };
++            for line in skips(&src) {
++                found.push(format!(
++                    "[E-MUTANTS-SKIP] {}:{line}: `mutants::skip` exempts code from mutation \
++                     testing; exclude it in .cargo/mutants.toml (the owner's) instead",
++                    util::rel(root, &file)
++                ));
++            }
++        }
++    }
++    if found.is_empty() {
++        Ok(())
++    } else {
++        Err(found.join("\n"))
++    }
++}
+diff --git a/xtask/src/mutants_tests.rs b/xtask/src/mutants_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..90866699726df7475a1ba4d7c71cec30363a7495
+--- /dev/null
++++ b/xtask/src/mutants_tests.rs
+@@ -0,0 +1,398 @@
++//! The mutants job (`mutants.rs`, `mutants_git.rs`): its command line, which
++//! step a run makes real, the time box, how cargo-mutants' outcomes are
++//! judged, the selftest's verdict and the workflow; the git side is in
++//! `mutants_git_tests.rs`.
++
++use std::fs;
++use std::path::Path;
++
++use serde_json::json;
++
++use super::*;
++use crate::mutants_git::{Request, request};
++
++#[test]
++fn a_shard_is_k_of_n_counted_from_zero() {
++    assert_eq!(Shard::parse("0/4"), Ok(Shard { k: 0, n: 4 }));
++    assert_eq!(Shard::parse(" 3/4\n"), Ok(Shard { k: 3, n: 4 }));
++    assert_eq!(Shard::parse("0/1"), Ok(Shard::WHOLE));
++    for bad in ["4/4", "1/0", "0/0", "1", "a/4", "-1/4", "1/4/4", ""] {
++        assert!(Shard::parse(bad).is_err(), "{bad:?}");
++    }
++    assert_eq!(Shard { k: 2, n: 4 }.to_string(), "2/4");
++}
++
++#[test]
++fn the_command_line_picks_a_scope_a_base_a_shard_and_a_time_box() {
++    let default = Options {
++        scope: Scope::InDiff,
++        base: None,
++        shard: Shard::WHOLE,
++        minutes: None,
++    };
++    assert_eq!(parse(&[]), Ok(default.clone()));
++    assert_eq!(parse(&["--in-diff"]), Ok(default.clone()));
++    assert_eq!(
++        parse(&["--rung-diff", "--shard", "1/4", "--time-box", "5"]),
++        Ok(Options {
++            scope: Scope::RungDiff,
++            shard: Shard { k: 1, n: 4 },
++            minutes: Some(5),
++            ..default.clone()
++        })
++    );
++    assert_eq!(
++        parse(&["--base", "HEAD~2"]),
++        Ok(Options {
++            base: Some("HEAD~2".into()),
++            ..default
++        })
++    );
++    for bad in [
++        &["--rung-diff", "--base", "HEAD~2"][..],
++        &["--time-box", "0"],
++        &["--time-box", "ten"],
++        &["--shard"],
++        &["--shard", "4/4"],
++        &["--all"],
++    ] {
++        assert!(parse(bad).is_err(), "{bad:?}");
++    }
++    assert_eq!(Scope::InDiff.step(), "in-diff");
++    assert_eq!(Scope::RungDiff.step(), "rung-diff");
++}
++
++/// Decision 15: `rung-diff` is real on the weekly schedule and a manual
++/// dispatch, pending on pushes, pull requests and local runs; `in-diff`
++/// the other way round.
++#[test]
++fn rung_diff_runs_on_the_schedule_and_a_dispatch_and_in_diff_on_the_rest() {
++    for event in [Some("schedule"), Some("workflow_dispatch")] {
++        assert_eq!(wait_reason(Scope::RungDiff, event), None, "{event:?}");
++        let why = wait_reason(Scope::InDiff, event).expect("in-diff waits");
++        assert!(why.contains("no push to diff"), "{why}");
++    }
++    for event in [Some("push"), Some("pull_request"), None] {
++        assert_eq!(wait_reason(Scope::InDiff, event), None, "{event:?}");
++        let why = wait_reason(Scope::RungDiff, event).expect("rung-diff waits");
++        assert!(
++            why.contains("weekly schedule and a manual dispatch"),
++            "{why}"
++        );
++    }
++    assert!(
++        wait_reason(Scope::RungDiff, None)
++            .unwrap()
++            .starts_with("a local run")
++    );
++}
++
++#[test]
++fn the_time_box_is_the_budget_else_twenty_minutes() {
++    let budget = "[ci]\npr_tier_minutes = 15\nmutants_shard_minutes = 25\n";
++    assert_eq!(minutes_in(budget), Some(25));
++    for none in [
++        "[ci]\npr_tier_minutes = 15\n",
++        "[ci]\nmutants_shard_minutes = 0\n",
++        "[ci]\nmutants_shard_minutes = -3\n",
++        "[ci]\nmutants_shard_minutes = \"20\"\n",
++        "not toml [",
++    ] {
++        assert_eq!(minutes_in(none), None, "{none}");
++    }
++    assert_eq!(DEFAULT_MINUTES, 20);
++}
++
++/// One mutant's outcome as cargo-mutants 27.1.0 writes it in
++/// `outcomes.json` (fields it adds that are not read here left out).
++fn mutant(line: u64, op: &str, summary: &str) -> serde_json::Value {
++    let name = format!("crates/kit-fps/src/ground.rs:{line}:26: replace {op} in travel");
++    json!({
++        "scenario": {"Mutant": {
++            "name": name, "package": "kit-fps", "file": "crates/kit-fps/src/ground.rs",
++            "function": {"function_name": "travel", "return_type": "-> f64"},
++            "span": {"start": {"line": line, "column": 26}, "end": {"line": line, "column": 27}},
++            "replacement": "+", "genre": "BinaryOperator",
++        }},
++        "summary": summary,
++        "log_path": "log/x.log",
++    })
++}
++
++fn outcomes(baseline: &str, mutants: &[serde_json::Value]) -> serde_json::Value {
++    let mut list = vec![json!({"scenario": "Baseline", "summary": baseline})];
++    list.extend(mutants.iter().cloned());
++    json!({"outcomes": list, "total_mutants": mutants.len(), "cargo_mutants_version": VERSION})
++}
++
++#[test]
++fn a_tally_counts_each_outcome_and_lists_the_misses() {
++    let found = tally(&outcomes(
++        "Success",
++        &[
++            mutant(176, "- with +", "CaughtMutant"),
++            mutant(177, "+ with -", "MissedMutant"),
++            mutant(178, "* with /", "Timeout"),
++            mutant(179, "* with +", "Unviable"),
++        ],
++    ));
++    assert_eq!(found.baseline.as_deref(), Some("Success"));
++    assert_eq!(
++        (found.tested, found.caught, found.timeout, found.unviable),
++        (4, 1, 1, 1)
++    );
++    assert_eq!(
++        found.missed,
++        [Missed {
++            name: "crates/kit-fps/src/ground.rs:177:26: replace + with - in travel".into(),
++            file: "crates/kit-fps/src/ground.rs".into(),
++            line: 177,
++            genre: "BinaryOperator".into(),
++        }]
++    );
++    assert_eq!(tally(&json!({})), Tally::default(), "no outcomes yet");
++}
++
++#[test]
++fn every_miss_fails_the_step_by_file_line_and_operator() {
++    let all_caught = tally(&outcomes(
++        "Success",
++        &[
++            mutant(176, "- with +", "CaughtMutant"),
++            mutant(178, "* with /", "Timeout"),
++        ],
++    ));
++    // A timeout is caught: cargo-mutants exits 3 for it.
++    for code in [Some(0), Some(3)] {
++        let Ok(Done::Pass(detail)) = verdict(&all_caught, 2, code, false, 20) else {
++            panic!("{code:?}: all caught must pass");
++        };
++        assert!(detail.contains("2 of 2 mutants tested"), "{detail}");
++    }
++    let missed = tally(&outcomes(
++        "Success",
++        &[
++            mutant(176, "- with +", "MissedMutant"),
++            mutant(177, "+ with -", "MissedMutant"),
++        ],
++    ));
++    let detail = verdict(&missed, 2, Some(2), false, 20).unwrap_err();
++    let lines: Vec<&str> = detail.lines().collect();
++    assert_eq!(
++        lines[..2],
++        [
++            "crates/kit-fps/src/ground.rs:176:26: replace - with + in travel [BinaryOperator]",
++            "crates/kit-fps/src/ground.rs:177:26: replace + with - in travel [BinaryOperator]",
++        ]
++    );
++    assert!(
++        lines[2].starts_with("[E-MUTANT-MISSED] 2 missed"),
++        "{detail}"
++    );
++    // The time box: misses so far still fail; none missed fails too, with
++    // the untested count.
++    let detail = verdict(&missed, 9, None, true, 20).unwrap_err();
++    assert!(detail.contains("time box with 7 untested"), "{detail}");
++    assert!(detail.contains("[E-MUTANT-MISSED]"), "{detail}");
++    let detail = verdict(&all_caught, 9, Some(1), true, 20).unwrap_err();
++    assert!(detail.starts_with("[E-MUTANTS-TIME]"), "{detail}");
++    assert!(
++        detail.contains("20-minute time box with 7 untested"),
++        "{detail}"
++    );
++    // An error part way, a failing baseline, or no baseline at all.
++    let detail = verdict(&all_caught, 9, Some(1), false, 20).unwrap_err();
++    assert!(detail.contains("7 untested"), "{detail}");
++    let failed = tally(&outcomes("Failure", &[]));
++    let detail = verdict(&failed, 9, Some(4), false, 20).unwrap_err();
++    assert!(detail.contains("baseline: Failure"), "{detail}");
++    let detail = verdict(&Tally::default(), 9, Some(1), false, 20).unwrap_err();
++    assert!(detail.contains("ran no baseline"), "{detail}");
++    let detail = verdict(&Tally::default(), 9, None, true, 20).unwrap_err();
++    assert!(
++        detail.starts_with("[E-MUTANTS-TIME] the baseline"),
++        "{detail}"
++    );
++}
++
++#[test]
++fn the_selftest_wants_the_planted_gap_missed() {
++    use crate::selftest_mutants::judge;
++    let missed = "crates/eng-net-transport/src/lib.rs:70:5: replace selftest_planted_gap -> \
++                  bool with true [FnValue]\n[E-MUTANT-MISSED] 1 missed";
++    assert!(judge(&Err(missed.into())).unwrap().starts_with("rejected"));
++    let other = "crates/eng-net-transport/src/lib.rs:9:5: replace send with () [FnValue]\n\
++                 [E-MUTANT-MISSED] 1 missed";
++    assert!(
++        judge(&Err(other.into())).is_err(),
++        "another function's miss"
++    );
++    assert!(judge(&Err("[E-MUTANTS] not installed".into())).is_err());
++    assert!(judge(&Ok(Done::Pass("none missed".into()))).is_err());
++    assert!(judge(&Ok(Done::Pending("no core crate changed".into()))).is_err());
++}
++
++#[test]
++fn the_in_diff_base_is_the_argument_then_the_push_then_a_merge_base() {
++    let sha = "0123456789abcdef0123456789abcdef01234567";
++    let zeros = "0000000000000000000000000000000000000000";
++    assert_eq!(request(Some("v1"), Some(sha)), Request::Given("v1".into()));
++    assert_eq!(request(None, Some(sha)), Request::Event(sha.into()));
++    assert_eq!(
++        request(None, Some(&format!(" {sha}\n"))),
++        Request::Event(sha.into())
++    );
++    for new_branch in [Some(zeros), Some(""), Some("  "), None] {
++        assert_eq!(
++            request(None, new_branch),
++            Request::MergeBase,
++            "{new_branch:?}"
++        );
++    }
++}
++
++/// The workflow runs the job as xtask expects: four shards named as
++/// `ENG_MUTANTS_SHARD` reads them, the whole history, this cargo-mutants in
++/// the mutants and selftest jobs, the schedule and a dispatch, and the
++/// summary and the `ci` gate waiting for it.
++#[test]
++fn the_workflow_runs_four_shards_with_this_cargo_mutants() {
++    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
++    let workflow = fs::read_to_string(root.join(".github/workflows/ci.yml"))
++        .unwrap()
++        .replace("\r\n", "\n");
++    let job = workflow
++        .split("\n  mutants:\n")
++        .nth(1)
++        .and_then(|rest| rest.split("\n\n  ").next())
++        .expect("ci.yml has a mutants job");
++    let shards: Vec<String> = (0..SHARDS).map(|k| k.to_string()).collect();
++    for wanted in [
++        format!("shard: [{}]", shards.join(", ")),
++        format!("ENG_MUTANTS_SHARD: ${{{{ matrix.shard }}}}/{SHARDS}"),
++        "fetch-depth: 0".into(),
++        "cargo xtask ci --job mutants".into(),
++        "report-mutants-${{ matrix.shard }}".into(),
++    ] {
++        assert!(job.contains(&wanted), "the mutants job has no `{wanted}`");
++    }
++    let install = format!("cargo install --locked cargo-mutants@{VERSION}");
++    assert!(job.contains(&install), "the mutants job has no `{install}`");
++    let selftest = workflow.split("\n  selftest:\n").nth(1).unwrap();
++    let selftest = selftest.split("\n\n  ").next().unwrap();
++    assert!(
++        selftest.contains(&install),
++        "the selftest job has no `{install}`"
++    );
++    let on = workflow.split("\njobs:\n").next().unwrap();
++    assert!(
++        on.contains("\n  schedule:\n") && on.contains("\n  workflow_dispatch:"),
++        "{on}"
++    );
++    for waiting in ["\n  summary:\n", "\n  ci:\n"] {
++        let needs = workflow
++            .split(waiting)
++            .nth(1)
++            .unwrap()
++            .lines()
++            .next()
++            .unwrap();
++        assert!(needs.contains("mutants"), "{waiting:?} {needs}");
++    }
++}
++/// `mutants::skip` in code counts in every form cargo-mutants honours or
++/// that could hide it (spaces, line breaks, a raw identifier, a `use`); a
++/// mention in a comment or a string literal exempts nothing and does not.
++#[test]
++fn a_mutants_skip_in_code_counts_and_one_in_a_comment_or_string_does_not() {
++    use crate::mutants_skip::skips;
++    let counted = "\
++#[mutants::skip]
++fn a() {}
++#[cfg_attr(miri, mutants::skip)]
++fn b() {}
++#[cfg_attr(
++    test,
++    mutants :: skip
++)]
++fn c() {}
++use ::mutants::skip;
++#[r#mutants::skip]
++fn d() {}
++";
++    assert_eq!(skips(counted), [1, 3, 7, 10, 11]);
++    let not_counted = r####"
++// #[mutants::skip] in a line comment
++/// and a doc comment: #[cfg_attr(miri, mutants::skip)]
++/* a block /* nested */ #[mutants::skip] */
++const A: &str = "#[mutants::skip]";
++const B: &str = r#"#[mutants::skip]"#;
++fn mutants_skip() {}
++#[mutants::skipped]
++fn e() {}
++"####;
++    assert_eq!(skips(not_counted), Vec::<usize>::new());
++}
++
++/// Only the core crates' Rust files are scanned, their tests included, and
++/// each use is named by file and line.
++#[test]
++fn the_skip_scan_reads_the_core_crates_rust_files() {
++    let dir = std::env::temp_dir().join(format!("xtask-mutants-skip-{}", std::process::id()));
++    let _ = fs::remove_dir_all(&dir);
++    let write = |file: &str, text: &str| {
++        let path = dir.join(file);
++        fs::create_dir_all(path.parent().unwrap()).unwrap();
++        fs::write(path, text).unwrap();
++    };
++    write(
++        "crates/core-a/src/lib.rs",
++        "//! A.\n\n#[mutants::skip]\npub fn a() {}\n",
++    );
++    write(
++        "crates/core-a/tests/t.rs",
++        "#[cfg_attr(miri, mutants::skip)]\nfn t() {}\n",
++    );
++    write("crates/core-a/notes.txt", "#[mutants::skip]\n");
++    write(
++        "crates/render/src/lib.rs",
++        "#[mutants::skip]\npub fn r() {}\n",
++    );
++    let core = ["core-a".to_string(), "core-b".to_string()];
++    let found = crate::mutants_skip::check(&dir, &core).unwrap_err();
++    let lines: Vec<&str> = found.lines().collect();
++    assert_eq!(lines.len(), 2, "{found}");
++    assert!(
++        lines[0].starts_with("[E-MUTANTS-SKIP] crates/core-a/src/lib.rs:3: "),
++        "{found}"
++    );
++    assert!(
++        lines[1].starts_with("[E-MUTANTS-SKIP] crates/core-a/tests/t.rs:1: "),
++        "{found}"
++    );
++    assert!(lines[0].ends_with("exclude it in .cargo/mutants.toml (the owner's) instead"));
++    assert_eq!(crate::mutants_skip::check(&dir, &core[1..]), Ok(()));
++    let _ = fs::remove_dir_all(&dir);
++}
++
++/// Every cargo-mutants run fixes proptest's seed, packages the core crates
++/// and caps lints; a shard is passed only when there is more than one.
++#[test]
++fn cargo_mutants_runs_with_a_fixed_proptest_seed() {
++    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
++    let core = ["kit-fps".to_string()];
++    let cmd = command(root, Path::new("core.diff"), &core, Shard { k: 1, n: 4 });
++    let seed = cmd
++        .get_envs()
++        .find(|(key, _)| *key == "PROPTEST_RNG_SEED")
++        .and_then(|(_, value)| value);
++    assert_eq!(seed, Some(std::ffi::OsStr::new(PROPTEST_SEED)));
++    let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into()).collect();
++    let args = args.join(" ");
++    assert!(args.starts_with("mutants --in-diff core.diff "), "{args}");
++    for wanted in ["--cap-lints true", "--package kit-fps", "--shard 1/4"] {
++        assert!(args.contains(wanted), "{args}");
++    }
++    let whole = command(root, Path::new("core.diff"), &core, Shard::WHOLE);
++    assert!(!whole.get_args().any(|a| a == "--shard"));
++}
+diff --git a/xtask/src/selftest.rs b/xtask/src/selftest.rs
+index 32aa2b97e9b13cc019471a7b1e901cd385f60699..3d51a07a2f8a8a153a5adfe00e25b8d3cc380c55 100644
+--- a/xtask/src/selftest.rs
++++ b/xtask/src/selftest.rs
+@@ -4,9 +4,10 @@
+ //! never change the tree itself. `golden-edit` runs the real shots harness
+ //! against goldens copied there; like every run of that harness (`quick`'s
+ //! too), it empties and rewrites `target/golden-candidates/`. A case that
+-//! needs what this machine lacks (cargo-deny, the pinned lavapipe) says it
+-//! could not run: a failure only on CI or with `ENG_REQUIRE_GPU=1`, as for
+-//! GPU tests, and never a pass (`selftest_verdict.rs`).
++//! needs what this machine lacks (cargo-deny, cargo-mutants, the pinned
++//! lavapipe) says it could not run: a failure only on CI or with
++//! `ENG_REQUIRE_GPU=1`, as for GPU tests, and never a pass
++//! (`selftest_verdict.rs`).
+ 
+ use std::fs;
+ use std::io::Write;
+@@ -22,7 +23,7 @@ mod verdict;
+ pub use verdict::NOT_RUN;
+ use verdict::{judged, last_line, outcome, status, strict};
+ 
+-pub const CASES: [&str; 22] = [
++pub const CASES: [&str; 23] = [
+     "float-sin",
+     "float-min",
+     "allow-escape",
+@@ -46,6 +47,8 @@ pub const CASES: [&str; 22] = [
+     "rwh-outside-seam",
+     "core-depends-on-gpu",
+     "golden-edit",
++    // Rung 2, criterion 20 (`violations-2`).
++    "mutant-missed",
+ ];
+ 
+ /// The cases `cargo xtask selftest [CASE]` names: all with no argument.
+@@ -222,6 +225,7 @@ fn run_case(root: &Path, case: &str) -> Result<String, String> {
+             |ws| add_dependency(ws, "eng-sim", "eng-gpu"),
+         ),
+         "golden-edit" => crate::selftest_golden::run(root),
++        "mutant-missed" => crate::selftest_mutants::run(root, &copy_workspace(root, case)?),
+         "guard-allows-ordinary-edits" => {
+             let ws = copy_workspace(root, case)?;
+             let input = serde_json::json!({
+diff --git a/xtask/src/selftest_mutants.rs b/xtask/src/selftest_mutants.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..ee440a6d75d0e9d0afb66964a992c1b3caba7297
+--- /dev/null
++++ b/xtask/src/selftest_mutants.rs
+@@ -0,0 +1,122 @@
++//! `cargo xtask selftest mutant-missed` (rung 2, criterion 20): a test gap
++//! planted in a scratch copy must fail the mutants job's `in-diff` step.
++//!
++//! 1. The fresh copy of the workspace (`selftest.rs`), with
++//!    `.cargo/mutants.toml` when there is one, becomes a git repository of
++//!    one commit, the step's base.
++//! 2. A function that no test calls is added to `eng-net-transport`: a core
++//!    crate with no dependencies, whose tests take under a second.
++//! 3. The `in-diff` step runs as `ci --job mutants` runs it
++//!    (`mutants::diff_step`): cargo-mutants must report the function's
++//!    mutants missed, and the step must fail with `[E-MUTANT-MISSED]`
++//!    naming it, which fails the job (`Steps::ok`).
++//!
++//! Without cargo-mutants the case could not run ([`NOT_RUN`]): a failure on
++//! CI, never a pass.
++
++use std::fs;
++use std::path::Path;
++
++use serde_json::Map;
++
++use crate::mutants::{self, Shard};
++use crate::selftest::NOT_RUN;
++use crate::util::{self, Done};
++
++/// Where the gap is planted, and its name.
++const FILE: &str = "crates/eng-net-transport/src/lib.rs";
++const PLANTED: &str = "selftest_planted_gap";
++/// The case's own time box: a baseline and five mutants of one small crate.
++const MINUTES: u64 = 10;
++
++pub fn run(root: &Path, ws: &Path) -> Result<String, String> {
++    if mutants::version(ws).is_none() {
++        return Err(format!(
++            "{NOT_RUN} mutant-missed could not run: cargo-mutants is not installed \
++             ({}, as CI's selftest job has it)",
++            mutants::INSTALL
++        ));
++    }
++    let config = root.join(".cargo/mutants.toml");
++    if config.is_file() {
++        let _ = fs::create_dir_all(ws.join(".cargo"));
++        fs::copy(&config, ws.join(".cargo/mutants.toml"))
++            .map_err(|e| format!("{}: {e}", config.display()))?;
++    }
++    let base = commit_all(ws)?;
++    let path = ws.join(FILE);
++    let mut text = fs::read_to_string(&path).map_err(|e| format!("{FILE}: {e}"))?;
++    text.push_str(&format!(
++        "\n/// Planted by `cargo xtask selftest mutant-missed`: no test calls it.\n\
++         pub fn {PLANTED}(bytes: usize) -> bool {{\n    bytes > MAX_DATAGRAM\n}}\n"
++    ));
++    fs::write(&path, text).map_err(|e| format!("{FILE}: {e}"))?;
++    let mut found = Map::new();
++    let from = "the selftest copy's one commit";
++    let result = mutants::diff_step(
++        ws,
++        "in-diff",
++        (&base, from),
++        Shard::WHOLE,
++        MINUTES,
++        &mut found,
++    );
++    judge(&result)
++}
++
++/// Whether the step failed for the planted gap's mutants.
++pub(crate) fn judge(result: &Result<Done, String>) -> Result<String, String> {
++    match result {
++        Err(detail) if detail.contains("[E-MUTANT-MISSED]") && detail.contains(PLANTED) => {
++            let missed = detail.lines().filter(|l| l.contains(PLANTED)).count();
++            Ok(format!(
++                "rejected: [E-MUTANT-MISSED], {missed} mutants of {PLANTED} missed"
++            ))
++        }
++        Err(detail) => Err(format!(
++            "failed, but not with [E-MUTANT-MISSED] for {PLANTED}:\n{}",
++            util::tail(detail, 15)
++        )),
++        Ok(done) => Err(format!(
++            "the in-diff step let the planted gap through: {done:?}"
++        )),
++    }
++}
++
++/// `git init` and one commit of everything in `ws`; its SHA. No hooks,
++/// signing or identity from this machine's settings.
++fn commit_all(ws: &Path) -> Result<String, String> {
++    let git = |args: &[&str]| -> Result<String, String> {
++        let out = std::process::Command::new("git")
++            .arg("-C")
++            .arg(ws)
++            .args([
++                "-c",
++                "core.hooksPath=/dev/null",
++                "-c",
++                "commit.gpgsign=false",
++            ])
++            .args([
++                "-c",
++                "user.name=xtask selftest",
++                "-c",
++                "user.email=selftest@invalid",
++            ])
++            .args(args)
++            .output()
++            .map_err(|e| format!("git: {e}"))?;
++        if out.status.success() {
++            Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
++        } else {
++            Err(format!(
++                "selftest setup: git {}: {}",
++                args.join(" "),
++                String::from_utf8_lossy(&out.stderr).trim()
++            ))
++        }
++    };
++    git(&["init", "-q", "-b", "main"])?;
++    git(&["add", "-A"])?;
++    git(&["commit", "-q", "-m", "selftest base"])?;
++    git(&["rev-parse", "HEAD"])
++}

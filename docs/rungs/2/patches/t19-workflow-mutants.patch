@@ -1,0 +1,117 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 70c947b68e05f7c43b241fd465b876316abac4f1..98c60e19f61b259963ba43bee3f754fa5fe3b838 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -16,11 +16,19 @@ on:
+     # build caches and save none, so they cannot push main's out of the
+     # repository's 10 GB.
+     branches: [main, "agent/**"]
++  # The mutants job's rung-diff step (rung 2, decision 15) runs on these two,
++  # weekly on main (Mondays, 04:23 UTC) and when the owner starts it. Every
++  # other job runs too, so the run's acceptance covers every criterion.
++  schedule:
++    - cron: "23 4 * * 1"
++  workflow_dispatch:
+ 
+ permissions: {}
+ 
+ concurrency:
+-  group: ci-${{ github.ref }}
++  # The event too: the schedule and a dispatch run on main's ref, and must
++  # not cancel a push's run there, nor a push theirs.
++  group: ci-${{ github.event_name }}-${{ github.ref }}
+   cancel-in-progress: true
+ 
+ env:
+@@ -169,6 +177,9 @@ jobs:
+       - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+         with:
+           tool: cargo-deny@0.20.2
++      # The mutant-missed case runs cargo-mutants on a planted test gap.
++      - name: cargo-mutants 27.1.0
++        run: cargo install --locked cargo-mutants@27.1.0
+       - run: cargo xtask ci --job selftest
+       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+         if: always()
+@@ -180,6 +191,63 @@ jobs:
+       - if: always()
+         run: rm -rf target/selftest
+ 
++  # Mutation testing (rung 2, decision 15): cargo-mutants over the core
++  # crates' changed code, in four shards, each held by xtask to a time box
++  # (budgets.toml [ci] mutants_shard_minutes, else 20 minutes). `in-diff`
++  # mutates the diff from the push's base: on main the push's `before`;
++  # elsewhere, and for a `before` off the branch, the merge base with
++  # origin/main, so the whole history is fetched. It is pending when no core
++  # crate changed, and on the schedule and a dispatch, which run `rung-diff`
++  # instead: the diff from the commit that added the current rung's
++  # plan.md, pending on every other run. A missed mutant fails unless
++  # .cargo/mutants.toml excludes it. The job has no `if`: it runs on every
++  # event, as the `ci` gate expects.
++  mutants:
++    strategy:
++      fail-fast: false
++      matrix:
++        shard: [0, 1, 2, 3]
++    runs-on: ubuntu-24.04
++    timeout-minutes: 40
++    permissions:
++      contents: read
++    steps:
++      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
++        with:
++          persist-credentials: false
++          fetch-depth: 0
++      # Before the install: rust-cache restores ~/.cargo/bin, and an
++      # installed cargo-mutants of the same version is kept.
++      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
++        with:
++          save-if: ${{ github.ref == 'refs/heads/main' }}
++      - name: cargo-mutants 27.1.0
++        run: cargo install --locked cargo-mutants@27.1.0
++      - name: cargo xtask ci --job mutants
++        env:
++          ENG_MUTANTS_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
++          ENG_MUTANTS_SHARD: ${{ matrix.shard }}/4
++        run: cargo xtask ci --job mutants
++      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
++        if: always()
++        with:
++          name: report-mutants-${{ matrix.shard }}
++          path: target/ci/reports/
++      # cargo-mutants' own output (the missed, caught and timed-out lists,
++      # outcomes.json, each mutant's diff and log), for the test-auditor
++      # subagent.
++      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
++        if: always()
++        with:
++          name: mutants-out-${{ matrix.shard }}
++          path: target/mutants/
++          if-no-files-found: ignore
++      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
++        if: always()
++        with:
++          name: logs-mutants-${{ matrix.shard }}
++          path: target/agent-logs/
++
+   # The five native runners (spec 8.2): build, test with a GPU and a display,
+   # replay, render, open a window. Each runner's adapter is spec 8.3's:
+   # lavapipe on Linux (the pinned build on x64), WARP on Windows, the
+@@ -331,7 +399,7 @@ jobs:
+   # Cross-architecture equality across the PR tier and the native jobs, the
+   # measured durations, and the CI-computed acceptance status.
+   summary:
+-    needs: [lint, test, riscv, wasm, selftest, native]
++    needs: [lint, test, riscv, wasm, selftest, native, mutants]
+     if: always()
+     runs-on: ubuntu-24.04
+     timeout-minutes: 30
+@@ -370,7 +438,7 @@ jobs:
+ 
+   # The one check to require on main: green only if every job above is.
+   ci:
+-    needs: [lint, test, riscv, wasm, selftest, native, summary]
++    needs: [lint, test, riscv, wasm, selftest, native, mutants, summary]
+     if: always()
+     runs-on: ubuntu-24.04
+     timeout-minutes: 5

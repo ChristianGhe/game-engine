@@ -1,0 +1,41 @@
+diff --git a/.cargo/mutants.toml b/.cargo/mutants.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..0ec03e83df9c6ce1fbe6bd7f06b98bd7ec3f938e
+--- /dev/null
++++ b/.cargo/mutants.toml
+@@ -0,0 +1,35 @@
++# cargo-mutants' exclusions (rung 2, decision 15; criterion 19). PROTECTED:
++# the owner's. cargo-mutants 27.1.0 reads this file itself on every run in
++# this workspace: `cargo xtask mutants`, `ci --job mutants` and the
++# `mutant-missed` selftest. xtask passes the rest of the settings (the core
++# crates as packages, the diff, the shard, `--cap-lints`) on the command
++# line, so this file holds exclusions only.
++#
++# A mutant the tests miss fails the mutants job unless it is excluded here.
++# An excluded mutant is never made, so it is neither tested nor reported.
++# Exclude only an equivalent mutant, one no test could tell apart from the
++# code (such as `<` for `<=` where the two sides are never equal); a real
++# test gap gets a test instead. The `test-auditor` subagent sorts misses into
++# the two; the owner decides, and each entry says why, who decided and when.
++#
++# Two lists, both empty to start:
++#
++# - `exclude_re`: regular expressions (Rust's `regex`) matched against a
++#   mutant's name as `cargo mutants --list` prints it, with its line and
++#   column, for example
++#     crates/kit-fps/src/ground.rs:177:13: replace + with - in travel
++#   Leave the line and column out of the pattern, so that it survives edits
++#   above the mutant, and escape the operators:
++#     "ground\\.rs:.*: replace \\+ with - in travel$",
++# - `exclude_globs`: files to leave unmutated, as globs matched against the
++#   path from the workspace root (one with a `/` matches the whole path):
++#     "crates/eng-collision-api/src/conformance.rs",
++#
++# Exclusions live only here. cargo-mutants also honours `#[mutants::skip]` in
++# source, even as `#[cfg_attr(miri, mutants::skip)]`, which compiles without
++# the `mutants` crate; xtask fails a step on any in a core crate
++# (`[E-MUTANTS-SKIP]`), so that no change exempts code past this file.
++
++exclude_re = []
++
++exclude_globs = []

@@ -15,6 +15,10 @@
 //! and ends with [`PlayRun::finish`] from the platform's `stop`, so the
 //! files are saved even where a desktop's quit command ends the process
 //! right after `stop` (macOS, rung 1b amendment 39).
+//!
+//! A first-person map (rung 2, T15) adds its flags, checked here before a
+//! window opens ([`PlayRun::first_person`], `play/first_person.rs`), and
+//! a `window` object in the report ([`PlayRun::observe_window`]).
 
 use eng_core::{PlayerCommand, Tick};
 use eng_gpu::{FrameCounters, GpuReport};
@@ -29,6 +33,10 @@ use crate::maps::{self, GameMaps, MapChoice};
 use crate::run::{fail, hash, load_inputs, read_text, write_file, write_outputs};
 use crate::session::{Session, TickStop, command_for};
 use crate::{Exit, GameDef, TopDownFrame, exit, log, report};
+
+pub use first_person::{FirstPersonPlay, FrameLens, MouseRate, PlayWindow};
+
+pub(crate) mod first_person;
 
 /// What a tick left the run to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +88,10 @@ pub struct PlayRun<'g> {
     tick_ns: Vec<u64>,
     budgets: BudgetTracker,
     dropped: u64,
+    /// A first-person map's settings; `None` for any other map.
+    first_person: Option<FirstPersonPlay>,
+    /// What a first-person window did, for the report.
+    window: Option<PlayWindow>,
     /// A tick that left with an exit that writes nothing (a desync, a
     /// command for the wrong tick), as `run` leaves.
     exit: Option<Exit>,
@@ -124,6 +136,8 @@ impl<'g> PlayRun<'g> {
             None => Ok(Bindings::default()),
         }
         .map_err(|message| exit::usage(game.name, &message))?;
+        let first_person = first_person::settle(game, &map, &flags.first_person)
+            .map_err(|message| exit::usage(game.name, &message))?;
         let (session, too_large) = Session::start(game, map, a.players, a.seed);
         let previous = map.build(game, a.players, a.seed);
         let mut budgets = inputs.budgets;
@@ -154,6 +168,8 @@ impl<'g> PlayRun<'g> {
             tick_ns: Vec::new(),
             budgets,
             dropped: 0,
+            first_person,
+            window: None,
             exit: None,
             done,
         })
@@ -168,12 +184,25 @@ impl<'g> PlayRun<'g> {
         self.map.name()
     }
 
-    /// The usage error (`[E-USAGE] [E-MAP]`) for a map a window cannot show
-    /// yet: the window draws [`GameDef::top_down`] only, so it refuses a
-    /// map whose view ([`crate::MapView`]) is first-person or none, until
-    /// the first-person window (rung 2, T15). `None` for the first map.
+    /// The usage error (`[E-USAGE] [E-MAP]`) for a map a window cannot
+    /// show: one whose view ([`crate::MapView`]) is none. A top-down map is
+    /// drawn by [`GameDef::top_down`], a first-person one by its view
+    /// (rung 2, T15). `None` when the map can be shown.
     pub fn view_refusal(&self) -> Option<String> {
         self.map.no_window_view(self.game)
+    }
+
+    /// A first-person map's settings: its view and the flags for it,
+    /// checked and loaded before the window (rung 2, T15). `None` for a
+    /// map that is not first person, where those flags are refused.
+    pub fn first_person(&self) -> Option<FirstPersonPlay> {
+        self.first_person
+    }
+
+    /// Keeps what a first-person window did, for the report's `window`
+    /// object; the last one given before [`PlayRun::finish`] is written.
+    pub fn observe_window(&mut self, window: PlayWindow) {
+        self.window = Some(window);
     }
 
     /// The view of the map the run plays ([`crate::GameMap::view`]).
@@ -327,6 +356,7 @@ impl<'g> PlayRun<'g> {
             tick_ns,
             budgets,
             dropped,
+            window,
             exit,
             ..
         } = self;
@@ -365,6 +395,7 @@ impl<'g> PlayRun<'g> {
             frames: frames.as_ref(),
             platform: stats.platform,
             dropped_ticks: dropped,
+            window: window.as_ref(),
             exit,
         };
         if let Some(path) = &args.report

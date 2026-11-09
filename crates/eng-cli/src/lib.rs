@@ -14,6 +14,8 @@
 //!              [--input script.toml] [--budgets budgets.toml] [--report report.json]
 //! <game> play [--ticks N] [--input script.toml] [--bindings bindings.toml] [--seed S]
 //!             [--hashes hashes.txt] [--record out.rec] [--report report.json]
+//!             first person: [--windowed] [--fov DEG] [--look look.toml]
+//!             [--sensitivity DEG_PER_COUNT] [--pitch-limit DEG] [--invert-pitch]
 //! <game> --version [--json]
 //! ```
 //!
@@ -28,10 +30,10 @@
 //! in their header, and `replay verify` replays on the map it names. Each
 //! map names its view ([`MapView`]): the first map's is
 //! [`GameDef::top_down`], and another's may be first person
-//! ([`FirstPersonView`], rung 2's T12) or none. `shot` and `video` refuse a
-//! map with none, and `play`, whose window draws the top-down view only
-//! until rung 2's T15, one that is not top down, before a GPU or window
-//! opens (exit 64, `[E-MAP]`).
+//! ([`FirstPersonView`], rung 2's T12) or none. `shot`, `video` and `play`
+//! refuse a map with none before a GPU or window opens (exit 64,
+//! `[E-MAP]`). A map has exactly the one view it names: rung 2's `--view`
+//! (T16) may name that view and refuses any other the same way.
 //!
 //! `run`, `dump-world`, `shot` and `video` go through `eng-session` like
 //! every other mode: a server and player 0's client in-process over Memory,
@@ -61,7 +63,11 @@
 //! a [`PlayRun`], the same session, tick, files and report as `run`, so
 //! `play --input` gives `run`'s hash stream tick for tick. Its report adds
 //! the platform, the ticks the frame loop dropped and the window's `gpu`
-//! object.
+//! object. On a first-person map (rung 2, T15) `play` takes the
+//! first-person flags, checked before the window opens and refused on any
+//! other map ([`FirstPersonPlay`]), and its report adds a `window` object:
+//! fullscreen, the cursor grab, the refresh rate and, on macOS, the
+//! GCMouse shim's callback rate ([`PlayWindow`]).
 //!
 //! `--version` prints the version stamp (spec 6.13) on one line and
 //! `--version --json` prints all of it; see the `version` module and
@@ -81,6 +87,7 @@ mod capture;
 mod exit;
 mod image_file;
 mod log;
+mod look_file;
 mod maps;
 mod play;
 mod replay;
@@ -97,8 +104,11 @@ use eng_render::TopDownScene;
 use eng_sim::{ScheduleError, Sim, SimConfig};
 
 pub use exit::Exit;
+pub use look_file::LookSwitches;
 pub use maps::{BuildFn, DEFAULT_MAP, GameMap, GameMaps};
-pub use play::{PlayGpu, PlayRun, PlayStats, Step};
+pub use play::{
+    FirstPersonPlay, FrameLens, MouseRate, PlayGpu, PlayRun, PlayStats, PlayWindow, Step,
+};
 pub use version::{ENGINE_SHA, ENGINE_VERSION, PROFILE, RUSTC_VERSION, TARGET, UNKNOWN};
 pub use view::{FirstPersonFrame, FirstPersonView, FirstPersonWorld, MapView, WorldTexture};
 

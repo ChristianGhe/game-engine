@@ -153,28 +153,60 @@ impl MouseLook {
     /// The angles `(yaw, pitch)` for this tick, from all the motion since
     /// the base. Call it once per tick.
     pub fn sample(&mut self) -> (u16, u16) {
-        self.sampled.x = self.sampled.x.saturating_add(self.pending.x);
-        self.sampled.y = self.sampled.y.saturating_add(self.pending.y);
+        self.sampled = self.with_pending();
         self.pending = Motion::ZERO;
+        let (yaw, pitch) = self.angles(self.sampled);
+        let limit = i128::from(self.limit());
+        let pitch = if pitch > limit || pitch < -limit {
+            // Re-base at the limit: the motion past it is gone.
+            self.base_pitch = if pitch > 0 {
+                self.limit()
+            } else {
+                -self.limit()
+            };
+            self.sampled.y = 0;
+            i128::from(self.base_pitch)
+        } else {
+            pitch
+        };
+        (yaw, pitch.rem_euclid(TURN) as u16)
+    }
+
+    /// The angles `(yaw, pitch)` a [`sample`](Self::sample) would give
+    /// now, without taking anything: the view between two ticks, for
+    /// drawing (rung 2, T15). It changes nothing, so the samples are the
+    /// same whether or not it is called, and the next sample gives exactly
+    /// this when no motion comes in between. Pitch holds at the limit, as
+    /// a sample's does, but nothing re-bases here.
+    pub fn angles_now(&self) -> (u16, u16) {
+        let (yaw, pitch) = self.angles(self.with_pending());
+        let limit = i128::from(self.limit());
+        (yaw, pitch.clamp(-limit, limit).rem_euclid(TURN) as u16)
+    }
+
+    /// The motion since the base with the pending motion added.
+    const fn with_pending(&self) -> Motion {
+        Motion {
+            x: self.sampled.x.saturating_add(self.pending.x),
+            y: self.sampled.y.saturating_add(self.pending.y),
+        }
+    }
+
+    /// The yaw for `motion` since the base, and the pitch before the limit,
+    /// in signed binary-angle units.
+    fn angles(&self, motion: Motion) -> (u16, i128) {
         let s = self.settings.sensitivity_microdeg;
         // Right lowers yaw.
-        let yaw = (i128::from(self.base_yaw) - turn(self.sampled.x, s)).rem_euclid(TURN);
+        let yaw = (i128::from(self.base_yaw) - turn(motion.x, s)).rem_euclid(TURN);
         // Towards the user lowers pitch, unless inverted.
-        let down = turn(self.sampled.y, s);
+        let down = turn(motion.y, s);
         let base = i128::from(self.base_pitch);
-        let mut pitch = if self.settings.invert_pitch {
+        let pitch = if self.settings.invert_pitch {
             base + down
         } else {
             base - down
         };
-        let limit = self.limit();
-        if pitch > i128::from(limit) || pitch < -i128::from(limit) {
-            // Re-base at the limit: the motion past it is gone.
-            self.base_pitch = if pitch > 0 { limit } else { -limit };
-            self.sampled.y = 0;
-            pitch = i128::from(self.base_pitch);
-        }
-        (yaw as u16, pitch.rem_euclid(TURN) as u16)
+        (yaw as u16, pitch)
     }
 
     const fn limit(&self) -> i32 {

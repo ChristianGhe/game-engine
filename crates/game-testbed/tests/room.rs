@@ -4,9 +4,10 @@
 //! recording's sim-data hash; and its committed input scripts end where its
 //! scenarios' assertions (`docs/rungs/2/patches/room-scenarios.patch`, at
 //! G5) say. `shot` and `video` draw it in first person (T12; without an
-//! adapter those tests skip, unless `ENG_REQUIRE_GPU=1`), and until the
-//! first-person window (T15) `play` refuses it before a window opens. The
-//! sim's side is `game-testbed-sim/tests/{room,sim_data}.rs`, the view's
+//! adapter those tests skip, unless `ENG_REQUIRE_GPU=1`), and `play`'s
+//! first-person flags are checked before a window opens (T15; its window
+//! and frame loop are `tests/play_room.rs`'s). The sim's side is
+//! `game-testbed-sim/tests/{room,sim_data}.rs`, the view's
 //! `game-testbed-client`.
 
 use std::path::{Path, PathBuf};
@@ -140,35 +141,70 @@ fn the_room_names_its_sim_data_in_recordings_reports_and_stream_headers() {
     assert_eq!(verified["sim_data_hash"], hex.as_str());
 }
 
-/// `play`'s window draws the top-down view only, so it refuses the room as
-/// a usage error, before the window: no display is needed, no file is
-/// written and nothing panics. T15 lifts this.
+/// `play`'s first-person flags (T15) are checked before a window opens,
+/// so these need no display: a bad value, a look file that does not load,
+/// or a first-person flag on the dot map, which plays as in rung 1b, exits
+/// 64 with `[E-USAGE]`, writing nothing and panicking nowhere.
 #[test]
-fn play_refuses_the_room_until_its_window_draws_first_person() {
-    let cases: [&[&str]; 1] = [&[
-        "play", "--ticks", "5", "--hashes", "h.txt", "--report", "r.json", "--record", "r.rec",
-    ]];
-    let expected = "[E-USAGE] [E-MAP] game-testbed's map \"room\" has a first-person view, \
-                    which play cannot show yet (its window draws GameDef::top_down only)\n";
-    for args in cases {
-        let dir = scratch(&format!("no-view-{}", args[0]));
-        let mut args = args.to_vec();
-        args.extend(["--map", "room"]);
+fn plays_first_person_flags_are_checked_before_a_window_opens() {
+    let dir = scratch("play-flags");
+    std::fs::write(dir.join("bad-look.toml"), "version = 1\nfogg = false\n").unwrap();
+    let cases: [(&[&str], &str); 9] = [
+        (
+            &["--map", "room", "--fov", "0"],
+            "--fov needs a vertical field of view",
+        ),
+        (
+            &["--map", "room", "--fov", "1e2"],
+            "--fov needs a plain decimal",
+        ),
+        (
+            &["--map", "room", "--sensitivity", "0.0660001"],
+            "--sensitivity needs a plain decimal with at most six places",
+        ),
+        (
+            &["--map", "room", "--pitch-limit", "91"],
+            "--pitch-limit needs 0 to 90",
+        ),
+        (&["--map", "room", "--look", "missing.toml"], "missing.toml"),
+        (
+            &["--map", "room", "--look", "bad-look.toml"],
+            "[E-LOAD] bad-look.toml",
+        ),
+        (
+            &["--windowed"],
+            "--windowed is for a first-person map; game-testbed's map \"dots\" is top-down",
+        ),
+        (
+            &["--map", "dots", "--fov", "90"],
+            "--fov is for a first-person map",
+        ),
+        (
+            &["--invert-pitch"],
+            "--invert-pitch is for a first-person map",
+        ),
+    ];
+    for (extra, expected) in cases {
+        let mut args = vec![
+            "play", "--ticks", "5", "--hashes", "h.txt", "--report", "r.json", "--record", "r.rec",
+        ];
+        args.extend_from_slice(extra);
         let out = probe(&dir, &args);
         assert_eq!(out.status.code(), Some(64), "{args:?}: {}", text(&out));
+        assert!(text(&out).contains("[E-USAGE]"), "{args:?}: {}", text(&out));
         assert!(text(&out).contains(expected), "{args:?}: {}", text(&out));
-        for file in ["s.png", "v.apng", "r.json", "h.txt", "r.rec"] {
+        for file in ["r.json", "h.txt", "r.rec"] {
             assert!(!dir.join(file).exists(), "{args:?} wrote {file}");
         }
-        let crashes: Vec<_> = std::fs::read_dir(dir.join("logs"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.starts_with("crash-"))
-            .collect();
-        assert!(crashes.is_empty(), "{args:?}: {crashes:?}");
     }
+    let crashes: Vec<_> = std::fs::read_dir(dir.join("logs"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("crash-"))
+        .collect();
+    assert!(crashes.is_empty(), "{crashes:?}");
 }
 
 #[test]

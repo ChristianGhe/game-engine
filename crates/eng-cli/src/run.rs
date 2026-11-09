@@ -282,6 +282,7 @@ pub(crate) fn run(game: &GameDef, map: MapChoice, a: &RunArgs) -> Exit {
         frames: frames.as_ref(),
         platform: "headless",
         dropped_ticks: 0,
+        window: None,
         exit,
     };
     if let Some(path) = &a.report

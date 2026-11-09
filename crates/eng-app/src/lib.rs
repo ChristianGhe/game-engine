@@ -12,6 +12,8 @@
 //! ```text
 //! <game> play [--ticks N] [--input script.toml] [--bindings bindings.toml] [--seed S]
 //!             [--hashes hashes.txt] [--record out.rec] [--report report.json]
+//!             first person: [--windowed] [--fov DEG] [--look look.toml]
+//!             [--sensitivity DEG_PER_COUNT] [--pitch-limit DEG] [--invert-pitch]
 //! ```
 //!
 //! With no flags `play` is the game: a resizable window titled with the
@@ -20,6 +22,12 @@
 //! the commands come from the script and only `quit` is read from the
 //! keyboard, so `play --input` gives `run`'s hash stream tick for tick
 //! (acceptance `native-window`).
+//!
+//! On a map whose view is first person (`--map room`, rung 2's T15) the
+//! window opens borderless fullscreen (`--windowed` for tests), the cursor
+//! is grabbed while it has focus, the mouse looks around, and frames come
+//! at the display's refresh rate: `first_person.rs` says how. The dot map
+//! plays exactly as in rung 1b, below.
 //!
 //! # One frame (plan, "One frame")
 //!
@@ -55,6 +63,7 @@
 #![forbid(unsafe_code)]
 
 mod clock;
+mod first_person;
 mod frame;
 mod view;
 
@@ -66,6 +75,7 @@ use eng_platform_winit::WinitPlatform;
 
 pub use clock::{Due, MAX_TICKS_PER_WAKE, TickClock};
 
+use crate::first_person::FirstPersonFrames;
 use crate::frame::Frames;
 
 /// Runs the probe with the process arguments, `play` included, for a game
@@ -92,6 +102,9 @@ pub fn run_args_with_maps(game: &GameDef, maps: &GameMaps, args: &[String]) -> E
 
 /// `play` in a window: the desktop platform, titled with the game's name.
 fn play_in_window(run: PlayRun<'_>) -> Exit {
+    if run.first_person().is_some() {
+        return play_first_person_in_window(run);
+    }
     let game = run.game();
     if game.top_down.is_none() {
         return run.refuse(&format!(
@@ -109,20 +122,69 @@ fn play_in_window(run: PlayRun<'_>) -> Exit {
     }
 }
 
+/// A first-person `play` in a window: the desktop platform, with the
+/// GCMouse shim's callback count where it runs (macOS), read before the
+/// run, for the report's mouse rate (criterion 25).
+fn play_first_person_in_window(run: PlayRun<'_>) -> Exit {
+    match WinitPlatform::new(run.game().name) {
+        Ok(mut platform) => {
+            let callbacks = platform.raw_motion_callbacks();
+            let count = callbacks.map(|callbacks| move || callbacks.get());
+            let count = count.as_ref().map(|count| count as &dyn Fn() -> u64);
+            play_on_with_callbacks(&mut platform, run, count)
+        }
+        Err(e) => run.refuse(&format!("[E-NO-DISPLAY] {e}")),
+    }
+}
+
 /// Runs `play`'s frame loop on `platform` until the run ends: its last tick,
 /// `quit`, a close request, or the platform's own end. Returns the run's
-/// exit.
+/// exit. A map whose view is first person ([`PlayRun::first_person`]) runs
+/// the first-person loop (rung 2, T15), any other rung 1b's.
 ///
 /// # Panics
 /// If the platform fails while running (`[E-PLATFORM]`).
 pub fn play_on(platform: &mut dyn Platform, run: PlayRun<'_>) -> Exit {
+    play_on_with_callbacks(platform, run, None)
+}
+
+/// [`play_on`], reading `callbacks` once a frame on a first-person map: a
+/// count of raw mouse motion callbacks, such as the GCMouse shim's
+/// (`WinitPlatform::raw_motion_callbacks`), whose peak rate while focused
+/// the report's `window.gcmouse` gives. A top-down map never reads it.
+///
+/// # Panics
+/// If the platform fails while running (`[E-PLATFORM]`).
+pub fn play_on_with_callbacks(
+    platform: &mut dyn Platform,
+    run: PlayRun<'_>,
+    callbacks: Option<&dyn Fn() -> u64>,
+) -> Exit {
     let name = platform.name();
-    let mut frames = Frames::new(run, name);
-    let result = platform.run(&mut frames);
-    match (result, frames.exit) {
+    match run.first_person() {
+        Some(settings) => {
+            let mut frames = FirstPersonFrames::new(run, settings, name, callbacks);
+            let result = platform.run(&mut frames);
+            ended(name, result, frames.exit, || frames.into_unfinished())
+        }
+        None => {
+            let mut frames = Frames::new(run, name);
+            let result = platform.run(&mut frames);
+            ended(name, result, frames.exit, || frames.into_unfinished())
+        }
+    }
+}
+
+/// The exit of a run the platform has returned from.
+fn ended<'g>(
+    name: &str,
+    result: Result<(), PlatformError>,
+    exit: Option<Exit>,
+    unfinished: impl FnOnce() -> Option<PlayRun<'g>>,
+) -> Exit {
+    match (result, exit) {
         (Ok(()), Some(exit)) => exit,
-        (Err(PlatformError::Unavailable(why)), None) => frames
-            .into_unfinished()
+        (Err(PlatformError::Unavailable(why)), None) => unfinished()
             .expect("a run that never started still has its run")
             .refuse(&format!(
                 "[E-NO-DISPLAY] the {name} platform cannot run here: {why}"

@@ -145,7 +145,8 @@ fn parses_play() {
         bare.play,
         Some(PlayFlags {
             bindings: None,
-            open_ended: true
+            open_ended: true,
+            first_person: FirstPersonFlags::default(),
         })
     );
     let Command::Run(full) = parse(&args(
@@ -166,10 +167,51 @@ fn parses_play() {
         full.play,
         Some(PlayFlags {
             bindings: Some(PathBuf::from("b.toml")),
-            open_ended: false
+            open_ended: false,
+            first_person: FirstPersonFlags::default(),
         })
     );
     assert_eq!((full.dump, full.capture), (None, None));
+}
+
+#[test]
+fn parses_plays_first_person_flags() {
+    let Command::Run(run) = parse(&args(
+        "play --map room --windowed --fov 90 --look l.toml --sensitivity 0.022 \
+         --pitch-limit 80 --invert-pitch",
+    ))
+    .unwrap() else {
+        panic!("expected play");
+    };
+    let flags = run.play.unwrap().first_person;
+    assert_eq!(
+        flags,
+        FirstPersonFlags {
+            windowed: true,
+            fov_y: Some(eng_math::BAngle::QUARTER),
+            look: Some(PathBuf::from("l.toml")),
+            sensitivity_microdeg: Some(22_000),
+            pitch_limit: Some(14_563),
+            invert_pitch: true,
+        }
+    );
+    for bad in [
+        "play --fov",
+        "play --fov 0",
+        "play --fov 180",
+        "play --fov 1e2",
+        "play --look",
+        "play --sensitivity 0.0000001",
+        "play --sensitivity -1",
+        "play --pitch-limit 91",
+        "play --pitch-limit 80.5.1",
+        "run --ticks 1 --windowed",
+        "shot --at-tick 1 --out s.png --fov 90",
+        "video --ticks 1 --out v.apng --sensitivity 1",
+        "run --ticks 1 --invert-pitch",
+    ] {
+        assert!(parse(&args(bad)).is_err(), "{bad:?} should be refused");
+    }
 }
 
 #[test]

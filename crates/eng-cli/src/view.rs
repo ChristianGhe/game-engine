@@ -14,12 +14,18 @@
 //! - [`MapView::None`]: `shot`, `video` and `play` refuse the map before a
 //!   GPU or a window opens (exit 64, `[E-MAP]`).
 //!
-//! `play` shows the top-down view only, until rung 2's T15 opens the
-//! first-person window, so it refuses a first-person map the same way. The
-//! scene is the game's at the frame's alpha; what the probe's own flags
-//! choose (the live view angles, the field of view, `--look`) it sets on
-//! the returned scene's `camera` and `look`, so a [`FirstPersonFrame`]
-//! carries only the states, as the top-down view's does.
+//! `play` shows either (rung 2, T15). The scene is the game's at the
+//! frame's alpha; what the probe's own flags choose (the live view angles,
+//! the field of view, `--look`) eng-app sets on the returned scene's
+//! `camera` and `look`, so a [`FirstPersonFrame`] carries only the states,
+//! as the top-down view's does.
+//!
+//! **A map has one view**, [`crate::GameMap::view`], and nothing draws a
+//! map in a view it does not name: the testbed's top-down extraction
+//! reads the dot room's `BoxRoom`, which the room lacks. So when `--view`
+//! (T16) names a view, by [`MapView::name`], other than the map's own, it
+//! is refused before a GPU opens, as a map with no view is: exit 64,
+//! `[E-USAGE] [E-MAP]`.
 
 use eng_gpu::Gpu;
 use eng_render::{
@@ -44,6 +50,18 @@ pub enum MapView {
     FirstPerson(FirstPersonView),
     /// No view: `shot`, `video` and `play` refuse the map.
     None,
+}
+
+impl MapView {
+    /// Its name, as `--view` (T16) and reports write it: `"top-down"`,
+    /// `"first-person"` or `"none"`.
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::TopDown => "top-down",
+            Self::FirstPerson(_) => "first-person",
+            Self::None => "none",
+        }
+    }
 }
 
 /// A map's first-person view: its world, loaded once, and each frame's
@@ -120,8 +138,8 @@ impl FirstPersonWorld {
 }
 
 impl MapView {
-    /// Why `shot` and `video` cannot draw a map of this view, if they
-    /// cannot: the `[E-USAGE] [E-MAP]` line.
+    /// Why `shot`, `video` and `play` cannot draw a map of this view, if
+    /// they cannot: the `[E-USAGE] [E-MAP]` line.
     pub(crate) fn refusal(&self, game: &GameDef, map: &str) -> Option<String> {
         matches!(self, Self::None).then(|| {
             format!(
@@ -129,20 +147,6 @@ impl MapView {
                 game.name
             )
         })
-    }
-
-    /// Why `play`'s window cannot show a map of this view yet, if it
-    /// cannot: it draws [`GameDef::top_down`] only.
-    pub(crate) fn window_refusal(&self, game: &GameDef, map: &str) -> Option<String> {
-        match self {
-            Self::TopDown => None,
-            Self::FirstPerson(_) => Some(format!(
-                "[E-USAGE] [E-MAP] {}'s map {map:?} has a first-person view, which play cannot \
-                 show yet (its window draws GameDef::top_down only)",
-                game.name
-            )),
-            Self::None => self.refusal(game, map),
-        }
     }
 }
 
@@ -184,21 +188,15 @@ pub(crate) mod tests {
     #[test]
     fn each_view_says_where_it_cannot_be_drawn() {
         assert_eq!(MapView::TopDown.refusal(&GAME, "a"), None);
-        assert_eq!(MapView::TopDown.window_refusal(&GAME, "a"), None);
         assert_eq!(FIRST_PERSON.refusal(&GAME, "b"), None);
-        assert_eq!(
-            FIRST_PERSON.window_refusal(&GAME, "b").as_deref(),
-            Some(
-                "[E-USAGE] [E-MAP] views's map \"b\" has a first-person view, which play cannot \
-                 show yet (its window draws GameDef::top_down only)"
-            )
-        );
         let none = "[E-USAGE] [E-MAP] views's map \"c\" has no view to draw";
         assert_eq!(MapView::None.refusal(&GAME, "c").as_deref(), Some(none));
-        assert_eq!(
-            MapView::None.window_refusal(&GAME, "c").as_deref(),
-            Some(none)
-        );
+    }
+
+    #[test]
+    fn each_view_has_a_name() {
+        let names = [MapView::TopDown, FIRST_PERSON, MapView::None].map(|v| v.name());
+        assert_eq!(names, ["top-down", "first-person", "none"]);
     }
 
     #[test]

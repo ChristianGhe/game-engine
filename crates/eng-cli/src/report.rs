@@ -9,12 +9,15 @@ use crate::args::RunArgs;
 use crate::assertions::{AssertionFile, Status, Tracker};
 use crate::budgets::{BudgetFile, BudgetTracker};
 use crate::capture::CaptureSummary;
+use crate::look_file::LookFile;
+use crate::play::PlayWindow;
 use crate::{Exit, GameDef, version};
 
 /// The report's format. Version 2 carries the version stamp's `build`
 /// object; version 1 (rung 1a) had a smaller one. Keys are added within a
 /// version, as the `gpu` object and the `[gpu]` budgets were in rung 1b,
-/// and `map`, `sim_data_hash` and `files_read` in rung 2 (ADR-0023);
+/// and `map`, `sim_data_hash` and `files_read` in rung 2 (ADR-0023), and
+/// a first-person `play`'s `window` (T15);
 /// readers look keys up by name (`docs/ARCHITECTURE.md`, "The report").
 pub(crate) const REPORT_VERSION: u64 = 2;
 
@@ -29,16 +32,19 @@ pub(crate) fn stream_digest(hashes: &[TickHash]) -> u64 {
 }
 
 /// The format version of each file a run read, keyed as `--version
-/// --json`'s `formats` names them, plus `bindings` (`play --bindings`).
+/// --json`'s `formats` names them, plus `bindings` (`play --bindings`) and
+/// `look` (`play --look`).
 /// Each reader accepts only its own version (no file format has a
 /// migration yet), so a file that loaded was read at that version.
 pub(crate) fn files_read(a: &RunArgs) -> JsonValue {
     let bindings = a.play.as_ref().and_then(|p| p.bindings.as_ref());
+    let look = a.play.as_ref().and_then(|p| p.first_person.look.as_ref());
     let files = [
         (a.input.is_some(), "input_script", InputScript::VERSION),
         (a.assert.is_some(), "assertions", AssertionFile::VERSION),
         (a.budgets.is_some(), "budgets", BudgetFile::VERSION),
         (bindings.is_some(), "bindings", Bindings::FILE_VERSION),
+        (look.is_some(), "look", LookFile::VERSION),
     ];
     JsonValue::object(
         files
@@ -65,6 +71,9 @@ pub(crate) struct RunSummary<'a> {
     pub platform: &'static str,
     /// Ticks of real time `play`'s frame loop dropped; 0 headless.
     pub dropped_ticks: u64,
+    /// A first-person `play`'s window; `None` for every other run, whose
+    /// report has no `window` key.
+    pub window: Option<&'a PlayWindow>,
     pub exit: Exit,
 }
 
@@ -138,7 +147,7 @@ impl RunSummary<'_> {
                 .as_ref()
                 .map_or(JsonValue::Null, |m| JsonValue::str(m.clone())),
         ));
-        JsonValue::object([
+        let mut fields = vec![
             ("report_version", JsonValue::U64(REPORT_VERSION)),
             ("command", JsonValue::str(self.args.command())),
             ("game", JsonValue::str(self.game.name)),
@@ -179,9 +188,15 @@ impl RunSummary<'_> {
                 "gpu",
                 self.frames.map_or(JsonValue::Null, |f| self.gpu_json(f)),
             ),
+        ];
+        if let Some(window) = self.window {
+            fields.push(("window", window.to_json()));
+        }
+        fields.extend([
             ("exit_code", JsonValue::U64(self.exit.code().into())),
             ("exit", JsonValue::str(self.exit.label())),
-        ])
+        ]);
+        JsonValue::object(fields)
     }
 
     /// The `gpu` object: the adapter (eng-gpu's `GpuReport`), the image
@@ -331,6 +346,9 @@ impl RunSummary<'_> {
         }
         if let Some(frames) = self.frames {
             lines.extend(self.frame_lines(frames));
+        }
+        if let Some(window) = self.window {
+            lines.push(window.console_line());
         }
         if self.args.play.is_some() {
             lines.push(format!("dropped ticks: {}", self.dropped_ticks));

@@ -72,6 +72,9 @@ pub struct Gpu {
     /// Kept for a window's surface ([`Gpu::with_window`]), whose
     /// capabilities are the adapter's.
     pub(crate) adapter: wgpu::Adapter,
+    /// The instance the adapter came from, kept to make a lost window
+    /// surface again ([`crate::WindowSurface::acquire_remaking`]).
+    pub(crate) instance: wgpu::Instance,
     /// `WGPU_DEBUG=1`: each pass is also wrapped in a debug group.
     pub(crate) debug: bool,
     report: GpuReport,
@@ -159,6 +162,7 @@ impl Gpu {
             layouts,
             timestamp_period,
             adapter,
+            instance,
             debug: flags().contains(wgpu::InstanceFlags::DEBUG),
             report,
         })

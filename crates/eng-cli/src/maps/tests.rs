@@ -456,9 +456,10 @@ fn play_runs_the_map_it_is_given() {
     assert_eq!(run.map(), crate::DEFAULT_MAP);
 }
 
-/// A later map names its view (rung 2, T12): `shot` and `video` refuse one
-/// with none before a GPU opens; `play` refuses one in first person, as its
-/// window draws the top-down view only (`view.rs` has the messages).
+/// A later map names its view (rung 2, T12): `shot`, `video` and `play`
+/// refuse one with none before a GPU or window opens; `play` shows a
+/// first-person one (T15) and refuses its flags on any other map
+/// (`view.rs` and `play/first_person.rs` have the messages).
 #[test]
 fn a_map_is_refused_where_its_view_cannot_be_drawn() {
     let dir = scratch("no-view");
@@ -490,8 +491,8 @@ fn a_map_is_refused_where_its_view_cannot_be_drawn() {
     let line = ["play", "--ticks", "1", "--map", "walls"].map(String::from);
     let run = PlayRun::start_with_maps(&GAME, &SEEN, &line).unwrap();
     assert!(matches!(run.view(), MapView::FirstPerson(_)));
-    assert!(
-        run.view_refusal()
-            .is_some_and(|m| m.contains("has a first-person view"))
-    );
+    assert_eq!(run.view_refusal(), None);
+    // Its flags, and their refusal on other maps: `play/first_person.rs`.
+    let fp = run.first_person().expect("a first-person map's settings");
+    assert!(!fp.windowed && fp.mouse == eng_input::LookSettings::DEFAULT);
 }

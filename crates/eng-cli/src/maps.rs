@@ -18,8 +18,16 @@
 //! game's tests find it first.
 //!
 //! Each map also names its view ([`MapView`], rung 2's T12): the first map
-//! is drawn by [`GameDef::top_down`]; another names its own, which `shot`
-//! and `video` draw, or none, which they refuse.
+//! is drawn by [`GameDef::top_down`]; another names its own, which `shot`,
+//! `video` and `play` draw, or none, which they refuse.
+//!
+//! **`GameMap`'s fields are final for rung 2** (gate G5 freezes them through
+//! `maps/tests.rs`): a name, a build function and one view. What a map's
+//! `play` needs beyond them comes from the view: a first-person map opens
+//! fullscreen and grabs the cursor, and its live view starts where its
+//! scene's camera looks at tick 0 (rung 2, T15). Anything a later rung
+//! needs per map comes through a new type beside it, as [`GameMaps`] came
+//! beside [`GameDef`].
 
 use eng_sim::{ScheduleError, Sim, SimConfig};
 
@@ -35,8 +43,8 @@ pub type BuildFn = fn(SimConfig) -> Result<Sim, ScheduleError>;
 pub struct GameMap {
     pub name: &'static str,
     pub build: BuildFn,
-    /// What `shot` and `video` draw of it. The first map's is
-    /// [`MapView::TopDown`], [`GameDef::top_down`].
+    /// What `shot`, `video` and `play` draw of it, its only view. The
+    /// first map's is [`MapView::TopDown`], [`GameDef::top_down`].
     pub view: MapView,
 }
 
@@ -196,12 +204,11 @@ impl MapChoice {
         self.map.view.refusal(game, self.map.name)
     }
 
-    /// Why `play`'s window cannot show this map yet, if it cannot: it
-    /// draws [`GameDef::top_down`] only, until the first-person window
-    /// (rung 2, T15). A usage error, exit 64, refused before a window
-    /// opens.
+    /// Why `play`'s window cannot show this map, if it cannot: as
+    /// [`MapChoice::no_view`], since the window draws both views (rung 2,
+    /// T15). A usage error, exit 64, refused before a window opens.
     pub fn no_window_view(&self, game: &GameDef) -> Option<String> {
-        self.map.view.window_refusal(game, self.map.name)
+        self.no_view(game)
     }
 
     fn check(&self, game: &GameDef, sim: &Sim) -> Result<(), String> {

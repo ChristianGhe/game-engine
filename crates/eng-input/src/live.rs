@@ -124,6 +124,20 @@ impl LiveInput {
         }
     }
 
+    /// The view angles `(yaw, pitch)` the next command would carry if the
+    /// tick were sampled now: with mouse look on, the motion handled since
+    /// the last sample turned in ([`MouseLook::angles_now`]); off, the held
+    /// angles. It takes nothing, so the commands are the same whether or
+    /// not it is called. A frame drawn between two ticks looks this way
+    /// (presentation only: the simulation sees the angles only in the
+    /// commands).
+    pub fn view_now(&self) -> (u16, u16) {
+        match &self.look {
+            Some(look) => look.angles_now(),
+            None => (self.view_yaw, self.view_pitch),
+        }
+    }
+
     /// Whether `key` is down now.
     pub const fn is_held(&self, key: Key) -> bool {
         self.held[key.index()]

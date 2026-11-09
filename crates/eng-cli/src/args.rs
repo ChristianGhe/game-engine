@@ -1,5 +1,9 @@
 use std::path::PathBuf;
 
+pub(crate) use first_person::FirstPersonFlags;
+
+mod first_person;
+
 pub(crate) const USAGE: &str = "\
 <game> run --headless --ticks N [--seed S] [--players P] [--input script.toml]
            [--assert assertions.toml] [--budgets budgets.toml]
@@ -14,6 +18,8 @@ pub(crate) const USAGE: &str = "\
              [--input script.toml] [--budgets budgets.toml] [--report report.json]
 <game> play [--ticks N] [--input script.toml] [--bindings bindings.toml] [--seed S]
             [--hashes hashes.txt] [--record out.rec] [--report report.json]
+            first person: [--windowed] [--fov DEG] [--look look.toml]
+            [--sensitivity DEG_PER_COUNT] [--pitch-limit DEG] [--invert-pitch]
 <game> --version [--json]
 <game> help
 
@@ -46,6 +52,8 @@ pub(crate) struct PlayFlags {
     pub bindings: Option<PathBuf>,
     /// No `--ticks`: the run goes on until `quit` (at most [`MAX_TICKS`]).
     pub open_ended: bool,
+    /// The first-person flags (rung 2, T15), for a first-person map only.
+    pub first_person: FirstPersonFlags,
 }
 
 /// `shot` and `video`: what to render and where it goes.
@@ -193,6 +201,7 @@ fn parse_run(flags: &mut Flags<'_>, mode: Mode) -> Result<RunArgs, String> {
     let renders = matches!(mode, Mode::Shot | Mode::Video);
     let (mut ticks, mut at_tick, mut out) = (None, None, None);
     let (mut size, mut every, mut bindings) = ((320, 240), 1, None);
+    let mut fp = FirstPersonFlags::default();
     while let Some(flag) = flags.rest.next() {
         let flag = flag.as_str();
         match flag {
@@ -214,6 +223,16 @@ fn parse_run(flags: &mut Flags<'_>, mode: Mode) -> Result<RunArgs, String> {
             "--record" if run || play => a.record = Some(flags.path(flag)?),
             "--panic-at-tick" if run || play => a.panic_at_tick = Some(flags.number(flag)?),
             "--bindings" if play => bindings = Some(flags.path(flag)?),
+            "--windowed" if play => fp.windowed = true,
+            "--fov" if play => fp.fov_y = Some(first_person::fov(flags.value(flag)?)?),
+            "--look" if play => fp.look = Some(flags.path(flag)?),
+            "--sensitivity" if play => {
+                fp.sensitivity_microdeg = Some(first_person::sensitivity(flags.value(flag)?)?);
+            }
+            "--pitch-limit" if play => {
+                fp.pitch_limit = Some(first_person::pitch_limit(flags.value(flag)?)?);
+            }
+            "--invert-pitch" if play => fp.invert_pitch = true,
             "--size" if renders => size = parse_size(flags.value(flag)?)?,
             "--every" if mode == Mode::Video => every = flags.number(flag)?,
             other => return Err(format!("unknown flag {other:?}")),
@@ -254,6 +273,7 @@ fn parse_run(flags: &mut Flags<'_>, mode: Mode) -> Result<RunArgs, String> {
         a.play = Some(PlayFlags {
             bindings,
             open_ended: ticks.is_none(),
+            first_person: fp,
         });
         return Ok(a);
     }

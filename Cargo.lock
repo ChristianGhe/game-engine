@@ -438,6 +438,7 @@ dependencies = [
  "eng-cli",
  "eng-gpu",
  "eng-input",
+ "eng-math",
  "eng-platform-api",
  "eng-platform-winit",
  "eng-render",

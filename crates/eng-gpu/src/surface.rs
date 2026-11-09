@@ -7,6 +7,11 @@
 //! configured in that and drawn through an sRGB view of each image, which
 //! encodes the same way. A surface that offers neither fails with `[E-GPU]`
 //! before anything is drawn.
+//!
+//! A surface the system loses (wgpu's `Lost`) is an `[E-GPU]` error from
+//! [`WindowSurface::acquire`], as in rung 1b. A caller that keeps the
+//! window asks with [`WindowSurface::acquire_remaking`] instead, which
+//! makes the surface again from it and skips the frame (rung 2, T15).
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
@@ -36,8 +41,18 @@ pub(crate) fn formats(
 /// ([`Gpu::with_window`]). Drop it before the window: the platform contract
 /// asks apps to let the window go by `stop`.
 pub struct WindowSurface {
-    surface: wgpu::Surface<'static>,
+    /// `None` only between a lost surface going and its remaking.
+    surface: Option<wgpu::Surface<'static>>,
     config: wgpu::SurfaceConfiguration,
+}
+
+/// What acquiring an image found.
+enum Acquired {
+    Frame(SurfaceFrame),
+    /// No image now: skip the frame.
+    Skip,
+    /// The surface is gone and must be made again.
+    Lost,
 }
 
 /// One image of a window's surface, from [`WindowSurface::acquire`]: a
@@ -103,7 +118,7 @@ impl WindowSurface {
             wgpu::CompositeAlphaMode::Auto
         };
         let mut surface = Self {
-            surface,
+            surface: Some(surface),
             config: wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 format,
@@ -121,7 +136,11 @@ impl WindowSurface {
     }
 
     fn configure(&mut self, gpu: &Gpu) -> Result<(), GpuError> {
-        gpu.scoped(|| self.surface.configure(&gpu.device, &self.config))
+        let Some(surface) = &self.surface else {
+            // Lost and not made again: the next acquire says so.
+            return Ok(());
+        };
+        gpu.scoped(|| surface.configure(&gpu.device, &self.config))
             .map_err(|e| GpuError::Surface(format!("cannot configure the window's surface: {e}")))
     }
 
@@ -160,19 +179,58 @@ impl WindowSurface {
     /// minimised or occluded, where macOS can block for a second (plan, "One
     /// frame").
     pub fn acquire(&mut self, gpu: &Gpu) -> Result<Option<SurfaceFrame>, GpuError> {
-        let (texture, suboptimal) = match self.surface.get_current_texture() {
+        match self.next(gpu)? {
+            Acquired::Frame(frame) => Ok(Some(frame)),
+            Acquired::Skip => Ok(None),
+            Acquired::Lost => Err(GpuError::Surface("the window's surface was lost".into())),
+        }
+    }
+
+    /// Like [`WindowSurface::acquire`], but a surface the system lost is
+    /// made again from `window`, the window it was made from (the
+    /// platform's `Arc<dyn Window>`), set up as before, and the frame is
+    /// skipped (`Ok(None)`). One that cannot be made again is an `[E-GPU]`
+    /// error.
+    pub fn acquire_remaking<W>(
+        &mut self,
+        gpu: &Gpu,
+        window: W,
+    ) -> Result<Option<SurfaceFrame>, GpuError>
+    where
+        W: HasWindowHandle + HasDisplayHandle + Send + Sync + 'static,
+    {
+        match self.next(gpu)? {
+            Acquired::Frame(frame) => Ok(Some(frame)),
+            Acquired::Skip => Ok(None),
+            Acquired::Lost => {
+                // The lost surface and its images go first: a window may
+                // have only one swapchain.
+                self.surface = None;
+                let surface = gpu.instance.create_surface(window).map_err(|e| {
+                    GpuError::Surface(format!("cannot make the lost window's surface again: {e}"))
+                })?;
+                self.surface = Some(surface);
+                self.configure(gpu)?;
+                Ok(None)
+            }
+        }
+    }
+
+    fn next(&mut self, gpu: &Gpu) -> Result<Acquired, GpuError> {
+        let Some(surface) = &self.surface else {
+            return Ok(Acquired::Lost);
+        };
+        let (texture, suboptimal) = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture) => (texture, false),
             wgpu::CurrentSurfaceTexture::Suboptimal(texture) => (texture, true),
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                return Ok(None);
+                return Ok(Acquired::Skip);
             }
             wgpu::CurrentSurfaceTexture::Outdated => {
                 self.configure(gpu)?;
-                return Ok(None);
+                return Ok(Acquired::Skip);
             }
-            wgpu::CurrentSurfaceTexture::Lost => {
-                return Err(GpuError::Surface("the window's surface was lost".into()));
-            }
+            wgpu::CurrentSurfaceTexture::Lost => return Ok(Acquired::Lost),
             wgpu::CurrentSurfaceTexture::Validation => {
                 return Err(GpuError::Surface(
                     "acquiring the window's next image failed validation".into(),
@@ -184,7 +242,7 @@ impl WindowSurface {
             format: Some(SRGB),
             ..wgpu::TextureViewDescriptor::default()
         });
-        Ok(Some(SurfaceFrame {
+        Ok(Acquired::Frame(SurfaceFrame {
             texture,
             view,
             suboptimal,

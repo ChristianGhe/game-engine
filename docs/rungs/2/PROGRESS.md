@@ -1112,3 +1112,51 @@ and 11)
 - **Carries** are in the plan's T21 and T22 rows.
 - **Cost:** the builder took 55 + 6 min, 469k tokens. It counts as one
   session (27 of 52).
+
+**T19: mutation testing** (381575b, follow-up d5e2746; decision 15, O8;
+for the owner at G5)
+- **Four patches** in `docs/rungs/2/patches/`, against f382733:
+  - `t19-xtask-mutants.patch` (`d72db42f9f927f21…`): `cargo xtask
+    mutants [--in-diff | --rung-diff] [--base] [--shard K/N]
+    [--time-box]` and `ci --job mutants`.
+  - `t19-workflow-mutants.patch` (`51a289ae4115b3ca…`): a four-shard
+    `mutants` job, a weekly schedule and a manual dispatch.
+  - `t19-mutants-config.patch` (`66e6d4bc367e2a78…`): `.cargo/mutants.toml`,
+    with empty exclusions.
+  - `t19-test-auditor.patch` (`4c1873ad29516749…`): a read-only
+    subagent that sorts missed mutants into real gaps and equivalent
+    ones.
+- **How the job works:**
+  - **The base** is resolved like T17's.
+  - **Pending:** in-diff when no core crate changed; rung-diff on pushes.
+  - **The seed** is fixed, `PROPTEST_RNG_SEED=1`. Random seeds turned
+    the same mutants from caught to missed between runs.
+  - **The time box** stops a run with SIGINT and fails the step.
+  - **`[E-MUTANTS-SKIP]`** fails on any `mutants::skip` in a core crate.
+    An automated security review found that cargo-mutants honours the
+    attribute, so code could otherwise opt out of the owner's
+    exclusions.
+  - **A new summary step,** `mutants-shards`, requires all four shard
+    reports.
+- **Review:** a fresh reviewer (22 min, 203k tokens) found three
+  blockers:
+  - a tests-only core change failed, because empty `--list` output did
+    not parse;
+  - the skip scan missed a `src/target/` module;
+  - criterion 19 could pass with a shard missing.
+
+  The follow-up fixed all three. A re-check reproduced each blocker
+  against it, and all three are fixed.
+- **Its runs found real gaps:**
+  - in-diff on Q2's `ground_move`: 68 mutants, 11 missed;
+  - one rung-diff shard: 194 mutants, 54 missed, 38 of them in the grid's
+    `sweep.rs`.
+
+  So criterion 19 fails until the gaps are closed. A follow-up task
+  (T19b) is closing them now, and lists for the owner any mutant that is
+  truly equivalent.
+- **Carries** are in T21's row: criterion 19's new check, the three
+  xtask patches' union conflicts, and the unproven 20-minute box.
+- **Cost:** the builder took about 2 h 50 min in three runs (one paused),
+  432k tokens. The two reviews took 425k. It counts as one session (26 of
+  52; T15 was counted 27 before T19 merged).

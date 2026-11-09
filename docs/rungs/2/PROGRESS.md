@@ -1160,3 +1160,60 @@ for the owner at G5)
 - **Cost:** the builder took about 2 h 50 min in three runs (one paused),
   432k tokens. The two reviews took 425k. It counts as one session (26 of
   52; T15 was counted 27 before T19 merged).
+
+**T16 with TA3: shots and poses** (a688b68, follow-up 1a55dab; decisions
+12 and 13; A3)
+- **Built** by one builder in a worktree pinned to 8797105, then rebased
+  onto 88a3345 to share T15's look-file loader.
+  - **`crates/game-testbed/shots.toml`:** 1b's four shots unmarked, and
+    seven room shots marked `golden = "pending"`: spawn, sprites, step,
+    sky, alcove, ledge (a pose) and look-off (a pose with every look
+    switch off). It names the poses `ledge` and `overview`.
+  - **`shot` and `video` gain:**
+    - `--view`, refused before anything opens when the map lacks it;
+    - `--pose X,Y,Z,YAW,PITCH`, the eye with angles in degrees;
+    - `--look`, through T15's `LookSwitches`.
+  - **The report** gains a `view` object.
+  - **`[gpu.first_person]`:** the probe's strict budgets parser accepts
+    it, and it holds first-person frames. The room shot is 7/7/15 and
+    736 bytes.
+- **For the owner at G5:** `docs/rungs/2/patches/t16-shots.patch`
+  (SHA-256 `f053ac5a…`). It holds the shots harness, the
+  marker's rules and the per-shot FLIP limits:
+  - `shots.rs` reads the manifest, and `shots.json` gains `views`;
+  - a marked shot with no golden is "no golden yet";
+  - a golden for a marked shot in `golden/` fails, asking the owner to
+    clear the marker;
+  - unmarked shots keep 1b's all-or-nothing rule.
+
+  It also adds the look harness `tests/look.rs`. It checks decision 13
+  through the binary, that the room is closed (over 360 poses), and the
+  marker's frame at spawn and at tick 120.
+- **Checked:**
+  - On Metal, in a scratch clone with the patch: `quick` and the lint job.
+  - On the pinned lavapipe in Docker: shots 19 of 19 in exact mode, look
+    8 of 8, views 3 of 3, and `golden-edit` passed with the markers.
+  - 1b's four shots: exact on lavapipe, 0 differing pixels on Metal.
+- **Metal against lavapipe:** every room shot's FLIP mean (0.012-0.015)
+  exceeds `[flip]`'s 0.01, so sitting 3 needs per-shot `[flip.<shot>]`
+  tables. The builder's report has the numbers.
+- **Review:** a fresh reviewer (14 min, 205k tokens) found one blocker. A
+  marked shot whose own image was broken passed silently with
+  `ENG_GOLDEN_DIR`, or failed with a false "clear the marker".
+  - **The follow-up** fixes it, with tests that fail when the guard is
+    removed.
+  - **It also:** checks the camera actually drawn against a pose; holds
+    `play`'s first-person frames to `[gpu.first_person]`; drops an inner
+    tag that golden-edit would misread; tests the marker's frame; and
+    adds a noise check.
+- **Carries** are in the plan's T21, T22 and G5 rows. One is a patch the
+  owner needs at G5: the protected `golden-update` skill still describes
+  1b's fixed `SHOTS` list.
+- **Flakes seen under load during T16:**
+  - the lock test, 1 in 8 runs in the worktree and 2 in 5 in the clone;
+  - on Debian lavapipe while an emulated x64 build ran, three shot
+    processes and the look test binary died with no exit code. It did
+    not recur in 36 later runs, including with `MALLOC_CHECK_=3` and
+    `LP_NUM_THREADS=0`.
+- **Cost:** the builder took about 2 h in three runs, 647k tokens. It
+  counts as one session, with TA3 as half of one: 28.5 of 52.

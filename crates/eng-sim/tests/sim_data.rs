@@ -183,6 +183,21 @@ fn the_sim_data_hash_follows_the_content_and_the_protocol_the_schemas() {
     assert_ne!(plain_sim().protocol_version(), base.protocol_version());
 }
 
+/// `plain_sim`'s protocol version as eng-sim computed it before constant
+/// resources existed (4407bad, the parent of T6's b9f3795).
+const PLAIN_PROTOCOL_BEFORE_CONSTANTS: u64 = 0xe277_d809_3577_5da7;
+
+#[test]
+fn a_sim_without_sim_data_keeps_the_protocol_from_before_constants() {
+    // ADR-0023: only a world with constant resources gets the protocol's
+    // `constants` section, so every replay and snapshot from before sim data
+    // existed keeps its protocol version.
+    assert_eq!(
+        plain_sim().protocol_version(),
+        PLAIN_PROTOCOL_BEFORE_CONSTANTS
+    );
+}
+
 #[test]
 fn a_constant_changes_the_protocol_even_with_the_same_registry() {
     // `Gain` as a resource and as a constant: the registry holds the same

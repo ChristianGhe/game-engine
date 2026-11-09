@@ -272,6 +272,33 @@ fn the_marker_turns_once_every_8_seconds_in_eighths_on_the_second() {
 }
 
 #[test]
+fn a_turn_repeats_at_any_tick_even_past_2_to_the_32() {
+    // `at` reduces the tick modulo the turn before it scales, so a tick as
+    // large as a u64 holds still gives the facing of its place in the turn.
+    for ticks in [1, 3, 7, MARKER_TURN_TICKS, u32::MAX] {
+        let turning = Turning {
+            from: BAngle(0x1234_5678),
+            ticks,
+        };
+        let period = u64::from(ticks);
+        for tick in [
+            (1u64 << 32) - 1,
+            1 << 32,
+            (1 << 32) + 5,
+            1 << 40,
+            u64::MAX - 1,
+            u64::MAX,
+        ] {
+            assert_eq!(
+                turning.at(Tick(tick)),
+                turning.at(Tick(tick % period)),
+                "{ticks} ticks a turn, tick {tick}"
+            );
+        }
+    }
+}
+
+#[test]
 fn the_step_then_the_platform_climb() {
     let mut sim = sim_from(9.5, 4.0, 0.0);
     let mut heights = Vec::new();

@@ -3,7 +3,7 @@
 //! trace here passes `conformance::check`.
 
 use eng_collision_api::{BoxHull, CONTACT_GAP, CollisionWorld, Trace, conformance};
-use eng_collision_grid::{Grid, Point2, Slab, Wall};
+use eng_collision_grid::{GRAZE, Grid, Point2, Slab, Wall};
 use eng_math::{Vec3, WorldPos};
 
 /// Rung 2's room hull: 0.5 m x 0.5 m x 1.75 m.
@@ -58,6 +58,52 @@ fn a_corner_hit_on_a_slab_ends_on_both_faces() {
     assert_eq!(
         (tr.end, tr.normal),
         (at(3.75, 3.75, 1.5), Vec3::new(-1.0, 0.0, 0.0))
+    );
+}
+
+#[test]
+fn a_corner_hit_from_the_other_side_ends_on_both_faces_too() {
+    // The case above mirrored through the origin, which IEEE arithmetic
+    // reproduces exactly: rounding leaves the stop an ulp short of Y's upper
+    // face, the face a motion towards -Y enters by, and it is put on it.
+    let world = Grid::new(vec![], vec![rect(-6.0, -6.0, -4.0, -4.0, 0.0, 3.0)]).unwrap();
+    let s = at(-1.9107109421119168, -0.9598307116654166, 1.5);
+    let e = at(-5.129701861931396, -5.842983561071814, 1.5);
+    let tr = checked(&world, s, e);
+    assert_eq!(
+        (tr.end, tr.normal),
+        (at(-3.75, -3.75, 1.5), Vec3::new(1.0, 0.0, 0.0))
+    );
+}
+
+#[test]
+fn a_hull_inside_a_corner_for_exactly_graze_of_travel_is_hit() {
+    // Step 2: less than GRAZE is a graze; GRAZE itself is a hit. A hull
+    // moving along (1, 1) enters a slab's west face at 0.75 and leaves its
+    // north face `inside` later, all exact in binary.
+    let world = Grid::new(vec![], vec![rect(1.0, -5.0, 5.0, 1.0, -1.0, 3.0)]).unwrap();
+    let pass = |inside: f64| {
+        let s = at(0.0, 0.5 - inside, 1.0);
+        checked(&world, s, at(1.0, 1.5 - inside, 1.0))
+    };
+    let tr = pass(GRAZE);
+    assert_eq!((tr.fraction, tr.normal), (0.75, Vec3::new(-1.0, 0.0, 0.0)));
+    assert_eq!(tr.end, at(0.75, 1.25 - GRAZE, 1.0));
+    assert!(!pass(GRAZE / 2.0).hit(), "half of GRAZE grazes");
+}
+
+#[test]
+fn a_long_move_ending_one_ulp_past_a_face_is_still_a_hit() {
+    // The entry's fraction rounds to 1 over 1 km, and the end is inside the
+    // wall's grown face: the hit keeps a fraction below 1 and stops on the
+    // face, as `BoxRoom` does.
+    let world = Grid::new(vec![wall((8.0, 0.0), (8.0, 6.0), 0.0, 3.0)], vec![]).unwrap();
+    let s = at(-999.75, 3.0, H);
+    let tr = checked(&world, s, at(7.75f64.next_up(), 3.0, H));
+    assert!(tr.hit(), "{tr:?}");
+    assert_eq!(
+        (tr.end, tr.normal),
+        (at(7.75, 3.0, H), Vec3::new(-1.0, 0.0, 0.0))
     );
 }
 
@@ -166,6 +212,34 @@ fn a_stop_inside_what_ties_with_the_hit_moves_onto_its_face() {
     let tr = checked(&room(), s, e);
     assert_eq!((tr.end.x, tr.end.y), (7.75, 6.25), "{tr:?}");
     assert_eq!(tr.normal, Vec3::new(-1.0, 0.0, 0.0));
+}
+
+#[test]
+fn a_stop_inside_two_ties_moves_onto_the_face_of_the_lower_index() {
+    // Step 6's tie rule. From 1,000 km south-west, the hull meets a wall's
+    // face at x = 5 and two slabs' faces at y = 1 and an ulp above it at the
+    // same rounded fraction; the wall, first, is the hit. Rounding leaves the
+    // stop inside both slabs. It moves onto the face of the lower index, the
+    // first slab's y = 1, which leaves it free of both; the second slab's
+    // face would leave it inside the first. The second slab is listed in a
+    // cell west of the first's, so it is met first.
+    let slabs = vec![
+        rect(5.0, 1.25, 10.0, 3.0, 0.0, 3.0),
+        rect(4.5, 1.25f64.next_up(), 10.0, 3.0, 0.0, 3.0),
+    ];
+    let world = Grid::new(vec![wall((5.25, -5.0), (5.25, 5.0), 0.0, 3.0)], slabs).unwrap();
+    let s = at(-1048571.996296299, -1048575.996296299, 1.5);
+    let e = at(1048580.12716049, 1048576.12716049, 1.5);
+    let tr = checked(&world, s, e);
+    assert_eq!(
+        (tr.end, tr.normal),
+        (at(5.0, 1.0, 1.5), Vec3::new(-1.0, 0.0, 0.0))
+    );
+    let stop = 1.0000000001164153;
+    assert!(
+        world.overlaps(at(5.0, stop, 1.5), &HULL),
+        "the stop before step 6"
+    );
 }
 
 #[test]
@@ -287,6 +361,22 @@ fn sliding_along_a_wall_off_the_axes_within_rounding_is_not_a_hit() {
     let e = at(2.6627921091414875, 4.361506401796184, 1.1293396358957157);
     let tr = checked(&world, s, e);
     assert!(!tr.hit(), "{tr:?}");
+}
+
+#[test]
+fn a_slide_off_a_face_by_up_to_its_rounding_allowance_is_not_a_hit() {
+    // Step 2's allowance exactly: from contact with a wall off the axes, a
+    // slide along it and past its end that moves into it along its normal by
+    // 6.75 NOISE, within the allowance (|x| + |y| + 1) * NOISE at each end
+    // (7.45 NOISE here), only slides; 7.5 NOISE is a hit.
+    let world = Grid::new(vec![wall((0.0, 0.0), (2.0, 1.0), 0.0, 3.0)], vec![]).unwrap();
+    let s = at(0.9499999964078596, 0.0999999982039298, H);
+    let within = at(3.1860679739076385, 1.2180339869538461, H);
+    let tr = checked(&world, s, within);
+    assert!(!tr.hit() && tr.end == within, "{tr:?}");
+    let beyond = at(3.186067973907637, 1.2180339869538483, H);
+    let tr = checked(&world, s, beyond);
+    assert!(tr.hit() && off_axes(tr.normal), "{tr:?}");
 }
 
 /// The grid, but a hit off the axes after more than 1 mm of travel stops

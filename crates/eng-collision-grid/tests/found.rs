@@ -1,0 +1,453 @@
+//! Traces found by searching against cargo-mutants' mutants of the sweep
+//! (rung 2, T19 follow-up): the grid's own proptests run with 128 times
+//! their cases (`PROPTEST_CASES=131072`, seed 1), and an aimed search of
+//! hull corners at slab and wall corners (up to 4 million cases). Each is the
+//! trace a shrunk failure stopped on, with the primitives near it: a rule of
+//! the crate docs, mostly about rounding at edges and corners, that the
+//! proptests reach only rarely at their usual size. Each case is checked as
+//! the search that found it checked it: against the brute-force oracle
+//! (`tests/oracle.rs`), or with the conformance suite and no pass-through
+//! (`tests/contract.rs`); and so is its mirror image.
+
+#[path = "oracle/brute.rs"]
+mod brute;
+
+use brute::Brute;
+use eng_collision_api::{BoxHull, CollisionWorld, Trace, conformance};
+use eng_collision_grid::{Grid, Point2, Slab, Wall};
+use eng_math::{Vec3, WorldPos};
+
+/// How a case is checked.
+enum Check {
+    /// The grid's trace bits, and `overlaps` at both ends and the stop, are
+    /// the oracle's.
+    Oracle,
+    /// The conformance suite holds, and the hull does not pass through solid
+    /// on the way to the stop.
+    Contract,
+}
+
+/// One trace: walls as `([ax, ay, bx, by], bottom, top)`, slabs as
+/// `(corners x0, y0, x1, y1, ..., bottom, top)`, the hull's half extents.
+struct Case {
+    check: Check,
+    walls: &'static [([f64; 4], f64, f64)],
+    slabs: &'static [(&'static [f64], f64, f64)],
+    hull: [f32; 3],
+    from: [f64; 3],
+    to: [f64; 3],
+}
+
+impl Case {
+    /// The primitives, or their mirror image through the origin: every
+    /// coordinate negated, which IEEE arithmetic does exactly, and every edge
+    /// reversed (a slab's corners in reverse order, a wall's ends swapped),
+    /// so that each axis's projections are negated too. The mirror takes
+    /// each rule's other branch: a motion up an axis becomes one down it.
+    fn parts(&self, mirror: bool) -> (Vec<Wall>, Vec<Slab>) {
+        let m = if mirror { -1.0 } else { 1.0 };
+        let point = |x: f64, y: f64| Point2::new(m * x, m * y);
+        let heights = |bottom: f64, top: f64| {
+            if mirror {
+                (-top, -bottom)
+            } else {
+                (bottom, top)
+            }
+        };
+        let walls = self
+            .walls
+            .iter()
+            .map(|&([ax, ay, bx, by], bottom, top)| {
+                let (a, b) = (point(ax, ay), point(bx, by));
+                let (bottom, top) = heights(bottom, top);
+                let (a, b) = if mirror { (b, a) } else { (a, b) };
+                Wall { a, b, bottom, top }
+            })
+            .collect();
+        let slabs = self
+            .slabs
+            .iter()
+            .map(|&(corners, bottom, top)| {
+                let mut points: Vec<Point2> =
+                    corners.chunks(2).map(|c| point(c[0], c[1])).collect();
+                if mirror {
+                    points.reverse();
+                }
+                let (bottom, top) = heights(bottom, top);
+                Slab {
+                    points,
+                    bottom,
+                    top,
+                }
+            })
+            .collect();
+        (walls, slabs)
+    }
+
+    fn ends(&self, mirror: bool) -> (WorldPos, WorldPos) {
+        let m = if mirror { -1.0 } else { 1.0 };
+        let pos = |[x, y, z]: [f64; 3]| WorldPos::new(m * x, m * y, m * z);
+        (pos(self.from), pos(self.to))
+    }
+}
+
+fn bits(t: &Trace) -> ([u64; 4], [u32; 3], bool) {
+    let (e, n) = (t.end, t.normal);
+    (
+        [
+            t.fraction.to_bits(),
+            e.x.to_bits(),
+            e.y.to_bits(),
+            e.z.to_bits(),
+        ],
+        [n.x.to_bits(), n.y.to_bits(), n.z.to_bits()],
+        t.start_solid,
+    )
+}
+
+/// As `tests/contract.rs`: the hull shrunk by this much on every side must
+/// be free at every sample of the way to the stop.
+const THROUGH: f32 = 1.0e-6;
+const SAMPLES: u32 = 32;
+
+#[test]
+fn the_found_traces_keep_the_rules() {
+    for (i, case, mirror) in CASES
+        .iter()
+        .enumerate()
+        .flat_map(|(i, case)| [(i, case, false), (i, case, true)])
+    {
+        let (walls, slabs) = case.parts(mirror);
+        let grid = Grid::new(walls.clone(), slabs.clone()).unwrap();
+        let [hx, hy, hz] = case.hull;
+        let hull = BoxHull {
+            half_extents: Vec3::new(hx, hy, hz),
+        };
+        let (from, to) = case.ends(mirror);
+        let got = grid.trace(from, to, &hull);
+        match case.check {
+            Check::Oracle => {
+                let brute = Brute::new(&walls, &slabs);
+                let want = brute.trace(from, to, &hull);
+                assert_eq!(
+                    bits(&got),
+                    bits(&want),
+                    "case {i} (mirror {mirror}): {got:?} vs {want:?}"
+                );
+                for p in [from, to, got.end] {
+                    assert_eq!(
+                        grid.overlaps(p, &hull),
+                        brute.overlaps(p, &hull),
+                        "case {i} (mirror {mirror}): overlaps at {p:?}"
+                    );
+                }
+            }
+            Check::Contract => {
+                conformance::check(&grid, from, to, &hull);
+                let shrunk = BoxHull {
+                    half_extents: Vec3::new(hx - THROUGH, hy - THROUGH, hz - THROUGH),
+                };
+                for k in 0..=SAMPLES {
+                    let t = got.fraction * f64::from(k) / f64::from(SAMPLES);
+                    let p = WorldPos::new(
+                        from.x + (to.x - from.x) * t,
+                        from.y + (to.y - from.y) * t,
+                        from.z + (to.z - from.z) * t,
+                    );
+                    assert!(
+                        !grid.overlaps(p, &shrunk),
+                        "case {i} (mirror {mirror}): {got:?} passes through solid at {p:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The cases, each under the mutant it was found against; one primitive a line.
+#[rustfmt::skip]
+const CASES: &[Case] = &[
+    // Found against `delete ! in settle`.
+    Case {
+        check: Check::Contract,
+        walls: &[
+            ([0.0, 9.0, 0.0, 0.0], 0.0, 3.0),
+        ],
+        slabs: &[
+            (&[1.4572902421833274, 2.2858279021256998, 2.9699811632598188, 5.6320076969989845, -0.6842410052688932, 5.268946565288666], 0.0, 3.0),
+        ],
+        hull: [0.16390537, 0.16390537, 0.05],
+        from: [0.5901069945387071, 3.1015772212633457, 0.938846596875227],
+        to: [-0.8481463725241041, 5.105041198033455, 3.050000000745058],
+    },
+    // Found against `replace || with && in crossing`.
+    Case {
+        check: Check::Oracle,
+        walls: &[
+            ([16.49845749469758, 5.75, 38.984579797148264, 28.0], 0.0, 0.2),
+            ([-2.75, 28.25, 29.417393913255108, -6.235541551003853], 0.0, 0.2),
+        ],
+        slabs: &[],
+        hull: [1.4377105, 1.0083271, 0.96123964],
+        from: [39.88836385007174, 26.46335260331952, 0.875],
+        to: [-13.56307314355928, -26.426800362343375, 1.5719653506652131],
+    },
+    // Found against `replace < with == in crossing`.
+    Case {
+        check: Check::Oracle,
+        walls: &[],
+        slabs: &[
+            (&[-1.25, 0.75, -1.0, 0.75, -1.0, 1.0, -1.25, 1.0], 0.0, 0.0),
+            (&[-1.25, -1.25, -1.0, -1.25, -1.0, -1.0, -1.25, -1.0], 0.0, 0.0),
+            (&[-1.25, 0.6508098869617007, -1.0, 0.6508098869617007, -1.0, 0.9008098869617007, -1.25, 0.9008098869617007], 0.0, 0.0),
+            (&[-1.25, 0.5, -1.0, 0.5, -1.0, 0.75, -1.25, 0.75], 0.0, 0.0),
+            (&[-0.75, 0.25, -0.5, 0.25, -0.5, 0.5, -0.75, 0.5], 0.0, 0.0),
+            (&[-1.8097760338372668, 0.826798996049579, 0.6913667967971897, 0.11612986044427798, 2.806427348524426, 1.628507109037833, 2.942721886521245, 4.225079826765639, 0.9976178437741373, 5.950575796747891, -1.5641817626367132, 5.505661359884639, -2.813589577895371, 3.2253661617344696], 0.0, 0.2),
+            (&[1.25, -1.0, 1.5, -1.0, 1.5, -0.75, 1.25, -0.75], 0.0, 0.0),
+        ],
+        hull: [0.25, 0.25, 0.875],
+        from: [6.343163391263422, -4.611787929612978, 0.0],
+        to: [-2.0597760338372666, 0.576798996049579, 0.0],
+    },
+    // Found against `replace < with <= in crossing`.
+    Case {
+        check: Check::Oracle,
+        walls: &[],
+        slabs: &[
+            (&[8.304585504016694, 3.2560200834970097, 10.048565420519685, 5.0, 8.304585504016694, 6.74397991650299, 6.560605587513704, 5.0], 0.0, 0.0),
+        ],
+        hull: [0.25, 0.25, 0.875],
+        from: [8.054585504016694, 3.0060200834970097, 0.875],
+        to: [7.8045855040166945, 3.2560200834970097, 0.8166412052730473],
+    },
+    // Found against `replace || with && in crossing`.
+    Case {
+        check: Check::Oracle,
+        walls: &[
+            ([-1.25, -0.6943364239543638, 5.750871913866252, 5.5], 0.0, 3.0),
+        ],
+        slabs: &[
+            (&[2.764367116201692, 5.720404268231386, 5.329232810564884, 8.285269962594578, 2.764367116201692, 10.85013565695777, 0.1995014218384994, 8.285269962594578], 1.0, 1.0),
+        ],
+        hull: [0.7704824, 0.7853425, 0.87611455],
+        from: [0.9040599426519782, 2.6786265518537, 1.275],
+        to: [6.006223570502053, 7.192995366650307, 1.275],
+    },
+    // Found against `replace < with <= in sweep`.
+    Case {
+        check: Check::Oracle,
+        walls: &[
+            ([0.25, -3.0, 0.08631871266407519, -2.25], 1.0, 1.4),
+        ],
+        slabs: &[],
+        hull: [0.05, 1.2130858, 0.05],
+        from: [-0.21368128808098286, -2.8165546237050867, 1.43982964214573],
+        to: [0.036318711919017144, -2.8165546237050867, 1.43982964214573],
+    },
+    // Found against `delete ! in sweep`.
+    Case {
+        check: Check::Contract,
+        walls: &[
+            ([8.0, 0.0, 8.0, 6.0], 0.0, 3.0),
+            ([8.0, 6.0, 0.0, 6.0], 0.0, 3.0),
+        ],
+        slabs: &[
+            (&[0.0, 0.0, 8.0, 0.0, 8.0, 6.0, 0.0, 6.0], -0.5, 0.0),
+            (&[0.0, 0.0, 8.0, 0.0, 8.0, 6.0, 0.0, 6.0], 3.0, 3.5),
+        ],
+        hull: [0.25, 0.25, 0.875],
+        from: [9.077929950978824, 12.353417671260626, 0.875],
+        to: [7.444551641610453, 0.31231440465383287, 6.79353806268502],
+    },
+    // Found against `replace > with == in sweep`.
+    Case {
+        check: Check::Contract,
+        walls: &[
+            ([8.0, 0.0, 8.0, 6.0], 0.0, 3.0),
+            ([8.0, 6.0, 0.0, 6.0], 0.0, 3.0),
+        ],
+        slabs: &[
+            (&[0.0, 0.0, 8.0, 0.0, 8.0, 6.0, 0.0, 6.0], -0.5, 0.0),
+            (&[0.0, 0.0, 8.0, 0.0, 8.0, 6.0, 0.0, 6.0], 3.0, 3.5),
+        ],
+        hull: [0.25, 0.25, 0.875],
+        from: [9.077929950978824, 12.353417671260626, 0.875],
+        to: [7.444551641610453, 0.31231440465383287, 6.79353806268502],
+    },
+    // Found against `replace * with + in edge_at_entry`.
+    Case {
+        check: Check::Oracle,
+        walls: &[],
+        slabs: &[
+            (&[2.9513648883589796, -0.25, -1.4756824441794891, 2.3059569691563, -1.4756824441794911, -2.8059569691562993], 0.0, 0.0),
+        ],
+        hull: [0.25, 0.25, 0.875],
+        from: [3.2013648883589796, -0.5, -0.875],
+        to: [2.9513648883589796, -0.5, -0.625],
+    },
+    // Found against `replace * with / in edge_at_entry`.
+    Case {
+        check: Check::Oracle,
+        walls: &[],
+        slabs: &[
+            (&[2.9513648883589796, -0.25, -1.4756824441794891, 2.3059569691563, -1.4756824441794911, -2.8059569691562993], 0.0, 0.0),
+        ],
+        hull: [0.25, 0.25, 0.875],
+        from: [3.2013648883589796, -0.5, -0.875],
+        to: [2.9513648883589796, -0.5, -0.625],
+    },
+    // Found against `replace * with + in edge_at_entry`.
+    Case {
+        check: Check::Oracle,
+        walls: &[],
+        slabs: &[
+            (&[2.9513648883589796, -0.25, -1.4756824441794891, 2.3059569691563, -1.4756824441794911, -2.8059569691562993], 0.0, 0.0),
+        ],
+        hull: [0.25, 0.25, 0.875],
+        from: [3.2013648883589796, -0.5, -0.875],
+        to: [2.9513648883589796, -0.5, -0.625],
+    },
+    // Found against `replace && with || in edge_at_entry`.
+    Case {
+        check: Check::Oracle,
+        walls: &[],
+        slabs: &[
+            (&[9.0, -0.25, 9.25, 0.0, 9.0, 0.25, 8.75, 0.0], 0.0, 0.0),
+        ],
+        hull: [1.4339308, 1.4739423, 1.3004942],
+        from: [-3.25, 48.80779840237807, -0.5635770717191444],
+        to: [21.060098443467737, -34.838720858737, -0.5635770717191444],
+    },
+    // Found against `replace && with || in edge_at_entry`.
+    Case {
+        check: Check::Oracle,
+        walls: &[],
+        slabs: &[
+            (&[23.238301380018598, 2.311829211608833, 20.529467437134155, 1.4165608529359566, 20.543842520191873, -1.4363464573618705, 23.261560752997084, -2.3042717832060946, 24.92682790965829, 0.012228176023174893], 0.0, 0.0),
+        ],
+        hull: [0.25, 0.25, 0.875],
+        from: [20.293842520191873, -1.6863464573618705, 0.875],
+        to: [20.293842520191873, -1.6694008139133067, 0.625],
+    },
+    // Found against `replace + with - in edge_at_entry`.
+    Case {
+        check: Check::Oracle,
+        walls: &[],
+        slabs: &[
+            (&[-3.3095987052198685, 0.2942261561973085, -0.6638175192205131, 0.32862324934004494, 0.102123407689382, 1.1961099405432905], 0.0, 0.2),
+        ],
+        hull: [0.985622, 0.05, 0.05],
+        from: [0.3218044695528328, 0.278623248594987, -0.05000000074505806],
+        to: [0.3294638788219318, 0.28729811550701945, -0.04750000074505806],
+    },
+    // Found against `replace * with / in edge_at_entry`.
+    Case {
+        check: Check::Oracle,
+        walls: &[],
+        slabs: &[
+            (&[2.0202635149234154, -0.3303109181356927, 1.874465937057782, -0.13897512945549306, -1.9148962540106778, -0.18823961320323557, 0.9674129059060844, -3.970805170232505], 0.0, 0.2),
+        ],
+        hull: [0.25, 0.25, 0.875],
+        from: [1.2174129059060845, -4.220805170232503, 1.0750000000000004],
+        to: [1.227941411996258, -4.184400227711535, 1.0732482741282932],
+    },
+    // Found against `replace < with <= in ulp_towards`.
+    Case {
+        check: Check::Oracle,
+        walls: &[],
+        slabs: &[
+            (&[2.5691079017620067, -2.012342577691571, 4.503220066809524, -0.6560223929881127, 2.5691079017620067, -0.6560223929881127], 0.0, 0.2),
+        ],
+        hull: [0.25, 0.25, 0.875],
+        from: [2.8191079017620067, -2.262342577691571, -0.8749999999999998],
+        to: [2.8191079017620067, -2.248779375844537, -0.8725],
+    },
+    // Found against `replace - with + in sliver`.
+    Case {
+        check: Check::Oracle,
+        walls: &[
+            ([-1.8170289344822261, 0.0, -1.1952894534446314, 0.0], 1.0, 1.4),
+        ],
+        slabs: &[],
+        hull: [0.05, 0.8048521, 0.05],
+        from: [-1.1452894526995734, -0.8048521280288696, 0.949999999254942],
+        to: [-1.145789452707024, -0.796803606748581, 0.9499999992513896],
+    },
+    // Found against `replace - with / in sliver`.
+    Case {
+        check: Check::Oracle,
+        walls: &[],
+        slabs: &[
+            (&[-2.3875976921386743, 2.274209679234359, -3.777550494095978, 2.274209679234359, -2.3875976921386743, 2.0742096792343587], 0.0, 0.2),
+        ],
+        hull: [0.25, 0.25, 0.875],
+        from: [-4.02755049409598, 2.5242096792343593, -0.8749999999999999],
+        to: [-4.017748000322358, 2.522232025114422, -0.875000000007321],
+    },
+    // Found against `replace * with + in sliver`.
+    Case {
+        check: Check::Oracle,
+        walls: &[],
+        slabs: &[
+            (&[-2.3875976921386743, 2.274209679234359, -3.777550494095978, 2.274209679234359, -2.3875976921386743, 2.0742096792343587], 0.0, 0.2),
+        ],
+        hull: [0.25, 0.25, 0.875],
+        from: [-4.02755049409598, 2.5242096792343593, -0.8749999999999999],
+        to: [-4.017748000322358, 2.522232025114422, -0.875000000007321],
+    },
+    // Found against `replace + with - in sliver`.
+    Case {
+        check: Check::Oracle,
+        walls: &[
+            ([-2.3478055088529626, 0.0, 0.0, -2.6552624668599796], 0.0, 0.2),
+        ],
+        slabs: &[],
+        hull: [0.25, 0.25, 0.875],
+        from: [0.25, -2.9052624668599796, 1.0749999999999997],
+        to: [0.2475, -2.9027624668599796, 1.075000000007933],
+    },
+    // Found against `replace + with - in sliver`.
+    Case {
+        check: Check::Oracle,
+        walls: &[
+            ([-2.7606675741454807, -2.0272561258926958, 0.0, -0.2727364602273008], 0.0, 3.0),
+        ],
+        slabs: &[],
+        hull: [0.25, 0.25, 0.875],
+        from: [0.25, -0.022736460227300803, 3.8749999999999996],
+        to: [0.2475, -0.025236460227300802, 3.8750000000063363],
+    },
+    // Found against `replace - with / in sliver`.
+    Case {
+        check: Check::Oracle,
+        walls: &[
+            ([-1.8170289344822261, 0.0, -1.1952894534446314, 0.0], 0.0, 0.2),
+        ],
+        slabs: &[],
+        hull: [0.25, 0.25, 0.875],
+        from: [-0.9452894534446314, -0.25, -0.8749999999999999],
+        to: [-0.9477894534446314, -0.2475, -0.8750000000035524],
+    },
+    // Found against `replace + with - in sliver`.
+    Case {
+        check: Check::Oracle,
+        walls: &[],
+        slabs: &[
+            (&[-1.7099373567837552, 1.2595736665286001, -0.26335488601339585, 1.2595736665286001, -1.7099373567837552, 1.4595736665286], 1.0, 1.4),
+        ],
+        hull: [0.13452616, 0.90007466, 0.5235743],
+        from: [-0.12882872267378098, 0.3594990057505545, 0.47642570734024053],
+        to: [-0.13017398430717714, 0.36849975235833493, 0.4764257073388097],
+    },
+    // Found against `replace - with + in sliver`.
+    Case {
+        check: Check::Oracle,
+        walls: &[
+            ([0.4695917483603684, -0.13604016264656482, 1.35889747153354, 0.17019999159428734], 1.6314696032004508, 1.6314696032004508),
+        ],
+        slabs: &[],
+        hull: [0.25, 0.25, 0.875],
+        from: [1.60889747153354, 0.42019999159428734, 0.7564696032004509],
+        to: [1.6000044143018084, 0.41713759005187884, 0.7564696031934804],
+    },
+];

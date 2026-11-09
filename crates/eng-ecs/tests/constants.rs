@@ -205,3 +205,46 @@ fn reading_a_missing_constant_panics() {
     let w = world();
     let _ = w.constant::<Gravity>();
 }
+
+/// Twins: another type's stable name and schema on a type of their own. The
+/// schema registry takes a twin (same name, same description), so only the
+/// world's own check that a stable name names one type refuses it.
+#[derive(Debug, Clone, Copy, PartialEq, Schema)]
+#[schema(name = "test.Counter", version = 1)]
+struct CounterTwin(u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Schema)]
+#[schema(name = "test.Gravity", version = 1)]
+struct GravityTwin(f32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Schema)]
+#[schema(name = "test.Pos", version = 1)]
+struct PosTwin {
+    x: f32,
+}
+
+#[test]
+#[should_panic(
+    expected = "[E-SCHEMA] stable name \"test.Counter\" is already used by another type"
+)]
+fn a_constant_cannot_take_a_resource_s_stable_name_even_with_its_schema() {
+    let mut w = world();
+    w.insert_constant(CounterTwin(1));
+}
+
+#[test]
+#[should_panic(
+    expected = "[E-SCHEMA] stable name \"test.Gravity\" is already used by another type"
+)]
+fn a_resource_cannot_take_a_constant_s_stable_name_even_with_its_schema() {
+    let mut w = World::new();
+    w.insert_constant(Gravity(1.0));
+    w.insert_resource(GravityTwin(1.0));
+}
+
+#[test]
+#[should_panic(expected = "[E-SCHEMA] stable name \"test.Pos\" is already used by another type")]
+fn a_constant_cannot_take_a_component_s_stable_name_even_with_its_schema() {
+    let mut w = world();
+    w.insert_constant(PosTwin { x: 1.0 });
+}

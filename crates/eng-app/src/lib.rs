@@ -12,9 +12,11 @@
 //! ```text
 //! <game> play [--ticks N] [--input script.toml] [--bindings bindings.toml] [--seed S]
 //!             [--hashes hashes.txt] [--record out.rec] [--report report.json]
-//!             first person: [--windowed] [--fov DEG] [--look look.toml]
+//!             [--windowed] [--fov DEG] [--look look.toml]
 //!             [--sensitivity DEG_PER_COUNT] [--pitch-limit DEG] [--invert-pitch]
 //! ```
+//!
+//! The last six flags are for first-person maps only.
 //!
 //! With no flags `play` is the game: a resizable window titled with the
 //! game's name, the keyboard (WASD and the arrows move, Esc quits) and the

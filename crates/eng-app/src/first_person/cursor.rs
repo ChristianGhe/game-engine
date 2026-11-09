@@ -28,6 +28,8 @@ pub(crate) struct Cursor {
     pub fullscreen_asked: bool,
     /// The platform took the fullscreen request.
     pub fullscreen: bool,
+    /// The grab was asked for at least once.
+    pub grab_asked: bool,
     /// The grab last granted, `None` if none ever was.
     pub granted: CursorGrab,
     /// The grab in force, as last answered.
@@ -69,6 +71,7 @@ impl Cursor {
         if !self.wants_grab {
             return;
         }
+        self.grab_asked = true;
         self.now = ctx.grab_cursor(true);
         if self.now != CursorGrab::None {
             self.granted = self.now;
@@ -120,6 +123,7 @@ mod tests {
         // winit: the grab waits for focus in App::window.
         cursor.window(&mut ctx, false);
         assert_eq!((cursor.fullscreen_asked, cursor.fullscreen), (true, true));
+        assert!(cursor.grab_asked, "asked in App::window, waiting for focus");
         assert_eq!(
             (cursor.granted, cursor.now),
             (CursorGrab::None, CursorGrab::None)
@@ -171,6 +175,7 @@ mod tests {
         cursor.focus_gained(&mut ctx);
         cursor.focus_lost(&mut ctx);
         assert_eq!(ctx.requests, [Request::Fullscreen(true)]);
+        assert!(!cursor.grab_asked);
         assert_eq!((cursor.granted, cursor.focus_lost), (CursorGrab::None, 1));
     }
 }

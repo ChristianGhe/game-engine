@@ -46,9 +46,10 @@ impl DrawPacer {
     }
 
     /// The window's refresh rate changed (another monitor), or became
-    /// known. The next frame's due time stays.
+    /// known. The next frame's due time stays. A rate under 1 Hz counts as
+    /// unknown: no display refreshes that slowly, so it is a misreport.
     pub(crate) fn set_rate(&mut self, refresh_mhz: Option<u32>, tick_rate: u32) {
-        (self.period, self.slack) = match refresh_mhz.filter(|&mhz| mhz > 0) {
+        (self.period, self.slack) = match refresh_mhz.filter(|&mhz| mhz >= 1_000) {
             Some(mhz) => {
                 let period = (1_000_000_000_000 / u64::from(mhz)).max(1);
                 (period, period / 16)
@@ -175,5 +176,15 @@ mod tests {
         assert_eq!(pacer.wake(), Some(at(TICK - 520_833)));
         pacer.set_rate(Some(0), 60);
         assert_eq!(pacer.period(), TICK, "0 Hz is no rate");
+    }
+
+    #[test]
+    fn a_rate_under_1_hz_is_unknown() {
+        for mhz in [1, 500, 999] {
+            let pacer = DrawPacer::new(Some(mhz), 60);
+            assert_eq!(pacer.period(), TICK, "{mhz} mHz");
+        }
+        // 1 Hz itself is a rate: a second a frame, with a sixteenth of slack.
+        assert_eq!(DrawPacer::new(Some(1_000), 60).period(), 1_000_000_000);
     }
 }

@@ -140,10 +140,11 @@ impl<'a> FirstPersonFrames<'a> {
         !run.is_done()
     }
 
-    /// Reads the window's refresh rate again, and paces frames by it.
+    /// Reads the window's refresh rate again, and paces frames by it. One
+    /// under 1 Hz is a misreport and counts as unknown, in the report too.
     fn read_refresh_rate(&mut self) {
         if let Some(screen) = &self.screen {
-            self.refresh_mhz = screen.window().refresh_rate();
+            self.refresh_mhz = screen.window().refresh_rate().filter(|&mhz| mhz >= 1_000);
             self.pacer.set_rate(self.refresh_mhz, self.tick_rate);
         }
     }
@@ -153,6 +154,7 @@ impl<'a> FirstPersonFrames<'a> {
         PlayWindow {
             fullscreen_asked: self.cursor.fullscreen_asked,
             fullscreen: self.cursor.fullscreen,
+            grab_asked: self.cursor.grab_asked,
             grab: self.cursor.granted,
             grab_at_end: self.cursor.now,
             focus_lost: self.cursor.focus_lost,

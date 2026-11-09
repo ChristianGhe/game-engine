@@ -20,8 +20,10 @@
 //!   submit (Fifo). Nothing is acquired while the window is minimised or
 //!   occluded (a locked Mac screen counts as occluded); ticks go on.
 //! - **A lost surface** is made again from the kept window and the frame
-//!   skipped (rung 1b's T11 left it a panic); any other failure once open
-//!   is a bug and panics, so the panic hook writes `crash.json`.
+//!   skipped (rung 1b's T11 left it a panic); one still lost after three
+//!   remakes in a row with no frame panics (`[E-GPU] the window's surface
+//!   stays lost`), as does any other failure once open, so the panic hook
+//!   writes `crash.json`.
 
 use std::sync::Arc;
 

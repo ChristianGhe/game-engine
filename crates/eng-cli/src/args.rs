@@ -18,12 +18,14 @@ pub(crate) const USAGE: &str = "\
              [--input script.toml] [--budgets budgets.toml] [--report report.json]
 <game> play [--ticks N] [--input script.toml] [--bindings bindings.toml] [--seed S]
             [--hashes hashes.txt] [--record out.rec] [--report report.json]
-            first person: [--windowed] [--fov DEG] [--look look.toml]
+            [--windowed] [--fov DEG] [--look look.toml]
             [--sensitivity DEG_PER_COUNT] [--pitch-limit DEG] [--invert-pitch]
 <game> --version [--json]
 <game> help
 
 run, dump-world, shot, video and play take [--map NAME]: the game's first map by default.
+play's --windowed, --fov, --look, --sensitivity, --pitch-limit and --invert-pitch are for
+first-person maps only.
 exit codes: 0 ok, 10 assertion failed, 11 desync, 12 panic, 13 budget exceeded, 64 usage";
 
 /// Keeps per-tick timings and recordings within memory.

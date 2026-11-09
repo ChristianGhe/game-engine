@@ -11,7 +11,8 @@
 //! A surface the system loses (wgpu's `Lost`) is an `[E-GPU]` error from
 //! [`WindowSurface::acquire`], as in rung 1b. A caller that keeps the
 //! window asks with [`WindowSurface::acquire_remaking`] instead, which
-//! makes the surface again from it and skips the frame (rung 2, T15).
+//! makes the surface again from it and skips the frame (rung 2, T15); one
+//! still lost after three remakes in a row with no frame is an error.
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
@@ -44,6 +45,36 @@ pub struct WindowSurface {
     /// `None` only between a lost surface going and its remaking.
     surface: Option<wgpu::Surface<'static>>,
     config: wgpu::SurfaceConfiguration,
+    remakes: Remakes,
+}
+
+/// Remakes of a lost surface in a row, with no frame between them
+/// ([`WindowSurface::acquire_remaking`]): a surface that stays lost is an
+/// error, not a frame skipped forever.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Remakes(u32);
+
+impl Remakes {
+    /// Remakes allowed in a row before a loss is an error.
+    const MOST: u32 = 3;
+
+    /// The surface was lost again: one more remake, or the `[E-GPU]` error
+    /// once [`Remakes::MOST`] have brought no frame back.
+    fn lost(&mut self) -> Result<(), GpuError> {
+        if self.0 >= Self::MOST {
+            return Err(GpuError::Surface(format!(
+                "the window's surface stays lost: made again {} times in a row with no frame",
+                Self::MOST
+            )));
+        }
+        self.0 += 1;
+        Ok(())
+    }
+
+    /// A frame came: the count starts again.
+    fn frame(&mut self) {
+        self.0 = 0;
+    }
 }
 
 /// What acquiring an image found.
@@ -119,6 +150,7 @@ impl WindowSurface {
         };
         let mut surface = Self {
             surface: Some(surface),
+            remakes: Remakes::default(),
             config: wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 format,
@@ -189,8 +221,9 @@ impl WindowSurface {
     /// Like [`WindowSurface::acquire`], but a surface the system lost is
     /// made again from `window`, the window it was made from (the
     /// platform's `Arc<dyn Window>`), set up as before, and the frame is
-    /// skipped (`Ok(None)`). One that cannot be made again is an `[E-GPU]`
-    /// error.
+    /// skipped (`Ok(None)`). One that cannot be made again, or stays lost
+    /// through three remakes in a row with no frame between them, is an
+    /// `[E-GPU]` error.
     pub fn acquire_remaking<W>(
         &mut self,
         gpu: &Gpu,
@@ -200,9 +233,13 @@ impl WindowSurface {
         W: HasWindowHandle + HasDisplayHandle + Send + Sync + 'static,
     {
         match self.next(gpu)? {
-            Acquired::Frame(frame) => Ok(Some(frame)),
+            Acquired::Frame(frame) => {
+                self.remakes.frame();
+                Ok(Some(frame))
+            }
             Acquired::Skip => Ok(None),
             Acquired::Lost => {
+                self.remakes.lost()?;
                 // The lost surface and its images go first: a window may
                 // have only one swapchain.
                 self.surface = None;
@@ -267,7 +304,27 @@ fn side(pixels: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{SRGB, UNORM, formats};
+    use super::{Remakes, SRGB, UNORM, formats};
+
+    #[test]
+    fn a_surface_lost_through_three_remakes_in_a_row_is_an_error() {
+        let mut remakes = Remakes::default();
+        for _ in 0..Remakes::MOST {
+            assert_eq!(remakes.lost(), Ok(()));
+        }
+        let err = remakes.lost().unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "[E-GPU] the window's surface stays lost: made again 3 times in a row with no frame"
+        );
+        // A frame between losses starts the count again.
+        let mut remakes = Remakes::default();
+        for _ in 0..10 {
+            assert_eq!(remakes.lost(), Ok(()));
+            assert_eq!(remakes.lost(), Ok(()));
+            remakes.frame();
+        }
+    }
 
     #[test]
     fn the_srgb_format_is_taken_first_then_an_srgb_view() {

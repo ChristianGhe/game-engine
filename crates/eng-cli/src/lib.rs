@@ -14,7 +14,7 @@
 //!              [--input script.toml] [--budgets budgets.toml] [--report report.json]
 //! <game> play [--ticks N] [--input script.toml] [--bindings bindings.toml] [--seed S]
 //!             [--hashes hashes.txt] [--record out.rec] [--report report.json]
-//!             first person: [--windowed] [--fov DEG] [--look look.toml]
+//!             [--windowed] [--fov DEG] [--look look.toml]
 //!             [--sensitivity DEG_PER_COUNT] [--pitch-limit DEG] [--invert-pitch]
 //! <game> --version [--json]
 //! ```
@@ -64,8 +64,10 @@
 //! `play --input` gives `run`'s hash stream tick for tick. Its report adds
 //! the platform, the ticks the frame loop dropped and the window's `gpu`
 //! object. On a first-person map (rung 2, T15) `play` takes the
-//! first-person flags, checked before the window opens and refused on any
-//! other map ([`FirstPersonPlay`]), and its report adds a `window` object:
+//! first-person flags (`--windowed`, `--fov`, `--look`, `--sensitivity`,
+//! `--pitch-limit`, `--invert-pitch`: first-person maps only), checked
+//! before the window opens and refused on any other map
+//! ([`FirstPersonPlay`]), and its report adds a `window` object:
 //! fullscreen, the cursor grab, the refresh rate and, on macOS, the
 //! GCMouse shim's callback rate ([`PlayWindow`]).
 //!

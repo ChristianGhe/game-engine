@@ -188,6 +188,7 @@ fn a_scripted_twin_gives_run_headless_stream() {
     assert_eq!(window["view"], "first-person");
     assert_eq!(window["grab"], "none");
     assert_eq!(window["fullscreen_asked"], false);
+    assert_eq!(window["grab_asked"], false);
     assert_eq!(window["refresh_rate_mhz"], Value::Null);
     assert_eq!(window["frame_period_ns"], TICK);
     assert_eq!(window["frame"], Value::Null);
@@ -234,6 +235,7 @@ fn mouse_motion_turns_the_live_view_and_reaches_the_sim_in_commands() {
     );
     let window = &report(&dir)["window"];
     assert_eq!(window["focus_lost"], 1);
+    assert_eq!(window["grab_asked"], true);
     assert_eq!(window["grab"], "none");
 }
 
@@ -395,7 +397,8 @@ fn the_windowed_room_gives_run_headless_stream() {
     let window = &report["window"];
     assert_eq!(window["view"], "first-person");
     assert_eq!(window["fullscreen_asked"], false, "{window:#}");
-    assert_eq!(window["grab"], "none", "a scripted run never grabs");
+    assert_eq!(window["grab_asked"], false, "a scripted run never grabs");
+    assert_eq!(window["grab"], "none");
     let period = window["frame_period_ns"].as_u64().unwrap();
     match window["refresh_rate_mhz"].as_u64() {
         Some(mhz) => assert_eq!(period, 1_000_000_000_000 / mhz, "{window:#}"),

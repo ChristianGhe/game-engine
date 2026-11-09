@@ -52,6 +52,11 @@ pub struct PlayWindow {
     /// The platform took the request (`Control::set_fullscreen`'s answer);
     /// the change itself may land later.
     pub fullscreen: bool,
+    /// The cursor grab was asked for, at least once: a live run whose
+    /// window opened or gained focus. A scripted run never asks. With
+    /// [`PlayWindow::grab`] it tells apart a grab never asked for, one
+    /// asked for and refused, and one waiting for a focus that never came.
+    pub grab_asked: bool,
     /// The grab the platform last granted (`Control::grab_cursor`'s
     /// answer), `None` if it never granted one.
     pub grab: CursorGrab,
@@ -171,6 +176,7 @@ impl PlayWindow {
             ("view", JsonValue::str("first-person")),
             ("fullscreen_asked", JsonValue::Bool(self.fullscreen_asked)),
             ("fullscreen", JsonValue::Bool(self.fullscreen)),
+            ("grab_asked", JsonValue::Bool(self.grab_asked)),
             ("grab", JsonValue::str(self.grab.name())),
             ("grab_at_end", JsonValue::str(self.grab_at_end.name())),
             ("focus_lost", JsonValue::U64(self.focus_lost)),
@@ -196,9 +202,13 @@ impl PlayWindow {
             Some(mhz) => format!("{}.{:03} Hz", mhz / 1000, mhz % 1000),
             None => "refresh rate unknown".to_string(),
         };
+        let grab = if self.grab_asked {
+            self.grab.name()
+        } else {
+            "not asked"
+        };
         let mut line = format!(
-            "window: {mode}, grab {}, {rate}, focus lost {}",
-            self.grab.name(),
+            "window: {mode}, grab {grab}, {rate}, focus lost {}",
             self.focus_lost
         );
         if let Some(m) = self.gcmouse {
@@ -347,6 +357,7 @@ mod tests {
         let window = PlayWindow {
             fullscreen_asked: true,
             fullscreen: true,
+            grab_asked: true,
             grab: CursorGrab::Locked,
             grab_at_end: CursorGrab::None,
             focus_lost: 2,
@@ -365,6 +376,7 @@ mod tests {
         };
         let json = window.to_json().to_pretty();
         for key in [
+            "\"grab_asked\": true",
             "\"grab\": \"locked\"",
             "\"grab_at_end\": \"none\"",
             "\"fullscreen\": true",
@@ -383,6 +395,7 @@ mod tests {
         let plain = PlayWindow {
             fullscreen_asked: false,
             fullscreen: false,
+            grab_asked: false,
             grab: CursorGrab::None,
             grab_at_end: CursorGrab::None,
             focus_lost: 0,
@@ -393,8 +406,18 @@ mod tests {
         };
         let json = plain.to_json().to_pretty();
         assert!(json.contains("\"frame\": null") && json.contains("\"gcmouse\": null"));
+        assert!(json.contains("\"grab_asked\": false"), "{json}");
         assert_eq!(
             plain.console_line(),
+            "window: windowed, grab not asked, refresh rate unknown, focus lost 0"
+        );
+        // Asked for and never granted: refused, or no focus came.
+        let waiting = PlayWindow {
+            grab_asked: true,
+            ..plain
+        };
+        assert_eq!(
+            waiting.console_line(),
             "window: windowed, grab none, refresh rate unknown, focus lost 0"
         );
     }

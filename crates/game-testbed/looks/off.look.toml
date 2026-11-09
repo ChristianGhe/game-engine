@@ -1,0 +1,11 @@
+# Every look feature off (eng-render's `Look::OFF`): the plain pipeline's
+# image, as `shot --look` takes it. The `room-look-off` shot (shots.toml).
+version = 1
+falloff = false
+banding = false
+contrast = false
+sky_gradient = false
+fog = false
+palette = false
+dither = false
+low_resolution = 1

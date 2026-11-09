@@ -18,10 +18,13 @@ workspace = true
 
 [dev-dependencies]
 eng-core.workspace = true
+eng-gpu.workspace = true
 eng-input.workspace = true
+eng-math.workspace = true
 eng-platform-api.workspace = true
 eng-platform-headless.workspace = true
 eng-platform-winit.workspace = true
+eng-render.workspace = true
 eng-schema-json.workspace = true
 eng-sim.workspace = true
 kit-fps.workspace = true

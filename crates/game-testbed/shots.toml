@@ -1,0 +1,119 @@
+# The testbed's golden shots (rung 2 plan, decision 12; rung 1b's T12 for
+# the four top-down ones). PROTECTED from gate G5: the owner changes it, in
+# the commit that changes the goldens.
+#
+# `tests/shots.rs` renders each shot with the testbed's own `shot`, at
+# 320x240 and `--seed 1`, and compares it with `golden/<name>.png`
+# (exactly on the pinned lavapipe, with FLIP against `golden/thresholds.toml`
+# elsewhere). The goldens are all or nothing: once one exists, every shot
+# needs its own, and a golden no shot names fails.
+#
+# A shot:
+# - `name`: its golden's name, lowercase letters, digits and `-`;
+# - `map`: `--map`, the game's first map (`dots`) without it;
+# - `tick`: `--at-tick`, the state the shot shows (alpha 1);
+# - `players`: `--players`, 1 without it;
+# - `input`: `--input`, an input script, from this file's directory;
+# - `pose`: `--pose`, a pose `[pose]` names (plan addition A3): a
+#   first-person camera independent of movement;
+# - `look`: `--look`, a look file, from this file's directory;
+# - `golden = "pending"`: the owner's marker (the plan's "Where rung 1b
+#   stands"). A marked shot has no golden yet, with `ENG_GOLDEN_DIR` too: it
+#   saves its candidate and fails nothing. The owner clears the marker in
+#   the commit that adds its golden.
+#
+# `[pose]` names each pose `X,Y,Z,YAW,PITCH`, as `--pose` takes it: the eye
+# in meters, absolute, then yaw and pitch in degrees (yaw 0 looks along +X,
+# 90 along +Y; positive pitch looks up). Every pose is some shot's. The
+# room's layout: game-testbed-sim, src/room/layout.rs.
+version = 1
+
+# Rung 1b's four, top down (T9's suggestion, its open question 1): the dot
+# square at three ticks, and ten dots at tick 0, one in each slot colour.
+[[shot]]
+name = "dot-square-0"
+tick = 0
+input = "scenarios/dot-square.input.toml"
+
+[[shot]]
+name = "dot-square-120"
+tick = 120
+input = "scenarios/dot-square.input.toml"
+
+[[shot]]
+name = "dot-square-240"
+tick = 240
+input = "scenarios/dot-square.input.toml"
+
+[[shot]]
+name = "ten-dots-0"
+tick = 0
+players = 10
+
+# Rung 2's, in first person (T16): player 0's camera at the tick, or a pose.
+
+# Spawn 0 at tick 0, looking east: the marker in front of the pillar showing
+# its front (rotation 0), the crate hidden behind the pillar, the barrel on
+# the platform, the alcove's green fog.
+[[shot]]
+name = "room-spawn"
+map = "room"
+tick = 0
+golden = "pending"
+
+# The same view at second 2: the marker shows rotation 6, (8 - s) % 8.
+[[shot]]
+name = "room-sprites"
+map = "room"
+tick = 120
+golden = "pending"
+
+# The room walk on the step (it climbs at tick 156, the platform at 168),
+# looking north across the platform at the barrel.
+[[shot]]
+name = "room-step"
+map = "room"
+tick = 160
+input = "scenarios/room-walk.input.toml"
+golden = "pending"
+
+# Under the skylight, pitched up 60 degrees: the sky through its shaft.
+[[shot]]
+name = "room-sky"
+map = "room"
+tick = 460
+input = "scenarios/room-walk.input.toml"
+golden = "pending"
+
+# The walk's end: from under the skylight toward the alcove, past the
+# pillar and the crate.
+[[shot]]
+name = "room-alcove"
+map = "room"
+tick = 600
+input = "scenarios/room-walk.input.toml"
+golden = "pending"
+
+# The ledge (0.6 m, more than a step) against the south wall, seen from
+# the hall: room-ledge's script ends facing the wall, so a pose.
+[[shot]]
+name = "room-ledge"
+map = "room"
+tick = 0
+pose = "ledge"
+golden = "pending"
+
+# Every look switch off (`Look::OFF`, the plain pipeline's image) from a
+# pose that shows the sky, the alcove's fog, the things and walls of both
+# facings.
+[[shot]]
+name = "room-look-off"
+map = "room"
+tick = 0
+pose = "overview"
+look = "looks/off.look.toml"
+golden = "pending"
+
+[pose]
+ledge = "9,3.5,1.6,-90,-15"
+overview = "0.5,8.5,1.6,-30,15"

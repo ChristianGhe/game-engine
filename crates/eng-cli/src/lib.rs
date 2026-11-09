@@ -10,8 +10,10 @@
 //! <game> dump-world --at-tick N --out world.json [--seed S] [--players P] [--input script.toml]
 //! <game> shot --at-tick N --out shot.png [--size 320x240] [--seed S] [--players P]
 //!             [--input script.toml] [--budgets budgets.toml] [--report report.json]
+//!             [--view top-down|first-person] [--pose X,Y,Z,YAW,PITCH] [--look look.toml]
 //! <game> video --ticks N --out proof.apng [--every K] [--size 320x240] [--seed S] [--players P]
 //!              [--input script.toml] [--budgets budgets.toml] [--report report.json]
+//!              [--view top-down|first-person] [--pose X,Y,Z,YAW,PITCH] [--look look.toml]
 //! <game> play [--ticks N] [--input script.toml] [--bindings bindings.toml] [--seed S]
 //!             [--hashes hashes.txt] [--record out.rec] [--report report.json]
 //!             [--windowed] [--fov DEG] [--look look.toml]
@@ -51,7 +53,12 @@
 //! and nothing else: the same pixels give the same bytes. Their reports
 //! carry a `gpu` object (the adapter, its capabilities and the per-frame
 //! counters), and the budgets file's `[gpu]` table, when it has one, holds
-//! every frame (exit 13, `[E-BUDGET]`). Without an adapter they exit 64
+//! every frame (exit 13, `[E-BUDGET]`), or its `[gpu.first_person]` table
+//! each first-person frame. `--view` names the view the map must have
+//! (refused before a GPU opens if it lacks it), and for a first-person view
+//! `--pose` sets a camera independent of movement ([`Pose`], plan addition
+//! A3) and `--look` a look file; the report's `view` names the view, the
+//! pose, the look and the last frame's camera. Without an adapter they exit 64
 //! with `[E-NO-ADAPTER]`, writing nothing (plan decision 4); a frame that
 //! fails once the GPU is open is a bug and panics (exit 12). Golden tests
 //! compare a shot's decoded pixels, not its file's bytes, and read the
@@ -96,6 +103,7 @@ mod replay;
 mod report;
 mod run;
 mod session;
+mod shot_view;
 mod ticker;
 mod version;
 mod view;
@@ -111,6 +119,7 @@ pub use maps::{BuildFn, DEFAULT_MAP, GameMap, GameMaps};
 pub use play::{
     FirstPersonPlay, FrameLens, MouseRate, PlayGpu, PlayRun, PlayStats, PlayWindow, Step,
 };
+pub use shot_view::{Pose, degrees_to_bangle};
 pub use version::{ENGINE_SHA, ENGINE_VERSION, PROFILE, RUSTC_VERSION, TARGET, UNKNOWN};
 pub use view::{FirstPersonFrame, FirstPersonView, FirstPersonWorld, MapView, WorldTexture};
 

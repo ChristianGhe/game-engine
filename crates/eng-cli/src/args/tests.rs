@@ -293,3 +293,63 @@ fn every_command_that_runs_a_sim_takes_a_map() {
         assert!(parse(&args(bad)).is_err(), "{bad:?} should be refused");
     }
 }
+
+#[test]
+fn shot_and_video_take_a_view_a_pose_and_a_look() {
+    for line in [
+        "shot --at-tick 5 --out s.png",
+        "video --ticks 5 --out v.apng",
+    ] {
+        let flags = "--view first-person --pose 9,3.5,1.6,-90,-15 --look off.toml";
+        let Command::Run(with) = parse(&args(&format!("{line} {flags}"))).unwrap() else {
+            panic!("{line}: expected a run");
+        };
+        assert_eq!(with.view, Some("first-person"), "{line}");
+        assert_eq!(with.pose, Some(Pose::parse("9,3.5,1.6,-90,-15").unwrap()));
+        assert_eq!(with.look, Some(PathBuf::from("off.toml")));
+        let Command::Run(without) = parse(&args(line)).unwrap() else {
+            panic!("{line}: expected a run");
+        };
+        assert_eq!(
+            (without.view, without.pose, without.look),
+            (None, None, None)
+        );
+        let Command::Run(top) = parse(&args(&format!("{line} --view top-down"))).unwrap() else {
+            panic!("{line}: expected a run");
+        };
+        assert_eq!(top.view, Some("top-down"));
+        for bad in [
+            "--view",
+            "--view sideways",
+            "--pose",
+            "--pose 1,2,3",
+            "--pose 1,2,3,0,95",
+            "--look",
+        ] {
+            let bad = format!("{line} {bad}");
+            assert!(parse(&args(&bad)).is_err(), "{bad:?} should be refused");
+        }
+    }
+    // Only the commands that render take a view or a pose; `play` takes
+    // `--look` as its own first-person flag, the same file format.
+    for line in [
+        "run --headless --ticks 5",
+        "dump-world --at-tick 5 --out w.json",
+        "play --ticks 5",
+    ] {
+        let play = line.starts_with("play");
+        for flag in ["--view first-person", "--pose 0,0,1,0,0", "--look l.toml"] {
+            let line = format!("{line} {flag}");
+            if play && flag.starts_with("--look") {
+                let Command::Run(run) = parse(&args(&line)).unwrap() else {
+                    panic!("{line}: expected a run");
+                };
+                let look = run.play.unwrap().first_person.look;
+                assert_eq!((run.look, look), (None, Some(PathBuf::from("l.toml"))));
+                continue;
+            }
+            let err = parse(&args(&line)).unwrap_err();
+            assert!(err.starts_with("unknown flag"), "{line}: {err}");
+        }
+    }
+}

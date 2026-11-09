@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 pub(crate) use first_person::FirstPersonFlags;
 
+use crate::shot_view::{Pose, parse_view};
+
 mod first_person;
 
 pub(crate) const USAGE: &str = "\
@@ -14,8 +16,10 @@ pub(crate) const USAGE: &str = "\
 <game> dump-world --at-tick N --out world.json [--seed S] [--players P] [--input script.toml]
 <game> shot --at-tick N --out shot.png [--size 320x240] [--seed S] [--players P]
             [--input script.toml] [--budgets budgets.toml] [--report report.json]
+            [--view top-down|first-person] [--pose X,Y,Z,YAW,PITCH] [--look look.toml]
 <game> video --ticks N --out proof.apng [--every K] [--size 320x240] [--seed S] [--players P]
              [--input script.toml] [--budgets budgets.toml] [--report report.json]
+             [--view top-down|first-person] [--pose X,Y,Z,YAW,PITCH] [--look look.toml]
 <game> play [--ticks N] [--input script.toml] [--bindings bindings.toml] [--seed S]
             [--hashes hashes.txt] [--record out.rec] [--report report.json]
             [--windowed] [--fov DEG] [--look look.toml]
@@ -24,8 +28,9 @@ pub(crate) const USAGE: &str = "\
 <game> help
 
 run, dump-world, shot, video and play take [--map NAME]: the game's first map by default.
-play's --windowed, --fov, --look, --sensitivity, --pitch-limit and --invert-pitch are for
-first-person maps only.
+--look, play's --windowed, --fov, --sensitivity, --pitch-limit and --invert-pitch, and
+shot's and video's --pose (meters, degrees) are for first-person maps only; --view names
+the map's own view.
 exit codes: 0 ok, 10 assertion failed, 11 desync, 12 panic, 13 budget exceeded, 64 usage";
 
 /// Keeps per-tick timings and recordings within memory.
@@ -90,6 +95,15 @@ pub(crate) struct RunArgs {
     pub capture: Option<CaptureArgs>,
     /// `play`: a window, live input and Esc to quit (eng-app).
     pub play: Option<PlayFlags>,
+    /// `shot` and `video`: `--view`, the view the map must have, as
+    /// `MapView::name` writes it.
+    pub view: Option<&'static str>,
+    /// `shot` and `video`: `--pose`, a first-person camera independent of
+    /// movement (plan addition A3).
+    pub pose: Option<Pose>,
+    /// `shot` and `video`: `--look`, the look file (the format `play`'s
+    /// `--look` reads, `look_file.rs`).
+    pub look: Option<PathBuf>,
 }
 
 impl RunArgs {
@@ -237,6 +251,9 @@ fn parse_run(flags: &mut Flags<'_>, mode: Mode) -> Result<RunArgs, String> {
             "--invert-pitch" if play => fp.invert_pitch = true,
             "--size" if renders => size = parse_size(flags.value(flag)?)?,
             "--every" if mode == Mode::Video => every = flags.number(flag)?,
+            "--view" if renders => a.view = Some(parse_view(flags.value(flag)?)?),
+            "--pose" if renders => a.pose = Some(Pose::parse(flags.value(flag)?)?),
+            "--look" if renders => a.look = Some(flags.path(flag)?),
             other => return Err(format!("unknown flag {other:?}")),
         }
     }

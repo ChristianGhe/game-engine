@@ -33,12 +33,13 @@ pub(crate) fn stream_digest(hashes: &[TickHash]) -> u64 {
 
 /// The format version of each file a run read, keyed as `--version
 /// --json`'s `formats` names them, plus `bindings` (`play --bindings`) and
-/// `look` (`play --look`).
+/// `look` (`--look`: `play`'s, or `shot`'s and `video`'s; one format).
 /// Each reader accepts only its own version (no file format has a
 /// migration yet), so a file that loaded was read at that version.
 pub(crate) fn files_read(a: &RunArgs) -> JsonValue {
     let bindings = a.play.as_ref().and_then(|p| p.bindings.as_ref());
-    let look = a.play.as_ref().and_then(|p| p.first_person.look.as_ref());
+    let play_look = a.play.as_ref().and_then(|p| p.first_person.look.as_ref());
+    let look = a.look.as_ref().or(play_look);
     let files = [
         (a.input.is_some(), "input_script", InputScript::VERSION),
         (a.assert.is_some(), "assertions", AssertionFile::VERSION),
@@ -140,6 +141,15 @@ impl RunSummary<'_> {
                 .gpu_limits()
                 .map(|(name, max)| (name, limit(max))),
         );
+        // `[gpu.first_person]`, which holds first-person frames; `null`
+        // without the table.
+        let first_person = self
+            .budgets
+            .first_person_limits()
+            .map_or(JsonValue::Null, |l| {
+                JsonValue::object(l.map(|(name, max)| (name, limit(max))))
+            });
+        budgets.push(("first_person", first_person));
         budgets.push((
             "exceeded",
             self.budgets

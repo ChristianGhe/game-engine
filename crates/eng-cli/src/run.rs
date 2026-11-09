@@ -23,7 +23,9 @@ use crate::capture::Capture;
 use crate::maps::{BuildFn, MapChoice};
 use crate::session::{Session, TickStop, command_for};
 use crate::ticker::{Flow, Ticker};
-use crate::{ENGINE_SHA, Exit, GameDef, RUSTC_VERSION, exit, log, report, version};
+use crate::{
+    ENGINE_SHA, Exit, GameDef, LookSwitches, RUSTC_VERSION, exit, log, report, shot_view, version,
+};
 
 pub(crate) fn read_text(path: &Path) -> Result<String, String> {
     fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))
@@ -71,6 +73,9 @@ pub(crate) struct Inputs {
     pub script: Option<InputScript>,
     pub trackers: Vec<Tracker>,
     pub budgets: BudgetTracker,
+    /// `shot`'s and `video`'s `--look` switches, if given (`play` reads its
+    /// own `--look` with the same loader, `play/first_person.rs`).
+    pub look: Option<LookSwitches>,
 }
 
 pub(crate) fn load_inputs(a: &RunArgs) -> Result<Inputs, String> {
@@ -91,10 +96,18 @@ pub(crate) fn load_inputs(a: &RunArgs) -> Result<Inputs, String> {
             .map_err(|e| e.to_string())?,
         None => BudgetTracker::unlimited(),
     };
+    let look = match &a.look {
+        Some(path) => Some(
+            LookSwitches::parse(&read_text(path)?, &path.display().to_string())
+                .map_err(|e| e.to_string())?,
+        ),
+        None => None,
+    };
     Ok(Inputs {
         script,
         trackers,
         budgets,
+        look,
     })
 }
 
@@ -138,8 +151,13 @@ fn write_events(out: &mut impl Write, sim: &Sim) -> Result<u64, String> {
 }
 
 pub(crate) fn run(game: &GameDef, map: MapChoice, a: &RunArgs) -> Exit {
-    // Before anything runs or opens: a map without a view draws nothing.
-    if let Some(message) = a.capture.as_ref().and_then(|_| map.no_view(game)) {
+    // Before anything runs or opens: a map without a view draws nothing,
+    // and `--view`, `--pose` and `--look` must fit the view it has.
+    let refused = a.capture.as_ref().and_then(|_| {
+        map.no_view(game)
+            .or_else(|| shot_view::refusal(game, map, a))
+    });
+    if let Some(message) = refused {
         return fail(Exit::Usage, &message);
     }
     let mut inputs = match load_inputs(a) {
@@ -162,7 +180,9 @@ pub(crate) fn run(game: &GameDef, map: MapChoice, a: &RunArgs) -> Exit {
     // before the first tick, so a missing adapter costs no run. A
     // first-person world is built from the sim at tick 0.
     let mut capture = match &a.capture {
-        Some(args) => match Capture::open(game, map.view(), session.sim(), args, a.ticks) {
+        Some(args) => match Capture::open(game, map.view(), session.sim(), args, a.ticks)
+            .map(|capture| capture.framed(a.pose, inputs.look))
+        {
             Ok(capture) => Some(capture),
             Err(message) => return fail(Exit::Usage, &message),
         },
@@ -187,7 +207,10 @@ pub(crate) fn run(game: &GameDef, map: MapChoice, a: &RunArgs) -> Exit {
     );
     if let Some(capture) = capture.as_mut().filter(|c| c.wants(0)) {
         let counters = capture.frame(session.sim());
-        within_budget = inputs.budgets.observe_frame(0, &counters) && within_budget;
+        within_budget = inputs
+            .budgets
+            .observe_view_frame(0, &counters, capture.first_person())
+            && within_budget;
     }
 
     // One tick per frame of the headless platform.
@@ -234,7 +257,10 @@ pub(crate) fn run(game: &GameDef, map: MapChoice, a: &RunArgs) -> Exit {
         let frame_ok = match capture.as_mut().filter(|c| c.wants(tick.0)) {
             Some(capture) => {
                 let counters = capture.frame(sim);
-                inputs.budgets.observe_frame(tick.0, &counters)
+                let first_person = capture.first_person();
+                inputs
+                    .budgets
+                    .observe_view_frame(tick.0, &counters, first_person)
             }
             None => true,
         };
@@ -263,6 +289,7 @@ pub(crate) fn run(game: &GameDef, map: MapChoice, a: &RunArgs) -> Exit {
 
     let stopped = inputs.budgets.exceeded.is_some();
     let frames = capture.as_ref().map(Capture::summary);
+    let view = capture.as_ref().map(Capture::view_json);
     let outputs = flush_events(events_out)
         .and_then(|()| write_outputs(game, map, a, sim, &hashes, recorded, stopped))
         .and_then(|()| write_frames(a, sim, capture));
@@ -285,8 +312,12 @@ pub(crate) fn run(game: &GameDef, map: MapChoice, a: &RunArgs) -> Exit {
         window: None,
         exit,
     };
+    let mut json = summary.to_json();
+    if let Some(view) = view {
+        json.insert("view", view);
+    }
     if let Some(path) = &a.report
-        && let Err(message) = write_file(path, summary.to_json().to_pretty().as_bytes())
+        && let Err(message) = write_file(path, json.to_pretty().as_bytes())
     {
         return exit::usage(game.name, &message);
     }

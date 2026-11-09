@@ -14,15 +14,25 @@
 //!   `crash.json` with the tick and seed (exit 12).
 //! - Frames are kept in memory and written once the run reaches its last
 //!   tick, so a run that stops early leaves no partial file.
+//! - `--pose` and `--look` (`shot_view`) replace the first-person scene's
+//!   camera eye and angles and its look on every frame, after the game's
+//!   scene picks them; the report's `view` names them and the last frame's
+//!   camera.
 
 use std::path::PathBuf;
 
 use eng_gpu::{FrameCounters, Gpu, GpuOptions, GpuReport, Targets};
-use eng_render::{FirstPersonRenderer, FirstPersonScene, GpuWorld, Renderer, TopDownScene};
+use eng_render::{
+    FirstPersonCamera, FirstPersonRenderer, FirstPersonScene, GpuWorld, Look, Renderer,
+    TopDownScene,
+};
+use eng_schema_json::JsonValue;
 use eng_sim::Sim;
 
+use crate::LookSwitches;
 use crate::args::{CaptureArgs, Frames};
 use crate::image_file::{Apng, encode_png, frame_delay};
+use crate::shot_view::{self, Pose};
 use crate::view::{FirstPersonFrame, MapView};
 use crate::{GameDef, TopDownFrame};
 
@@ -73,6 +83,14 @@ pub(crate) struct Capture {
     targets: Targets,
     sink: Sink,
     frames: u64,
+    /// The view drawn, as [`MapView::name`] writes it.
+    view_name: &'static str,
+    /// `--pose`: first person only (`shot_view::refusal`).
+    pose: Option<Pose>,
+    /// `--look`'s switches: first person only.
+    look: Option<LookSwitches>,
+    /// The camera and look of the last first-person frame.
+    camera: Option<(FirstPersonCamera, Look)>,
 }
 
 impl Capture {
@@ -87,6 +105,7 @@ impl Capture {
         args: &CaptureArgs,
         ticks: u64,
     ) -> Result<Self, String> {
+        let view_name = view.name();
         let chosen = match view {
             MapView::TopDown => Chosen::TopDown(game.top_down.ok_or_else(|| {
                 format!(
@@ -141,7 +160,34 @@ impl Capture {
             targets,
             sink,
             frames: 0,
+            view_name,
+            pose: None,
+            look: None,
+            camera: None,
         })
+    }
+
+    /// The capture with `--pose` and `--look`, which replace the camera's
+    /// eye and angles and the look of every first-person frame. A top-down
+    /// view has neither: `run` refuses them first.
+    pub fn framed(mut self, pose: Option<Pose>, look: Option<LookSwitches>) -> Self {
+        self.pose = pose;
+        self.look = look;
+        self
+    }
+
+    /// Whether its frames are first person, which `[gpu.first_person]`
+    /// budgets hold.
+    pub fn first_person(&self) -> bool {
+        matches!(self.drawer, Drawer::FirstPerson { .. })
+    }
+
+    /// The report's `view`: what was drawn and from where.
+    pub fn view_json(&self) -> JsonValue {
+        let drawn = self.camera.as_ref();
+        let look = drawn.map(|(_, look)| look).filter(|_| self.look.is_some());
+        let camera = drawn.map(|(camera, _)| camera);
+        shot_view::view_json(self.view_name, self.pose.as_ref(), look, camera)
     }
 
     /// Whether the state at `tick` is a frame.
@@ -167,6 +213,7 @@ impl Capture {
             width: self.args.width,
             height: self.args.height,
         };
+        let mut camera = None;
         let counters = match &self.drawer {
             Drawer::TopDown { scene, renderer } => {
                 renderer.render(&self.gpu, &self.targets, &scene(&frame))
@@ -175,9 +222,20 @@ impl Capture {
                 scene,
                 renderer,
                 world,
-            } => renderer.render(&self.gpu, &self.targets, world, &scene(&frame)),
+            } => {
+                let mut scene = scene(&frame);
+                if let Some(pose) = &self.pose {
+                    scene.camera = pose.apply(scene.camera);
+                }
+                if let Some(switches) = &self.look {
+                    scene.look = switches.apply(scene.look);
+                }
+                camera = Some((scene.camera, scene.look));
+                renderer.render(&self.gpu, &self.targets, world, &scene)
+            }
         }
         .unwrap_or_else(|e| panic!("{e} (frame at {tick})"));
+        self.camera = camera.or(self.camera);
         let image = self
             .targets
             .read_output(&self.gpu)

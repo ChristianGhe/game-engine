@@ -1016,3 +1016,47 @@ P4 option A)
   as in run 42370402965. `ci-xvfb-noreset.patch` is the owner's.
 - **Cost:** the builder took about 3 h, 513k tokens and 268 calls. It
   counts as one session (24 of 52).
+
+**T18: docs-lint** (cce3321, follow-up 326ebd3; decision 16; for the
+owner at G5)
+- **The patch:** `docs/rungs/2/patches/t18-docs-lint.patch` (SHA-256
+  `7138e5de2811121c…`), against f382733. It applies cleanly to `main`,
+  and T6's and T17's patches still apply on top of it.
+- **What docs-check gains:** it reads AGENTS.md, ARCHITECTURE.md and the
+  skills, and fails with `[E-DOCS-STALE] file:line: what` plus a hint on
+  what to do. It checks:
+  - `cargo xtask` commands, their flags, CI jobs and selftest cases;
+  - probe commands in every form (`cargo run` with any flags,
+    `-p`/`--bin game-testbed --`, bare `game-testbed <cmd>`) with their
+    flags and argument counts, against the probe's usage in
+    `eng-cli/src/args.rs`;
+  - repository paths, including line ranges;
+  - `ENG_*` variables and `[E-*]`/`[W-*]` tags.
+
+  The selftest `docs-stale-path` plants a stale path in each of the three
+  doc sets through `docs-check` itself. On the real docs: 211
+  references, none stale.
+- **Review:** a fresh reviewer (14 min, 133k tokens) found one blocker.
+  Most probe commands were never checked: only one literal form was
+  read, and fenced comments were skipped. Seven planted names passed.
+  - **The follow-up** reads every form, and each planted name now fails
+    at its line.
+  - **It also fixed:** paths now come from git's file list, not the
+    working tree; `CLAUDE.md` and `--help` no longer fail falsely; and a
+    line range is checked against every file it may name.
+- **A decision for the owner:** "the tree" is
+  `git ls-files --cached --others --exclude-standard`. Ignored files
+  never count, which closes a pass that would happen only on this Mac.
+  Untracked files git would add do count, so `quick` before `git add`
+  does not fail falsely.
+- **A finding:** `--panic-at-tick`, which ARCHITECTURE.md names
+  correctly, is accepted by the probe's parser but absent from its usage
+  text. Docs-lint treats such parser-only flags as valid.
+- **A rule slip, by the builder:** once, in its scratch clone, it built a
+  write path from a shell variable, against its brief. The two files it
+  restored came back byte-identical.
+- **Carry for T21:** T18 and T19 both append to `selftest::CASES`. Merge
+  the entries and fix the array length; whichever is applied second must
+  be regenerated.
+- **Cost:** about 2 h in three runs (one paused), 393k tokens. It counts
+  as one session (25 of 52).

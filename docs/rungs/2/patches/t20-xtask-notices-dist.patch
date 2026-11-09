@@ -1,0 +1,2108 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index d45c72cf89e644eef0041cbe5a0841ef971a7b95..ae0f0909ea655ea4edb0e7a24defe37311d79cf3 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2973,6 +2973,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
+ name = "xtask"
+ version = "0.1.0"
+ dependencies = [
++ "flate2",
+  "png",
+  "serde",
+  "serde_json",
+diff --git a/xtask/Cargo.toml b/xtask/Cargo.toml
+index 516d763f63833df374512640ebcc9291ca993bd6..de0bbb2634a40c26dcca3005054cb89afd8225a9 100644
+--- a/xtask/Cargo.toml
++++ b/xtask/Cargo.toml
+@@ -17,6 +17,9 @@ toml = "1.1.8"
+ # `selftest golden-edit` reads a golden and writes it back with one pixel
+ # changed (rung 1b, criterion 12). The workspace's own version (crate batch 2).
+ png = "=0.18.1"
++# `dist` gzips its archive (rung 2, decision 17). The workspace's version
++# (crate batch 2, through png).
++flate2 = "=1.1.10"
+ 
+ [lints]
+ workspace = true
+diff --git a/xtask/src/ci.rs b/xtask/src/ci.rs
+index 27de6902583dab2676c3af16e89dce78535b9ea3..9b67b0d6d848e87f7acf035dc8b803bc23aae14f 100644
+--- a/xtask/src/ci.rs
++++ b/xtask/src/ci.rs
+@@ -254,6 +254,8 @@ fn lint(root: &Path, steps: &mut Steps) {
+             "cargo install --locked cargo-deny",
+         )
+     });
++    // Criterion 17: the testbed's notices, every licence on deny.toml's list.
++    steps.run("notices", || crate::dist_notices::run(root));
+     steps.run("typos", || {
+         tool_step(
+             root,
+diff --git a/xtask/src/ci_native.rs b/xtask/src/ci_native.rs
+index b15717eb8c47f4aa6e1d623a1a6010756a019a92..dc55a88d4129146f777624c9c99f6565134dbfa1 100644
+--- a/xtask/src/ci_native.rs
++++ b/xtask/src/ci_native.rs
+@@ -51,6 +51,8 @@ enum Hosts {
+     LinuxX64,
+     NotLinuxX64,
+     MacOs,
++    /// The playable targets' hosts, which `dist` packages (spec D16).
++    Playable,
+ }
+ 
+ impl Hosts {
+@@ -60,6 +62,7 @@ impl Hosts {
+             Hosts::LinuxX64 => host == LINUX_X64,
+             Hosts::NotLinuxX64 => host != LINUX_X64,
+             Hosts::MacOs => host.ends_with("-apple-darwin"),
++            Hosts::Playable => crate::dist_notices::PLAYABLE.contains(&host),
+         }
+     }
+ }
+@@ -67,7 +70,7 @@ impl Hosts {
+ type Step = fn(&Path) -> Result<Done, String>;
+ 
+ /// The native job: each step's name, where it runs, and what it does.
+-const STEPS: [(&str, Hosts, Step); 12] = [
++const STEPS: [(&str, Hosts, Step); 13] = [
+     ("build", Hosts::All, build),
+     ("tests", Hosts::All, tests),
+     ("replay", Hosts::All, replay),
+@@ -80,6 +83,7 @@ const STEPS: [(&str, Hosts, Step); 12] = [
+     ("esc", Hosts::LinuxX64, esc),
+     ("proof-video", Hosts::LinuxX64, proof_video),
+     ("check-intel-mac", Hosts::MacOs, check_intel_mac),
++    ("dist", Hosts::Playable, crate::dist_check::step),
+ ];
+ 
+ /// What a step that renders or opens a window must have (amendments 36, 46).
+diff --git a/xtask/src/ci_native_tests.rs b/xtask/src/ci_native_tests.rs
+index dd0cd0eaca152beada4f5460c1991b8223467369..77e117f9686a9f1db88e1fff8eaa2ea3fa75f4d8 100644
+--- a/xtask/src/ci_native_tests.rs
++++ b/xtask/src/ci_native_tests.rs
+@@ -20,19 +20,33 @@ fn each_runner_runs_its_steps_in_order() {
+     let common = ["build", "tests", "replay", "crash-json", "version"];
+     let linux_x64 = steps_for("x86_64-unknown-linux-gnu");
+     let mut expected: Vec<&str> = common.to_vec();
+-    expected.extend(["shot-exact", "window", "gpu-budgets", "esc", "proof-video"]);
++    expected.extend([
++        "shot-exact",
++        "window",
++        "gpu-budgets",
++        "esc",
++        "proof-video",
++        "dist",
++    ]);
+     assert_eq!(linux_x64, expected);
+-    for host in [
+-        "aarch64-unknown-linux-gnu",
+-        "x86_64-pc-windows-msvc",
+-        "aarch64-pc-windows-msvc",
++    for (host, dist) in [
++        ("aarch64-unknown-linux-gnu", false),
++        ("x86_64-pc-windows-msvc", true),
++        ("aarch64-pc-windows-msvc", false),
+     ] {
+         let mut expected: Vec<&str> = common.to_vec();
+         expected.extend(["shot-flip", "window", "gpu-budgets"]);
++        expected.extend(dist.then_some("dist"));
+         assert_eq!(steps_for(host), expected, "{host}");
+     }
+     let mut expected: Vec<&str> = common.to_vec();
+-    expected.extend(["shot-flip", "window", "gpu-budgets", "check-intel-mac"]);
++    expected.extend([
++        "shot-flip",
++        "window",
++        "gpu-budgets",
++        "check-intel-mac",
++        "dist",
++    ]);
+     assert_eq!(steps_for("aarch64-apple-darwin"), expected);
+ }
+ 
+diff --git a/xtask/src/dist.rs b/xtask/src/dist.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..b5139f2637f4c1ad726d6d0d324458d9728cd2b9
+--- /dev/null
++++ b/xtask/src/dist.rs
+@@ -0,0 +1,286 @@
++//! `cargo xtask dist [--target T]` (rung 2, decision 17, criterion 18;
++//! spec 8.4 describes rung 7's playable builds): the testbed's release
++//! binary, stripped, with its debug info beside it, its `version.json`
++//! (the binary's own `--version --json`) and the third-party notices, in
++//! `target/dist/<target>/`, and the same files as
++//! `target/dist/game-testbed-<target>.tar.gz` under
++//! `game-testbed-<target>/` (`dist_tar.rs`). A build folder that CI keeps
++//! as an artifact, not a release: no tags, signing or upload (ADR-0001).
++//!
++//! The build is `cargo build --release --target <target>` with the
++//! stripping and debug info set by `--config profile.release.*` on cargo's
++//! command line, so the root manifest's `[profile]` tables stay as they
++//! are. `debug = "limited"` (line tables and functions, no types or
++//! variables) is enough to symbolize a backtrace. Per target:
++//!
++//! | Targets | split-debuginfo | strip | Debug info |
++//! |---|---|---|---|
++//! | `*-apple-darwin` | packed | symbols | `game-testbed.dSYM/`: rustc runs dsymutil before it strips |
++//! | `*-windows-msvc` | packed | none | `game_testbed.pdb`: the linker never puts debug info in the `.exe`, and a `strip` value would drop the PDB too (`/DEBUG:NONE`) |
++//! | `*-linux-*` | off | none | `game-testbed.debug`: `objcopy --only-keep-debug`, then `objcopy --strip-all --add-gnu-debuglink` |
++//!
++//! On Linux the toolchain's split DWARF (`packed`, a `.dwp`) leaves the
++//! line tables and the address table in the binary, and a stripped binary
++//! loses them, so the `.dwp` alone could not be read: hence objcopy, from
++//! the binutils that link the binary anyway. Debuggers and Rust's own
++//! backtraces find each kind of debug info beside the binary.
++
++use std::fs;
++use std::path::{Path, PathBuf};
++use std::process::Command;
++
++use crate::{ci, dist_notices, dist_tar, replay, stamp, util};
++
++/// The binary `dist` packages.
++pub const GAME: &str = "game-testbed";
++
++/// Where a target's debug info goes.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum DebugInfo {
++    /// `game-testbed.dSYM/`.
++    Dsym,
++    /// `game_testbed.pdb`, the name the `.exe` records.
++    Pdb,
++    /// `game-testbed.debug`, which the binary's `.gnu_debuglink` names.
++    Debuglink,
++}
++
++/// How one target is built and what its folder holds.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct Plan {
++    pub target: String,
++    pub debug_info: DebugInfo,
++    /// cargo's `--config` arguments.
++    pub config: Vec<String>,
++    /// The binary's file name.
++    pub binary: String,
++    /// The debug info's file or directory name.
++    pub debug: String,
++}
++
++/// The plan for `target`: the Apple, Windows MSVC and Linux targets.
++pub fn plan(target: &str) -> Result<Plan, String> {
++    let (debug_info, split, strip) = if target.ends_with("-apple-darwin") {
++        (DebugInfo::Dsym, "packed", "symbols")
++    } else if target.ends_with("-windows-msvc") {
++        (DebugInfo::Pdb, "packed", "none")
++    } else if target.contains("-linux-") {
++        (DebugInfo::Debuglink, "off", "none")
++    } else {
++        return Err(format!(
++            "[E-DIST] no dist settings for {target}: only Apple, Windows MSVC and Linux targets"
++        ));
++    };
++    let config = [
++        ("debug", "limited"),
++        ("split-debuginfo", split),
++        ("strip", strip),
++    ]
++    .iter()
++    .map(|(key, value)| format!("profile.release.{key}=\"{value}\""))
++    .collect();
++    let windows = debug_info == DebugInfo::Pdb;
++    let binary = if windows {
++        format!("{GAME}.exe")
++    } else {
++        GAME.to_string()
++    };
++    let debug = match debug_info {
++        DebugInfo::Dsym => format!("{GAME}.dSYM"),
++        DebugInfo::Pdb => format!("{}.pdb", GAME.replace('-', "_")),
++        DebugInfo::Debuglink => format!("{GAME}.debug"),
++    };
++    Ok(Plan {
++        target: target.to_string(),
++        debug_info,
++        config,
++        binary,
++        debug,
++    })
++}
++
++/// What [`build`] made.
++#[derive(Debug)]
++pub struct Built {
++    pub plan: Plan,
++    pub dir: PathBuf,
++    pub archive: PathBuf,
++}
++
++impl Built {
++    /// The folder's name in the archive.
++    pub fn top(&self) -> String {
++        format!("{GAME}-{}", self.plan.target)
++    }
++}
++
++/// `cargo xtask dist`'s arguments: the target, if one is named. A target
++/// is a triple, never a path: its name becomes a directory that `dist`
++/// empties.
++pub fn parse(args: &[&str]) -> Result<Option<String>, String> {
++    let triple = |t: &str| {
++        let word = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.');
++        !t.starts_with(['-', '.']) && !t.contains("..") && t.chars().all(word)
++    };
++    match args {
++        [] => Ok(None),
++        ["--target", target] if triple(target) => Ok(Some((*target).to_string())),
++        _ => Err("usage: cargo xtask dist [--target T]".into()),
++    }
++}
++
++/// `cargo xtask dist [--target T]`: the host's target unless one is named.
++pub fn run(root: &Path, target: Option<&str>) -> Result<String, String> {
++    let target = match target {
++        Some(target) => target.to_string(),
++        None => replay::host_triple(root)?,
++    };
++    let built = build(root, &target)?;
++    Ok(summary(root, &built))
++}
++
++/// Builds `target`'s folder and archive, replacing any earlier ones.
++pub fn build(root: &Path, target: &str) -> Result<Built, String> {
++    let plan = plan(target)?;
++    let (notices, _) = dist_notices::generate(root)?;
++    let dist = root.join("target/dist");
++    let dir = dist.join(target);
++    let archive = dist.join(format!("{GAME}-{target}.tar.gz"));
++    let _ = fs::remove_dir_all(&dir);
++    let _ = fs::remove_file(&archive);
++    if dir.exists() || archive.exists() {
++        return Err(format!(
++            "[E-DIST] {} or its archive could not be removed: a file in use?",
++            dir.display()
++        ));
++    }
++    fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
++    let mut args = vec![
++        "build",
++        "--release",
++        "-p",
++        GAME,
++        "--bin",
++        GAME,
++        "--target",
++        target,
++    ];
++    for config in &plan.config {
++        args.extend(["--config", config]);
++    }
++    ci::cargo_step(root, "dist-build", &args)?;
++    let release = root.join("target").join(target).join("release");
++    let built_binary = release.join(&plan.binary);
++    match plan.debug_info {
++        DebugInfo::Dsym | DebugInfo::Pdb => {
++            copy(&built_binary, &dir.join(&plan.binary))?;
++            copy(&release.join(&plan.debug), &dir.join(&plan.debug))?;
++        }
++        DebugInfo::Debuglink => {
++            let source = built_binary.display().to_string();
++            let link = format!("--add-gnu-debuglink={}", plan.debug);
++            let keep = ["--only-keep-debug", &source, &plan.debug];
++            objcopy(root, &dir, "dist-objcopy-debug", &keep)?;
++            let strip = ["--strip-all", &link, &source, &plan.binary];
++            objcopy(root, &dir, "dist-objcopy-strip", &strip)?;
++        }
++    }
++    let mut version = Command::new(dir.join(&plan.binary));
++    version
++        .current_dir(&dir)
++        .args(["--version", "--json"])
++        .env("ENG_AGENT_LOG_DIR", root.join("target/agent-logs"));
++    let json = util::run_quiet(root, "dist-version", &mut version).map_err(|e| {
++        format!("[E-DIST] the {target} binary did not run here, so it has no version.json: {e}")
++    })?;
++    fs::write(dir.join("version.json"), json).map_err(|e| format!("version.json: {e}"))?;
++    copy(&notices, &dir.join(dist_notices::FILE))?;
++    let built = Built { plan, dir, archive };
++    let binary = built.plan.binary.as_str();
++    dist_tar::write(
++        &built.dir,
++        &built.top(),
++        source_date_epoch(root),
++        &[binary],
++        &built.archive,
++    )?;
++    Ok(built)
++}
++
++/// The archive's mtime: `SOURCE_DATE_EPOCH` as the stamp has it (the
++/// commit's time), else 0.
++fn source_date_epoch(root: &Path) -> u64 {
++    stamp::vars(root)
++        .iter()
++        .find(|(name, _)| *name == "SOURCE_DATE_EPOCH")
++        .and_then(|(_, value)| value.parse().ok())
++        .unwrap_or(0)
++}
++
++/// GNU objcopy (binutils) in `dir`.
++fn objcopy(root: &Path, dir: &Path, log: &str, args: &[&str]) -> Result<(), String> {
++    let mut cmd = Command::new("objcopy");
++    cmd.current_dir(dir).args(args);
++    util::run_quiet(root, log, &mut cmd)
++        .map(|_| ())
++        .map_err(|e| format!("[E-DIST] objcopy (binutils) splits Linux debug info: {e}"))
++}
++
++/// Copies a file, or a directory and everything in it.
++fn copy(from: &Path, to: &Path) -> Result<(), String> {
++    let fail = |e: std::io::Error| format!("{} -> {}: {e}", from.display(), to.display());
++    if from.is_dir() {
++        fs::create_dir_all(to).map_err(fail)?;
++        for entry in fs::read_dir(from).map_err(fail)? {
++            let entry = entry.map_err(fail)?;
++            copy(&entry.path(), &to.join(entry.file_name()))?;
++        }
++        Ok(())
++    } else {
++        fs::copy(from, to).map(|_| ()).map_err(fail)
++    }
++}
++
++/// The archive, its size and what it holds, in one line.
++pub fn summary(root: &Path, built: &Built) -> String {
++    let size = |path: &Path| -> u64 {
++        if path.is_dir() {
++            util::walk_all(path)
++                .iter()
++                .filter_map(|p| fs::metadata(p).ok())
++                .map(|m| m.len())
++                .sum()
++        } else {
++            fs::metadata(path).map(|m| m.len()).unwrap_or(0)
++        }
++    };
++    let files = [
++        built.plan.binary.as_str(),
++        built.plan.debug.as_str(),
++        "version.json",
++        dist_notices::FILE,
++    ];
++    let parts: Vec<String> = files
++        .iter()
++        .map(|name| format!("{name} {}", megabytes(size(&built.dir.join(name)))))
++        .collect();
++    format!(
++        "{} ({}): {}",
++        util::rel(root, &built.archive),
++        megabytes(size(&built.archive)),
++        parts.join(", ")
++    )
++}
++
++/// Bytes as megabytes with one decimal, or kilobytes under one megabyte.
++pub(crate) fn megabytes(bytes: u64) -> String {
++    if bytes < 1_000_000 {
++        format!("{} kB", bytes.div_ceil(1000))
++    } else {
++        format!("{}.{} MB", bytes / 1_000_000, (bytes % 1_000_000) / 100_000)
++    }
++}
++
++#[cfg(test)]
++#[path = "dist_tests.rs"]
++mod tests;
+diff --git a/xtask/src/dist_check.rs b/xtask/src/dist_check.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..a7db970cf3242096870880057f48c4edf5dc7075
+--- /dev/null
++++ b/xtask/src/dist_check.rs
+@@ -0,0 +1,333 @@
++//! The native job's `dist` step (rung 2, criterion 18) on the runners of
++//! the playable targets (`dist_notices::PLAYABLE`): `cargo xtask dist` for
++//! the host, then the archive checked as someone who downloads it would
++//! use it.
++//!
++//! 1. The archive holds the binary, its debug info, `version.json` and the
++//!    notices, under one folder (read with `dist_tar::members`).
++//! 2. The system's `tar` unpacks it into a fresh directory under the OS's
++//!    temporary directory, outside the repo (on Windows the built-in
++//!    `tar.exe`, which `Command` finds in System32 before `PATH`).
++//! 3. The unpacked binary is stripped: an ELF binary has no `.symtab` and
++//!    no `.debug_*` section and names its `.debug` file in
++//!    `.gnu_debuglink`; a Mach-O binary has no debug map (STABS entries)
++//!    and no local symbols; a Windows `.exe` names the PDB beside it. The
++//!    debug info is there: DWARF sections in the `.debug` file or the
++//!    dSYM, the PDB's MSF header.
++//! 4. The unpacked binary, run from its folder: `--version` and
++//!    `--version --json` give a full release stamp for the host (as the
++//!    `version` step checks it, the run's commit on GitHub) equal to
++//!    `version.json`, and `run --headless --ticks 60` runs its 60 ticks.
++
++use std::fs;
++use std::path::Path;
++use std::process::Command;
++
++use serde_json::Value;
++
++use crate::dist::{self, Built, DebugInfo};
++use crate::util::{self, Done};
++use crate::{ci_verdicts as verdicts, dist_notices, dist_tar, replay};
++
++/// The step.
++pub fn step(root: &Path) -> Result<Done, String> {
++    let host = replay::host_triple(root)?;
++    let built = dist::build(root, &host)?;
++    let members = dist_tar::members(&built.archive, false)?;
++    let paths: Vec<&str> = members.iter().map(|m| m.path.as_str()).collect();
++    holds(&built, &paths)?;
++    let scratch = std::env::temp_dir().join(format!("eng-dist-check-{}", std::process::id()));
++    let _ = fs::remove_dir_all(&scratch);
++    fs::create_dir_all(&scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
++    let checked = unpacked(root, &built, &scratch);
++    let _ = fs::remove_dir_all(&scratch);
++    let checked = checked?;
++    Ok(Done::Pass(format!(
++        "{}; {} members; {checked}",
++        dist::summary(root, &built),
++        members.len()
++    )))
++}
++
++/// The archive's paths hold the folder's four kinds of file. A dSYM's
++/// DWARF file is named after the binary dsymutil read (`game_testbed-<hash>`
++/// in `deps/`); lldb and Rust's backtraces match it by UUID, not by name.
++pub(crate) fn holds(built: &Built, paths: &[&str]) -> Result<(), String> {
++    let top = built.top();
++    let debug = match built.plan.debug_info {
++        DebugInfo::Dsym => format!("{}/{DWARF}", built.plan.debug),
++        DebugInfo::Pdb | DebugInfo::Debuglink => built.plan.debug.clone(),
++    };
++    let wanted = [
++        built.plan.binary.as_str(),
++        debug.as_str(),
++        "version.json",
++        dist_notices::FILE,
++    ];
++    let found = |name: &str| {
++        let path = format!("{top}/{name}");
++        if name.ends_with('/') {
++            paths
++                .iter()
++                .any(|p| p.starts_with(&path) && !p.ends_with('/'))
++        } else {
++            paths.contains(&path.as_str())
++        }
++    };
++    let missing: Vec<&str> = wanted.into_iter().filter(|name| !found(name)).collect();
++    if paths.first() != Some(&format!("{top}/").as_str()) || !missing.is_empty() {
++        return Err(format!(
++            "[E-DIST] the archive should hold {top}/ with {}; it lacks {missing:?}",
++            wanted.join(", ")
++        ));
++    }
++    Ok(())
++}
++
++/// Where a dSYM keeps its one DWARF file.
++const DWARF: &str = "Contents/Resources/DWARF/";
++
++/// Unpacks the archive in `scratch` with the system's `tar` and checks
++/// and runs what it holds.
++fn unpacked(root: &Path, built: &Built, scratch: &Path) -> Result<String, String> {
++    let name = built.archive.file_name().ok_or("the archive has no name")?;
++    fs::copy(&built.archive, scratch.join(name)).map_err(|e| format!("copy: {e}"))?;
++    let mut tar = Command::new("tar");
++    tar.current_dir(scratch).arg("-xzf").arg(name);
++    util::run_quiet(root, "dist-unpack", &mut tar)?;
++    let folder = scratch.join(built.top());
++    let binary = folder.join(&built.plan.binary);
++    let bytes = fs::read(&binary).map_err(|e| format!("{}: {e}", binary.display()))?;
++    let debug = folder.join(&built.plan.debug);
++    let stripped = match built.plan.debug_info {
++        DebugInfo::Debuglink => {
++            let sections = elf_sections(&bytes)?;
++            let kept = elf_unstripped(&sections);
++            if !kept.is_empty() || !sections.iter().any(|s| s == ".gnu_debuglink") {
++                return Err(format!(
++                    "[E-DIST] the binary keeps {kept:?}, or names no .debug file (.gnu_debuglink)"
++                ));
++            }
++            let debug = fs::read(&debug).map_err(|e| format!("{}: {e}", debug.display()))?;
++            if !elf_sections(&debug)?.iter().any(|s| s == ".debug_line") {
++                return Err(format!("[E-DIST] {} has no line tables", built.plan.debug));
++            }
++            "ELF: no .symtab or .debug_* sections, .gnu_debuglink set".to_string()
++        }
++        DebugInfo::Dsym => {
++            let (stabs, locals) = macho_symbols(&bytes)?;
++            if stabs + locals > 0 {
++                return Err(format!(
++                    "[E-DIST] the binary keeps {stabs} debug-map entries and {locals} local symbols"
++                ));
++            }
++            let dwarf = util::walk_all(&debug.join(DWARF))
++                .into_iter()
++                .next()
++                .ok_or_else(|| format!("[E-DIST] {} has no DWARF file", built.plan.debug))?;
++            let dwarf = fs::read(&dwarf).map_err(|e| format!("{}: {e}", dwarf.display()))?;
++            if macho_symbols(&dwarf).is_err() || !contains(&dwarf, b"__debug_line") {
++                return Err(format!(
++                    "[E-DIST] {} holds no line tables",
++                    built.plan.debug
++                ));
++            }
++            "Mach-O: no debug map or local symbols; the dSYM has DWARF".to_string()
++        }
++        DebugInfo::Pdb => {
++            let pdb = fs::read(&debug).map_err(|e| format!("{}: {e}", debug.display()))?;
++            if !pdb.starts_with(b"Microsoft C/C++ MSF 7.00\r\n") {
++                return Err(format!("[E-DIST] {} is not a PDB", built.plan.debug));
++            }
++            if !contains(&bytes, built.plan.debug.as_bytes()) {
++                return Err(format!(
++                    "[E-DIST] the .exe does not name {}",
++                    built.plan.debug
++                ));
++            }
++            let symbols = pe_symbols(&bytes)?;
++            if symbols > 0 {
++                return Err(format!("[E-DIST] the .exe keeps {symbols} COFF symbols"));
++            }
++            format!(
++                "PE: no COFF symbols, names {}, an MSF 7.00 PDB",
++                built.plan.debug
++            )
++        }
++    };
++    let plain = probe(root, &binary, &folder, &["--version"])?;
++    let json = probe(root, &binary, &folder, &["--version", "--json"])?;
++    let archived = fs::read_to_string(folder.join("version.json"))
++        .map_err(|e| format!("version.json: {e}"))?;
++    if json != archived {
++        return Err("[E-DIST] --version --json differs from the archive's version.json".into());
++    }
++    let stamp = release_stamp(&json, &built.plan.target)?;
++    verdicts::version(
++        &plain,
++        &json,
++        github_run().as_ref().map(|(s, r)| (s.as_str(), r.as_str())),
++    )?;
++    let ran = probe(
++        root,
++        &binary,
++        &folder,
++        &["run", "--headless", "--ticks", "60"],
++    )?;
++    let line = ran.lines().next().unwrap_or_default();
++    if !line.contains(" 60 of 60 ticks") {
++        return Err(format!(
++            "[E-DIST] run --headless --ticks 60 printed {line:?}"
++        ));
++    }
++    Ok(format!("unpacked with tar: {stripped}; {stamp}; {line}"))
++}
++
++/// The commit and run the stamp must name on GitHub.
++fn github_run() -> Option<(String, String)> {
++    let [sha, id, attempt] =
++        ["GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"].map(|v| std::env::var(v).ok());
++    Some((sha?, format!("github-{}/{}", id?, attempt?)))
++}
++
++/// `binary args`, run in `folder` with its logs in `target/agent-logs`.
++fn probe(root: &Path, binary: &Path, folder: &Path, args: &[&str]) -> Result<String, String> {
++    let mut cmd = Command::new(binary);
++    cmd.current_dir(folder)
++        .args(args)
++        .env("ENG_AGENT_LOG_DIR", root.join("target/agent-logs"));
++    util::run_quiet(root, &format!("dist-{}", args.join("-")), &mut cmd)
++}
++
++/// The stamp is a release build for `target`, without debug assertions.
++pub(crate) fn release_stamp(json: &str, target: &str) -> Result<String, String> {
++    let stamp: Value =
++        serde_json::from_str(json).map_err(|e| format!("[E-VERSION] --version --json: {e}"))?;
++    let build = &stamp["build"];
++    let release = build["profile"] == "release" && build["debug_assertions"] == false;
++    if !release || build["target"] != target {
++        return Err(format!(
++            "[E-DIST] the stamp says {} {} (debug assertions {}), not a {target} release",
++            build["target"], build["profile"], build["debug_assertions"]
++        ));
++    }
++    Ok(format!(
++        "a {target} release of {}",
++        build["engine_sha"].as_str().unwrap_or("?")
++    ))
++}
++
++fn contains(haystack: &[u8], needle: &[u8]) -> bool {
++    haystack.windows(needle.len()).any(|w| w == needle)
++}
++
++fn u16_at(bytes: &[u8], at: usize) -> Result<u16, String> {
++    let b = bytes.get(at..at + 2).ok_or("cut short")?;
++    Ok(u16::from_le_bytes([b[0], b[1]]))
++}
++
++fn u32_at(bytes: &[u8], at: usize) -> Result<u32, String> {
++    let b = bytes.get(at..at + 4).ok_or("cut short")?;
++    Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
++}
++
++fn u64_at(bytes: &[u8], at: usize) -> Result<u64, String> {
++    let b = bytes.get(at..at + 8).ok_or("cut short")?;
++    let mut word = [0u8; 8];
++    word.copy_from_slice(b);
++    Ok(u64::from_le_bytes(word))
++}
++
++fn index(value: u64) -> Result<usize, String> {
++    usize::try_from(value).map_err(|e| e.to_string())
++}
++
++/// The section names of a 64-bit little-endian ELF file.
++pub(crate) fn elf_sections(bytes: &[u8]) -> Result<Vec<String>, String> {
++    if !bytes.starts_with(b"\x7fELF\x02\x01") {
++        return Err("[E-DIST] not a 64-bit little-endian ELF file".into());
++    }
++    let offset = index(u64_at(bytes, 0x28)?)?;
++    let size = usize::from(u16_at(bytes, 0x3a)?);
++    let count = usize::from(u16_at(bytes, 0x3c)?);
++    let names_at = usize::from(u16_at(bytes, 0x3e)?);
++    let section = |i: usize| -> Result<(u32, usize, usize), String> {
++        let at = offset + i * size;
++        Ok((
++            u32_at(bytes, at)?,
++            index(u64_at(bytes, at + 0x18)?)?,
++            index(u64_at(bytes, at + 0x20)?)?,
++        ))
++    };
++    let (_, names_offset, names_size) = section(names_at)?;
++    let names = bytes
++        .get(names_offset..names_offset + names_size)
++        .ok_or("[E-DIST] the ELF section names are cut short")?;
++    (0..count)
++        .map(|i| {
++            let start = section(i)?.0 as usize;
++            let rest = names
++                .get(start..)
++                .ok_or("[E-DIST] a section name past the table")?;
++            let end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
++            Ok(String::from_utf8_lossy(&rest[..end]).into_owned())
++        })
++        .collect()
++}
++
++/// A PE file's COFF symbol count (`NumberOfSymbols`), 0 in an image the
++/// MSVC linker wrote: its debug info is all in the PDB.
++pub(crate) fn pe_symbols(bytes: &[u8]) -> Result<u32, String> {
++    let pe = u32_at(bytes, 0x3c)? as usize;
++    if !bytes.starts_with(b"MZ") || bytes.get(pe..pe + 4) != Some(b"PE\0\0") {
++        return Err("[E-DIST] not a PE file".into());
++    }
++    u32_at(bytes, pe + 4 + 12)
++}
++
++/// The sections of a stripped ELF binary that should be gone: the symbol
++/// table and debug info. `.debug_gdb_scripts` stays: rustc's pointer to
++/// its gdb pretty-printers, loaded with the program (`SHF_ALLOC`), so
++/// `--strip-all` keeps it.
++pub(crate) fn elf_unstripped(sections: &[String]) -> Vec<&str> {
++    sections
++        .iter()
++        .map(String::as_str)
++        .filter(|s| *s == ".symtab" || s.starts_with(".debug_") || s.starts_with(".zdebug_"))
++        .filter(|s| *s != ".debug_gdb_scripts")
++        .collect()
++}
++
++/// A 64-bit little-endian Mach-O file's debug-map (STABS) entries and
++/// local defined symbols, from its `LC_SYMTAB`.
++pub(crate) fn macho_symbols(bytes: &[u8]) -> Result<(usize, usize), String> {
++    if u32_at(bytes, 0)? != 0xfeed_facf {
++        return Err("[E-DIST] not a 64-bit little-endian Mach-O file".into());
++    }
++    let commands = u32_at(bytes, 16)?;
++    let mut at = 32;
++    for _ in 0..commands {
++        let (cmd, cmdsize) = (u32_at(bytes, at)?, u32_at(bytes, at + 4)? as usize);
++        if cmd == 2 {
++            let symbols = u32_at(bytes, at + 8)? as usize;
++            let count = u32_at(bytes, at + 12)? as usize;
++            let (mut stabs, mut locals) = (0, 0);
++            for i in 0..count {
++                let kind = *bytes
++                    .get(symbols + 16 * i + 4)
++                    .ok_or("[E-DIST] symbols cut short")?;
++                if kind & 0xe0 != 0 {
++                    stabs += 1;
++                } else if kind & 0x0e == 0x0e && kind & 0x01 == 0 {
++                    locals += 1;
++                }
++            }
++            return Ok((stabs, locals));
++        }
++        if cmdsize == 0 {
++            break;
++        }
++        at += cmdsize;
++    }
++    Ok((0, 0))
++}
+diff --git a/xtask/src/dist_notices.rs b/xtask/src/dist_notices.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..06c61611a8189bc292952ef7d4ac0c6a2e63c703
+--- /dev/null
++++ b/xtask/src/dist_notices.rs
+@@ -0,0 +1,300 @@
++//! `cargo xtask notices` and the lint job's `notices` step (rung 2,
++//! decision 17, criterion 17; spec 4 and 8.4): the third-party notices of
++//! the testbed binary, from cargo-about.
++//!
++//! - **The config:** `about.toml` and its template `about.hbs` at the repo
++//!   root (protected from G5). Their accepted licences are `deny.toml`'s
++//!   `[licenses] allow`, in the same order, and their targets the three
++//!   playable ones ([`PLAYABLE`], spec D16), with build and dev
++//!   dependencies left out: what is linked into the binary. xtask fails if
++//!   either list drifts from what it should be.
++//! - **The run:** `cargo fetch`, then cargo-about =0.9.3 with `--offline`
++//!   (licence files come from the crates' own sources, never from a
++//!   repository fetched at run time), `--fail`, and `deny.toml`'s
++//!   `confidence-threshold`. A crate whose licence is off the list fails
++//!   the run (`[E-NOTICES]`).
++//! - **The check:** every third-party crate that `cargo tree` puts in the
++//!   testbed's normal dependency graph on one of the three targets is
++//!   listed, and each listed crate is in some licence text's `Used by:`
++//!   line. cargo-about evaluates the three targets together, so it may list
++//!   a few crates that no one target builds; extra entries are harmless.
++//!
++//! The notices go to [`OUTPUT`]; `cargo xtask dist` copies them into its
++//! folder.
++
++use std::collections::{BTreeMap, BTreeSet};
++use std::fs;
++use std::path::{Path, PathBuf};
++
++use crate::{ci, util};
++
++/// The playable builds' targets (spec D16): what the notices cover and
++/// what `dist` packages on CI.
++pub const PLAYABLE: [&str; 3] = [
++    "x86_64-unknown-linux-gnu",
++    "x86_64-pc-windows-msvc",
++    "aarch64-apple-darwin",
++];
++
++/// The notices file, also its name in a dist folder.
++pub const FILE: &str = "THIRD-PARTY-NOTICES.txt";
++pub const OUTPUT: &str = "target/notices/THIRD-PARTY-NOTICES.txt";
++
++/// The binary whose graph the notices cover.
++const PACKAGE: &str = "game-testbed";
++const MANIFEST: &str = "crates/game-testbed/Cargo.toml";
++
++/// cargo-about's version, and how to get it (its binary needs `cli`).
++pub const ABOUT_VERSION: &str = "0.9.3";
++const INSTALL: &str = "cargo install --locked cargo-about@0.9.3 --features cli";
++
++/// The template's markers that [`check`] reads.
++const CRATES_HEADING: &str = "Crates\n------\n";
++const TEXTS_HEADING: &str = "Licence texts\n-------------\n";
++const USED_BY: &str = "Used by: ";
++const LICENCE: &str = "=== ";
++
++/// `cargo xtask notices`.
++pub fn run(root: &Path) -> Result<String, String> {
++    generate(root).map(|(_, summary)| summary)
++}
++
++/// Writes [`OUTPUT`] and checks it; returns its path and a one-line
++/// summary.
++pub fn generate(root: &Path) -> Result<(PathBuf, String), String> {
++    let deny = read(&root.join("deny.toml"))?;
++    let about = read(&root.join("about.toml"))?;
++    let threshold = config(&deny, &about)?;
++    about_version(root)?;
++    ci::cargo_step(root, "notices-fetch", &["fetch"])?;
++    let out = root.join(OUTPUT);
++    if let Some(dir) = out.parent() {
++        fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
++    }
++    let _ = fs::remove_file(&out);
++    let threshold = threshold.to_string();
++    let output = out.display().to_string();
++    let mut args = vec!["about", "generate", "--offline", "--fail"];
++    if util::on_ci() {
++        args.push("--locked");
++    }
++    args.extend([
++        "--threshold",
++        &threshold,
++        "-c",
++        "about.toml",
++        "-m",
++        MANIFEST,
++        "-o",
++        &output,
++        "about.hbs",
++    ]);
++    let mut cmd = util::cargo(root);
++    cmd.args(&args);
++    util::run_quiet(root, "notices", &mut cmd).map_err(|e| {
++        if e.contains("failed to satisfy license requirements") {
++            format!("[E-NOTICES] a crate's licence is off deny.toml's list: {e}")
++        } else {
++            format!("[E-NOTICES] cargo-about failed: {e}")
++        }
++    })?;
++    let notices = read(&out)?;
++    let mut graph = BTreeSet::new();
++    for target in PLAYABLE {
++        let args = [
++            "tree", "-p", PACKAGE, "-e", "normal", "--target", target, "--prefix", "none",
++            "--format", "{p}",
++        ];
++        let mut cmd = ci::cargo_command(root, &args);
++        let tree = util::run_quiet(root, &format!("notices-tree-{target}"), &mut cmd)?;
++        let crates = third_party(&tree);
++        if crates.is_empty() {
++            return Err(format!(
++                "[E-NOTICES] cargo tree gave no third-party crates for {target}: has its output \
++                 changed?"
++            ));
++        }
++        graph.extend(crates);
++    }
++    let summary = check(&notices, &graph)?;
++    Ok((out, format!("{summary}; {OUTPUT}")))
++}
++
++fn read(path: &Path) -> Result<String, String> {
++    fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
++}
++
++/// Holds `about.toml` (`about`) to `deny.toml` (`deny`): the same licences
++/// in the same order, the playable targets, no build or dev dependencies,
++/// our own crates ignored. Returns `deny.toml`'s confidence threshold.
++pub(crate) fn config(deny: &str, about: &str) -> Result<f64, String> {
++    let deny: toml::Table = deny.parse().map_err(|e| format!("deny.toml: {e}"))?;
++    let about: toml::Table = about.parse().map_err(|e| format!("about.toml: {e}"))?;
++    let licences = &deny["licenses"];
++    let strings = |value: Option<&toml::Value>| -> Vec<String> {
++        value
++            .and_then(toml::Value::as_array)
++            .into_iter()
++            .flatten()
++            .filter_map(toml::Value::as_str)
++            .map(String::from)
++            .collect()
++    };
++    let allow = strings(licences.get("allow"));
++    let accepted = strings(about.get("accepted"));
++    if allow.is_empty() || accepted != allow {
++        return Err(format!(
++            "[E-NOTICES] about.toml's `accepted` must be deny.toml's [licenses] `allow`, in its \
++             order: {accepted:?} against {allow:?}"
++        ));
++    }
++    let targets = strings(about.get("targets"));
++    if targets != PLAYABLE {
++        return Err(format!(
++            "[E-NOTICES] about.toml's `targets` must be the playable targets {PLAYABLE:?}, not \
++             {targets:?}"
++        ));
++    }
++    let flag = |key: &str| about.get(key).and_then(toml::Value::as_bool) == Some(true);
++    let private = about
++        .get("private")
++        .and_then(|p| p.get("ignore"))
++        .and_then(toml::Value::as_bool);
++    if !flag("ignore-build-dependencies")
++        || !flag("ignore-dev-dependencies")
++        || private != Some(true)
++    {
++        return Err(
++            "[E-NOTICES] about.toml must set ignore-build-dependencies, ignore-dev-dependencies \
++             and private.ignore: the notices cover what is linked into the binary"
++                .into(),
++        );
++    }
++    licences
++        .get("confidence-threshold")
++        .and_then(toml::Value::as_float)
++        .ok_or_else(|| "[E-NOTICES] deny.toml has no [licenses] confidence-threshold".into())
++}
++
++/// cargo-about is installed, at [`ABOUT_VERSION`].
++fn about_version(root: &Path) -> Result<(), String> {
++    let mut cmd = util::cargo(root);
++    cmd.args(["about", "--version"]);
++    let found = cmd
++        .output()
++        .ok()
++        .filter(|out| out.status.success())
++        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string());
++    match found {
++        Some(line) if line == format!("cargo-about {ABOUT_VERSION}") => Ok(()),
++        Some(line) => Err(format!(
++            "[E-NOTICES] {line} is installed, not cargo-about {ABOUT_VERSION} ({INSTALL})"
++        )),
++        None => Err(format!(
++            "[E-NOTICES] cargo-about is not installed ({INSTALL})"
++        )),
++    }
++}
++
++/// The third-party crates in `cargo tree --prefix none --format {p}`
++/// output, as `name version`: our own crates (with a path) are left out.
++pub(crate) fn third_party(tree: &str) -> BTreeSet<String> {
++    tree.lines()
++        .filter_map(|line| {
++            let mut words = line.split_whitespace();
++            let name = words.next()?;
++            let version = words.next()?.strip_prefix('v')?;
++            let rest: Vec<&str> = words.collect();
++            let local = rest
++                .iter()
++                .any(|w| w.starts_with('(') && !matches!(*w, "(proc-macro)" | "(*)"));
++            (!local).then(|| format!("{name} {version}"))
++        })
++        .collect()
++}
++
++/// The notices hold every crate of `graph` and a licence text for every
++/// crate they list. Returns the counts, with the crates per licence.
++pub(crate) fn check(notices: &str, graph: &BTreeSet<String>) -> Result<String, String> {
++    // A checkout with CRLF line ends renders the template with them.
++    let notices = &notices.replace("\r\n", "\n");
++    let listed = listed(notices)?;
++    let missing: Vec<&str> = graph
++        .iter()
++        .filter(|krate| !listed.contains(*krate))
++        .map(String::as_str)
++        .collect();
++    if !missing.is_empty() {
++        return Err(format!(
++            "[E-NOTICES] {} crates of the testbed's graph are not in the notices: {}",
++            missing.len(),
++            missing.join(", ")
++        ));
++    }
++    let texts = used_by(notices);
++    let covered: BTreeSet<&str> = texts.values().flatten().map(String::as_str).collect();
++    let bare: Vec<&str> = listed
++        .iter()
++        .map(String::as_str)
++        .filter(|krate| !covered.contains(krate))
++        .collect();
++    if !bare.is_empty() {
++        return Err(format!(
++            "[E-NOTICES] no licence text names {}",
++            bare.join(", ")
++        ));
++    }
++    let counts: Vec<String> = texts
++        .iter()
++        .map(|(id, crates)| format!("{id} {}", crates.len()))
++        .collect();
++    Ok(format!(
++        "{} crates listed ({} in the testbed's graph for {}), {} licences: {}",
++        listed.len(),
++        graph.len(),
++        PLAYABLE.join(", "),
++        texts.len(),
++        counts.join(", ")
++    ))
++}
++
++/// The crates the notices list, as `name version`: the lines between the
++/// two headings, each `name version: expression`.
++fn listed(notices: &str) -> Result<BTreeSet<String>, String> {
++    let start = notices
++        .find(CRATES_HEADING)
++        .ok_or("[E-NOTICES] the notices have no crate list (about.hbs)")?;
++    let body = &notices[start + CRATES_HEADING.len()..];
++    let end = body
++        .find(TEXTS_HEADING)
++        .ok_or("[E-NOTICES] the notices have no licence texts (about.hbs)")?;
++    Ok(body[..end]
++        .lines()
++        .filter_map(|line| line.split_once(": ").map(|(krate, _)| krate.trim()))
++        .filter(|krate| krate.split(' ').count() == 2)
++        .map(String::from)
++        .collect())
++}
++
++/// Each licence id, with the crates its texts' `Used by:` lines name.
++fn used_by(notices: &str) -> BTreeMap<String, BTreeSet<String>> {
++    let mut texts: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
++    let mut current = None;
++    for line in notices.lines() {
++        if let Some(heading) = line.strip_prefix(LICENCE) {
++            // `=== <name> (<id>)`
++            current = heading
++                .rsplit_once(" (")
++                .and_then(|(_, id)| id.strip_suffix(')'))
++                .map(String::from);
++        } else if let (Some(list), Some(id)) = (line.strip_prefix(USED_BY), &current) {
++            let crates = list.split(", ").map(|krate| krate.trim().to_string());
++            texts.entry(id.clone()).or_default().extend(crates);
++        }
++    }
++    texts
++}
++
++#[cfg(test)]
++#[path = "dist_notices_tests.rs"]
++mod tests;
+diff --git a/xtask/src/dist_notices_tests.rs b/xtask/src/dist_notices_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..128d6c4e8c98d851ba085cb09b2dd211dc9e6f64
+--- /dev/null
++++ b/xtask/src/dist_notices_tests.rs
+@@ -0,0 +1,200 @@
++//! The notices' config against deny.toml, and the check of cargo-about's
++//! output against the testbed's graph.
++
++use std::collections::BTreeSet;
++use std::path::Path;
++
++use super::{PLAYABLE, check, config, third_party};
++
++fn root() -> &'static Path {
++    Path::new(env!("CARGO_MANIFEST_DIR"))
++        .parent()
++        .expect("xtask sits in the repo root")
++}
++
++fn read(name: &str) -> String {
++    std::fs::read_to_string(root().join(name)).unwrap()
++}
++
++/// The committed about.toml takes deny.toml's licences, in order, and the
++/// playable targets, and the threshold comes from deny.toml.
++#[test]
++fn about_toml_follows_deny_toml() {
++    let threshold = config(&read("deny.toml"), &read("about.toml")).unwrap();
++    assert_eq!(threshold, 0.93);
++}
++
++/// A licence added, dropped or moved in one file only fails, as do other
++/// targets and a graph with build or dev dependencies.
++#[test]
++fn about_toml_drifting_from_deny_toml_fails() {
++    let deny = read("deny.toml");
++    let about = read("about.toml");
++    let cases = [
++        about.replace("  \"Zlib\",\n", ""),
++        about.replace(
++            "  \"MIT\",\n  \"Apache-2.0\",\n",
++            "  \"Apache-2.0\",\n  \"MIT\",\n",
++        ),
++        about.replace("  \"BSL-1.0\",\n", "  \"BSL-1.0\",\n  \"MPL-2.0\",\n"),
++        about.replace("  \"aarch64-apple-darwin\",\n", ""),
++        about.replace(
++            "ignore-build-dependencies = true",
++            "ignore-build-dependencies = false",
++        ),
++        about.replace("ignore-dev-dependencies = true", ""),
++        about.replace("private = { ignore = true }", ""),
++    ];
++    for (i, case) in cases.iter().enumerate() {
++        assert_ne!(case, &about, "case {i} changed nothing");
++        let err = config(&deny, case).expect_err(&format!("case {i} passed"));
++        assert!(err.contains("[E-NOTICES]"), "case {i}: {err}");
++    }
++    // deny.toml's side counts the same.
++    let narrower = deny.replacen("  \"BSL-1.0\",\n", "", 1);
++    assert_ne!(narrower, deny);
++    assert!(config(&narrower, &about).is_err());
++}
++
++#[test]
++fn the_playable_targets_are_spec_d16s() {
++    assert_eq!(
++        PLAYABLE,
++        [
++            "x86_64-unknown-linux-gnu",
++            "x86_64-pc-windows-msvc",
++            "aarch64-apple-darwin"
++        ]
++    );
++}
++
++/// `cargo tree --prefix none --format {p}`: registry crates count, our own
++/// (with a path) do not; proc-macro and repeat marks are dropped.
++#[test]
++fn third_party_crates_come_from_cargo_tree() {
++    let tree = "\
++game-testbed v0.1.0 (/work/crates/game-testbed)
++eng-app v0.1.0 (/work/crates/eng-app)
++eng-gpu v0.1.0 (C:\\work\\crates\\eng-gpu)
++wgpu v30.0.1
++serde_derive v1.0.229 (proc-macro)
++bitflags v2.13.2
++bitflags v2.13.2 (*)
++eng-math v0.1.0 (/work/crates/eng-math) (*)
++ash v0.38.0+1.3.281
++
++";
++    let found: Vec<String> = third_party(tree).into_iter().collect();
++    assert_eq!(
++        found,
++        [
++            "ash 0.38.0+1.3.281",
++            "bitflags 2.13.2",
++            "serde_derive 1.0.229",
++            "wgpu 30.0.1"
++        ]
++    );
++}
++
++const NOTICES: &str = "\
++Third-party notices for game-testbed
++
++Crates
++------
++adler2 2.0.1: 0BSD OR MIT OR Apache-2.0
++dpi 0.1.2: Apache-2.0 AND MIT
++foldhash 0.2.0: Zlib
++
++Licence texts
++-------------
++
++=== MIT License (MIT)
++Used by: adler2 2.0.1, dpi 0.1.2
++
++Permission is hereby granted, free of charge, ...
++
++=== Apache License 2.0 (Apache-2.0)
++Used by: dpi 0.1.2
++
++                                 Apache License
++
++=== zlib License (Zlib)
++Used by: foldhash 0.2.0
++
++This software is provided 'as-is', ...
++";
++
++fn graph(crates: &[&str]) -> BTreeSet<String> {
++    crates.iter().map(|c| (*c).to_string()).collect()
++}
++
++#[test]
++fn notices_that_list_every_crate_with_a_text_pass() {
++    let summary = check(NOTICES, &graph(&["adler2 2.0.1", "foldhash 0.2.0"])).unwrap();
++    assert!(
++        summary.starts_with("3 crates listed (2 in the testbed's graph for "),
++        "{summary}"
++    );
++    assert!(
++        summary.ends_with("3 licences: Apache-2.0 1, MIT 2, Zlib 1"),
++        "{summary}"
++    );
++}
++
++/// A Windows checkout with CRLF line ends renders the template with them.
++#[test]
++fn notices_with_crlf_line_ends_pass_too() {
++    let crlf = NOTICES.replace('\n', "\r\n");
++    assert!(check(&crlf, &graph(&["adler2 2.0.1", "foldhash 0.2.0"])).is_ok());
++}
++
++#[test]
++fn a_crate_of_the_graph_missing_from_the_notices_fails() {
++    let err = check(NOTICES, &graph(&["adler2 2.0.1", "winit 0.30.13"])).unwrap_err();
++    assert!(
++        err.contains("[E-NOTICES] 1 crates") && err.contains("winit 0.30.13"),
++        "{err}"
++    );
++    // Another version of a listed crate is another crate.
++    let err = check(NOTICES, &graph(&["adler2 2.0.2"])).unwrap_err();
++    assert!(err.contains("adler2 2.0.2"), "{err}");
++}
++
++#[test]
++fn a_listed_crate_without_a_licence_text_fails() {
++    let notices = NOTICES.replace("Used by: foldhash 0.2.0", "Used by: adler2 2.0.1");
++    let err = check(&notices, &graph(&[])).unwrap_err();
++    assert!(
++        err.contains("no licence text names foldhash 0.2.0"),
++        "{err}"
++    );
++}
++
++#[test]
++fn notices_without_the_templates_headings_fail() {
++    let err = check("adler2 2.0.1: MIT\n", &graph(&[])).unwrap_err();
++    assert!(err.contains("no crate list"), "{err}");
++    let cut = &NOTICES[..NOTICES.find("Licence texts").unwrap()];
++    assert!(
++        check(cut, &graph(&[]))
++            .unwrap_err()
++            .contains("no licence texts")
++    );
++}
++
++/// The template writes what `check` reads: the two headings, a crate per
++/// line as `name version: expression`, and each text's heading and
++/// `Used by:` line. The licence texts are not HTML-escaped.
++#[test]
++fn the_template_writes_what_the_check_reads() {
++    let template = read("about.hbs");
++    for marker in [
++        super::CRATES_HEADING,
++        "{{#each crates}}\n{{package.name}} {{package.version}}: {{{license}}}\n{{/each}}",
++        super::TEXTS_HEADING,
++        "=== {{{name}}} ({{id}})\nUsed by: {{#each used_by}}{{crate.name}} {{crate.version}}{{#unless @last}}, {{/unless}}{{/each}}\n",
++        "{{{text}}}",
++    ] {
++        assert!(template.contains(marker), "about.hbs lacks {marker:?}");
++    }
++}
+diff --git a/xtask/src/dist_tar.rs b/xtask/src/dist_tar.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..e2c45e8ac2a56293518c0a394fefd3cf19c0c595
+--- /dev/null
++++ b/xtask/src/dist_tar.rs
+@@ -0,0 +1,313 @@
++//! The dist archive (rung 2, decision 17): a POSIX ustar archive, gzipped
++//! through `flate2`, that xtask writes itself. Windows 10 and later unpack
++//! it with the built-in `tar`, as do GNU tar and bsdtar.
++//!
++//! - Every member sits under one top-level directory, `<name>/`.
++//! - Members come in byte order of their paths, so a directory comes
++//!   before what it holds, and the order never depends on the file system.
++//! - Every member has the same mtime (the caller's: `SOURCE_DATE_EPOCH`),
++//!   owner and group 0 and no user or group names. Directories and the
++//!   named executables get mode 0755, every other file 0644. The gzip
++//!   header's time is 0 and its OS byte 255 (unknown).
++//!
++//! Two runs over the same files give the same bytes. Links and special
++//! files are refused; a path that ustar cannot hold (over 255 bytes, or
++//! with no `/` to split it at) is an error.
++
++use std::fs::{self, File};
++use std::io::{self, BufWriter, Read, Write};
++use std::path::{Path, PathBuf};
++
++use flate2::read::GzDecoder;
++use flate2::{Compression, GzBuilder};
++
++const BLOCK: usize = 512;
++/// What tar pads an archive to: a record of 20 blocks.
++const RECORD: u64 = 20 * BLOCK as u64;
++
++/// A member as [`members`] reads it back.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct Member {
++    /// The path in the archive; a directory's ends in `/`.
++    pub path: String,
++    pub mode: u32,
++    pub mtime: u64,
++    pub size: u64,
++    /// The bytes, if [`members`] was asked to keep them.
++    pub data: Vec<u8>,
++}
++
++/// Writes `dir` and everything under it to `out`, a `.tar.gz`, under
++/// `name/`. `executables` are names of files directly in `dir`. Returns
++/// the archive's size in bytes.
++pub fn write(
++    dir: &Path,
++    name: &str,
++    mtime: u64,
++    executables: &[&str],
++    out: &Path,
++) -> Result<u64, String> {
++    let mut entries = vec![(format!("{name}/"), None)];
++    collect(dir, name, &mut entries)?;
++    entries.sort();
++    let file = File::create(out).map_err(|e| format!("{}: {e}", out.display()))?;
++    let gz = GzBuilder::new()
++        .mtime(0)
++        .operating_system(255)
++        .write(BufWriter::new(file), Compression::default());
++    let mut tar = Counting {
++        inner: gz,
++        count: 0,
++    };
++    let fail = |e: io::Error| format!("{}: {e}", out.display());
++    for (path, source) in &entries {
++        match source {
++            None => tar
++                .write_all(&header(path, 0o755, 0, mtime, b'5')?)
++                .map_err(fail)?,
++            Some(source) => {
++                let size = fs::metadata(source)
++                    .map_err(|e| format!("{}: {e}", source.display()))?
++                    .len();
++                let top = path.strip_prefix(&format!("{name}/")).unwrap_or(path);
++                let mode = if executables.contains(&top) {
++                    0o755
++                } else {
++                    0o644
++                };
++                tar.write_all(&header(path, mode, size, mtime, b'0')?)
++                    .map_err(fail)?;
++                let mut file =
++                    File::open(source).map_err(|e| format!("{}: {e}", source.display()))?;
++                let copied = io::copy(&mut (&mut file).take(size), &mut tar).map_err(fail)?;
++                if copied != size {
++                    return Err(format!(
++                        "{} changed while it was archived",
++                        source.display()
++                    ));
++                }
++                tar.write_all(&vec![0; padding(size)]).map_err(fail)?;
++            }
++        }
++    }
++    // The end: two zero blocks, then zeros up to a whole record.
++    let end = tar.count + 2 * BLOCK as u64;
++    let total = end.div_ceil(RECORD) * RECORD;
++    let zeros = usize::try_from(total - tar.count).map_err(|e| e.to_string())?;
++    tar.write_all(&vec![0; zeros]).map_err(fail)?;
++    let mut buffered = tar.inner.finish().map_err(fail)?;
++    buffered.flush().map_err(fail)?;
++    drop(buffered);
++    fs::metadata(out)
++        .map(|m| m.len())
++        .map_err(|e| format!("{}: {e}", out.display()))
++}
++
++/// Every file and directory below `dir`, as archive paths under `prefix`,
++/// with the file to read for each file.
++fn collect(
++    dir: &Path,
++    prefix: &str,
++    out: &mut Vec<(String, Option<PathBuf>)>,
++) -> Result<(), String> {
++    let entries = fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
++    for entry in entries {
++        let entry = entry.map_err(|e| format!("{}: {e}", dir.display()))?;
++        let path = entry.path();
++        let name = entry
++            .file_name()
++            .into_string()
++            .map_err(|name| format!("{}: a name that is not UTF-8: {name:?}", dir.display()))?;
++        let kind = entry
++            .file_type()
++            .map_err(|e| format!("{}: {e}", path.display()))?;
++        let inside = format!("{prefix}/{name}");
++        if kind.is_dir() {
++            out.push((format!("{inside}/"), None));
++            collect(&path, &inside, out)?;
++        } else if kind.is_file() {
++            out.push((inside, Some(path)));
++        } else {
++            return Err(format!(
++                "{}: not a file or directory; dist archives hold no links",
++                path.display()
++            ));
++        }
++    }
++    Ok(())
++}
++
++/// The zeros after `size` bytes of data, up to a whole block.
++fn padding(size: u64) -> usize {
++    let rest = (size % BLOCK as u64) as usize;
++    if rest == 0 { 0 } else { BLOCK - rest }
++}
++
++/// A ustar header block. `kind` is `b'0'` for a file, `b'5'` for a
++/// directory.
++pub(crate) fn header(
++    path: &str,
++    mode: u32,
++    size: u64,
++    mtime: u64,
++    kind: u8,
++) -> Result<[u8; BLOCK], String> {
++    let mut block = [0u8; BLOCK];
++    let (prefix, name) = split(path)?;
++    block[..name.len()].copy_from_slice(name.as_bytes());
++    octal(&mut block[100..108], u64::from(mode), path)?;
++    octal(&mut block[108..116], 0, path)?;
++    octal(&mut block[116..124], 0, path)?;
++    octal(&mut block[124..136], size, path)?;
++    octal(&mut block[136..148], mtime, path)?;
++    block[156] = kind;
++    block[257..263].copy_from_slice(b"ustar\0");
++    block[263..265].copy_from_slice(b"00");
++    octal(&mut block[329..337], 0, path)?;
++    octal(&mut block[337..345], 0, path)?;
++    block[345..345 + prefix.len()].copy_from_slice(prefix.as_bytes());
++    let sum = checksum(&block);
++    block[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
++    Ok(block)
++}
++
++/// The header's checksum: its bytes summed, the checksum field as spaces.
++fn checksum(block: &[u8; BLOCK]) -> u32 {
++    let spaces = 8 * u32::from(b' ');
++    let rest: u32 = block[..148]
++        .iter()
++        .chain(&block[156..])
++        .map(|&b| u32::from(b))
++        .sum();
++    rest + spaces
++}
++
++/// `path` as ustar's prefix (up to 155 bytes) and name (up to 100), split
++/// at a `/`.
++fn split(path: &str) -> Result<(&str, &str), String> {
++    if path.len() <= 100 {
++        return Ok(("", path));
++    }
++    let body = path.strip_suffix('/').unwrap_or(path);
++    body.char_indices()
++        .filter(|&(_, c)| c == '/')
++        .map(|(at, _)| (&path[..at], &path[at + 1..]))
++        .find(|(prefix, name)| prefix.len() <= 155 && name.len() <= 100 && !name.is_empty())
++        .ok_or_else(|| format!("{path}: too long for a ustar header"))
++}
++
++/// `value` as zero-padded octal filling `field` but its last byte, a NUL.
++fn octal(field: &mut [u8], value: u64, path: &str) -> Result<(), String> {
++    let digits = field.len() - 1;
++    let text = format!("{value:0digits$o}");
++    if text.len() > digits {
++        return Err(format!("{path}: {value} does not fit a ustar header"));
++    }
++    field[..digits].copy_from_slice(text.as_bytes());
++    field[digits] = 0;
++    Ok(())
++}
++
++/// The members of a `.tar.gz` that [`write`] wrote, in archive order, with
++/// their bytes if `keep` (else `data` stays empty). It reads ustar files
++/// and directories only, and checks each header's magic and checksum.
++pub fn members(archive: &Path, keep: bool) -> Result<Vec<Member>, String> {
++    let file = File::open(archive).map_err(|e| format!("{}: {e}", archive.display()))?;
++    let mut tar = GzDecoder::new(io::BufReader::new(file));
++    let fail = |e: io::Error| format!("{}: {e}", archive.display());
++    let mut out = Vec::new();
++    loop {
++        let mut block = [0u8; BLOCK];
++        tar.read_exact(&mut block).map_err(fail)?;
++        if block.iter().all(|&b| b == 0) {
++            // The rest, so the gzip trailer's CRC and length are checked.
++            io::copy(&mut tar, &mut io::sink()).map_err(fail)?;
++            return Ok(out);
++        }
++        let member = parse(&block).map_err(|e| format!("{}: {e}", archive.display()))?;
++        let padded = member.size + padding(member.size) as u64;
++        let mut data = Vec::new();
++        let read = if keep {
++            (&mut tar)
++                .take(padded)
++                .read_to_end(&mut data)
++                .map_err(fail)? as u64
++        } else {
++            io::copy(&mut (&mut tar).take(padded), &mut io::sink()).map_err(fail)?
++        };
++        if read != padded {
++            return Err(format!(
++                "{}: {} is cut short",
++                archive.display(),
++                member.path
++            ));
++        }
++        data.truncate(usize::try_from(member.size).unwrap_or(usize::MAX));
++        out.push(Member { data, ..member });
++    }
++}
++
++/// One header block, as a member without its data.
++fn parse(block: &[u8; BLOCK]) -> Result<Member, String> {
++    if &block[257..263] != b"ustar\0" {
++        return Err("a header that is not ustar".into());
++    }
++    let stored = number(&block[148..156])?;
++    if stored != u64::from(checksum(block)) {
++        return Err("a header whose checksum is wrong".into());
++    }
++    let name = text(&block[..100])?;
++    let prefix = text(&block[345..500])?;
++    let path = if prefix.is_empty() {
++        name
++    } else {
++        format!("{prefix}/{name}")
++    };
++    let size = number(&block[124..136])?;
++    match block[156] {
++        b'0' | 0 if !path.ends_with('/') => {}
++        b'5' if path.ends_with('/') && size == 0 => {}
++        kind => return Err(format!("{path}: member type {kind:?} is not written here")),
++    }
++    Ok(Member {
++        mode: u32::try_from(number(&block[100..108])?).map_err(|e| e.to_string())?,
++        mtime: number(&block[136..148])?,
++        size,
++        path,
++        data: Vec::new(),
++    })
++}
++
++/// A NUL-terminated (or full) string field.
++fn text(field: &[u8]) -> Result<String, String> {
++    let end = field.iter().position(|&b| b == 0).unwrap_or(field.len());
++    String::from_utf8(field[..end].to_vec()).map_err(|e| e.to_string())
++}
++
++/// An octal number field, ended by NUL or space.
++fn number(field: &[u8]) -> Result<u64, String> {
++    let digits: &[u8] = field
++        .split(|&b| b == 0 || b == b' ')
++        .find(|part| !part.is_empty())
++        .unwrap_or(&[]);
++    let digits = std::str::from_utf8(digits).map_err(|e| e.to_string())?;
++    u64::from_str_radix(digits, 8).map_err(|e| format!("octal field {digits:?}: {e}"))
++}
++
++/// A writer that counts what passes through it, for the end padding.
++struct Counting<W: Write> {
++    inner: W,
++    count: u64,
++}
++
++impl<W: Write> Write for Counting<W> {
++    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
++        let n = self.inner.write(buf)?;
++        self.count += n as u64;
++        Ok(n)
++    }
++
++    fn flush(&mut self) -> io::Result<()> {
++        self.inner.flush()
++    }
++}
+diff --git a/xtask/src/dist_tests.rs b/xtask/src/dist_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..4c58c80cc7901bedd87b77dc2c187cac80c72269
+--- /dev/null
++++ b/xtask/src/dist_tests.rs
+@@ -0,0 +1,484 @@
++//! dist's per-target plan, its archive format, and the native step's
++//! checks of what it unpacks.
++
++use std::fs;
++use std::io::Read;
++use std::path::{Path, PathBuf};
++use std::process::Command;
++
++use super::{Built, DebugInfo, megabytes, parse, plan};
++use crate::dist_check::{
++    elf_sections, elf_unstripped, holds, macho_symbols, pe_symbols, release_stamp,
++};
++use crate::dist_notices::PLAYABLE;
++use crate::dist_tar;
++
++fn root() -> &'static Path {
++    Path::new(env!("CARGO_MANIFEST_DIR"))
++        .parent()
++        .expect("xtask sits in the repo root")
++}
++
++/// A fresh scratch directory for one test.
++fn scratch(name: &str) -> PathBuf {
++    let dir = std::env::temp_dir().join(format!("xtask-dist-{}-{name}", std::process::id()));
++    let _ = fs::remove_dir_all(&dir);
++    fs::create_dir_all(&dir).unwrap();
++    dir
++}
++
++#[test]
++fn each_playable_target_has_its_debug_info_and_strip() {
++    let mac = plan("aarch64-apple-darwin").unwrap();
++    assert_eq!(mac.debug_info, DebugInfo::Dsym);
++    assert_eq!(
++        (mac.binary.as_str(), mac.debug.as_str()),
++        ("game-testbed", "game-testbed.dSYM")
++    );
++    assert_eq!(
++        mac.config,
++        [
++            "profile.release.debug=\"limited\"",
++            "profile.release.split-debuginfo=\"packed\"",
++            "profile.release.strip=\"symbols\"",
++        ]
++    );
++    let windows = plan("x86_64-pc-windows-msvc").unwrap();
++    assert_eq!(windows.debug_info, DebugInfo::Pdb);
++    assert_eq!(
++        (windows.binary.as_str(), windows.debug.as_str()),
++        ("game-testbed.exe", "game_testbed.pdb")
++    );
++    // Any strip value would make the MSVC linker write no PDB.
++    assert!(
++        windows
++            .config
++            .contains(&"profile.release.strip=\"none\"".to_string())
++    );
++    let linux = plan("x86_64-unknown-linux-gnu").unwrap();
++    assert_eq!(linux.debug_info, DebugInfo::Debuglink);
++    assert_eq!(linux.debug, "game-testbed.debug");
++    assert!(
++        linux
++            .config
++            .contains(&"profile.release.split-debuginfo=\"off\"".to_string())
++    );
++    for target in PLAYABLE {
++        assert!(
++            plan(target).unwrap().config[0].ends_with("debug=\"limited\""),
++            "{target}"
++        );
++    }
++    // Docker on an arm64 Mac, and the compile-only targets.
++    assert!(plan("aarch64-unknown-linux-gnu").is_ok());
++    assert!(plan("aarch64-pc-windows-msvc").is_ok());
++    for target in [
++        "wasm32-unknown-unknown",
++        "x86_64-pc-windows-gnu",
++        "x86_64-unknown-freebsd",
++    ] {
++        assert!(plan(target).unwrap_err().contains("[E-DIST]"), "{target}");
++    }
++}
++
++#[test]
++fn dist_takes_one_optional_target() {
++    assert_eq!(parse(&[]), Ok(None));
++    assert_eq!(
++        parse(&["--target", "x86_64-pc-windows-msvc"]),
++        Ok(Some("x86_64-pc-windows-msvc".into()))
++    );
++    for args in [
++        &["--target"][..],
++        &["--target", "--locked"],
++        &["x86_64-pc-windows-msvc"],
++        // A path is no triple: dist empties target/dist/<target>/.
++        &["--target", "../../x86_64-unknown-linux-gnu"],
++        &["--target", "a/b-linux-c"],
++        &["--target", ".."],
++    ] {
++        assert!(parse(args).is_err(), "{args:?}");
++    }
++}
++
++#[test]
++fn sizes_read_in_kilobytes_and_megabytes() {
++    assert_eq!(megabytes(0), "0 kB");
++    assert_eq!(megabytes(1), "1 kB");
++    assert_eq!(megabytes(999_999), "1000 kB");
++    assert_eq!(megabytes(12_345_678), "12.3 MB");
++}
++
++/// A folder with a nested directory, an executable and a path longer than
++/// ustar's 100-byte name field.
++fn folder(dir: &Path) -> PathBuf {
++    let src = dir.join("src");
++    let deep = src.join("game-testbed.dSYM/Contents/Resources/DWARF");
++    fs::create_dir_all(&deep).unwrap();
++    fs::write(src.join("game-testbed"), b"\x7fELF binary").unwrap();
++    fs::write(src.join("version.json"), b"{}\n").unwrap();
++    fs::write(deep.join("game-testbed"), vec![7u8; 1500]).unwrap();
++    let long = "a".repeat(90);
++    fs::create_dir_all(src.join(&long)).unwrap();
++    fs::write(src.join(&long).join("b".repeat(60)), b"").unwrap();
++    src
++}
++
++#[test]
++fn the_archive_reads_back_in_path_order_with_fixed_modes_and_times() {
++    let dir = scratch("roundtrip");
++    let src = folder(&dir);
++    let archive = dir.join("a.tar.gz");
++    let size = dist_tar::write(&src, "top", 1_700_000_000, &["game-testbed"], &archive).unwrap();
++    assert_eq!(size, fs::metadata(&archive).unwrap().len());
++    let members = dist_tar::members(&archive, true).unwrap();
++    let paths: Vec<&str> = members.iter().map(|m| m.path.as_str()).collect();
++    let long = format!("top/{}/", "a".repeat(90));
++    let longer = format!("{long}{}", "b".repeat(60));
++    let mut expected = vec![
++        "top/",
++        "top/game-testbed",
++        "top/game-testbed.dSYM/",
++        "top/game-testbed.dSYM/Contents/",
++        "top/game-testbed.dSYM/Contents/Resources/",
++        "top/game-testbed.dSYM/Contents/Resources/DWARF/",
++        "top/game-testbed.dSYM/Contents/Resources/DWARF/game-testbed",
++        "top/version.json",
++    ];
++    expected.splice(1..1, [long.as_str(), longer.as_str()]);
++    assert_eq!(paths, expected);
++    for member in &members {
++        let mode = if member.path.ends_with('/') || member.path == "top/game-testbed" {
++            0o755
++        } else {
++            0o644
++        };
++        assert_eq!(member.mode, mode, "{}", member.path);
++        assert_eq!(member.mtime, 1_700_000_000, "{}", member.path);
++        assert_eq!(member.size, member.data.len() as u64, "{}", member.path);
++    }
++    let dwarf = &members[8];
++    assert_eq!(dwarf.data, vec![7u8; 1500]);
++    assert_eq!(members[3].data, b"\x7fELF binary");
++    // The tar stream is whole records, the gzip header has no time and an
++    // unknown OS, and a second run gives the same bytes.
++    let bytes = fs::read(&archive).unwrap();
++    assert_eq!(&bytes[4..8], &[0, 0, 0, 0], "gzip mtime");
++    assert_eq!(bytes[9], 255, "gzip OS");
++    let mut tar = Vec::new();
++    flate2::read::GzDecoder::new(&bytes[..])
++        .read_to_end(&mut tar)
++        .unwrap();
++    assert_eq!(tar.len() % 10240, 0);
++    let again = dir.join("b.tar.gz");
++    dist_tar::write(&src, "top", 1_700_000_000, &["game-testbed"], &again).unwrap();
++    assert_eq!(fs::read(&again).unwrap(), bytes);
++    fs::remove_dir_all(&dir).unwrap();
++}
++
++/// The system's tar (GNU tar on Linux, bsdtar on macOS and Windows) unpacks
++/// the archive to the same files.
++#[test]
++fn the_systems_tar_unpacks_the_archive() {
++    let dir = scratch("system-tar");
++    let src = folder(&dir);
++    dist_tar::write(
++        &src,
++        "top",
++        1_700_000_000,
++        &["game-testbed"],
++        &dir.join("a.tar.gz"),
++    )
++    .unwrap();
++    let out = dir.join("out");
++    fs::create_dir_all(&out).unwrap();
++    let status = Command::new("tar")
++        .current_dir(&out)
++        .args(["-xzf", "../a.tar.gz"])
++        .status()
++        .expect("tar runs");
++    assert!(status.success());
++    for file in crate::util::walk_all(&src) {
++        let rel = file.strip_prefix(&src).unwrap();
++        let unpacked = out.join("top").join(rel);
++        assert_eq!(
++            fs::read(&unpacked).unwrap(),
++            fs::read(&file).unwrap(),
++            "{rel:?}"
++        );
++    }
++    #[cfg(unix)]
++    {
++        use std::os::unix::fs::PermissionsExt;
++        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o111;
++        assert_ne!(
++            mode(&out.join("top/game-testbed")),
++            0,
++            "the binary is executable"
++        );
++        assert_eq!(mode(&out.join("top/version.json")), 0);
++    }
++    fs::remove_dir_all(&dir).unwrap();
++}
++
++#[test]
++fn headers_refuse_what_ustar_cannot_hold() {
++    let name = "x".repeat(101);
++    assert!(
++        dist_tar::header(&name, 0o644, 0, 0, b'0').is_err(),
++        "no / to split at"
++    );
++    let path = format!("{}/{}", "p".repeat(155), "n".repeat(100));
++    assert!(dist_tar::header(&path, 0o644, 0, 0, b'0').is_ok());
++    let path = format!("{}/{}", "p".repeat(156), "n".repeat(10));
++    assert!(
++        dist_tar::header(&path, 0o644, 0, 0, b'0').is_err(),
++        "prefix over 155"
++    );
++    assert!(
++        dist_tar::header("big", 0o644, 1 << 33, 0, b'0').is_err(),
++        "size over 8 GiB"
++    );
++    assert!(dist_tar::header("big", 0o644, (1 << 33) - 1, 0, b'0').is_ok());
++}
++
++#[test]
++fn a_damaged_header_is_refused() {
++    let dir = scratch("damaged");
++    let src = folder(&dir);
++    let archive = dir.join("a.tar.gz");
++    dist_tar::write(&src, "top", 0, &[], &archive).unwrap();
++    let mut tar = Vec::new();
++    flate2::read::GzDecoder::new(&fs::read(&archive).unwrap()[..])
++        .read_to_end(&mut tar)
++        .unwrap();
++    tar[1] ^= 1;
++    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
++    std::io::Write::write_all(&mut gz, &tar).unwrap();
++    fs::write(&archive, gz.finish().unwrap()).unwrap();
++    let err = dist_tar::members(&archive, false).unwrap_err();
++    assert!(err.contains("checksum"), "{err}");
++    // A gzip trailer whose CRC no longer matches the data.
++    dist_tar::write(&src, "top", 0, &[], &archive).unwrap();
++    let mut bytes = fs::read(&archive).unwrap();
++    let crc = bytes.len() - 8;
++    bytes[crc] ^= 1;
++    fs::write(&archive, &bytes).unwrap();
++    assert!(
++        dist_tar::members(&archive, false).is_err(),
++        "the CRC is read"
++    );
++    fs::remove_dir_all(&dir).unwrap();
++}
++
++fn refs(paths: &[String]) -> Vec<&str> {
++    paths.iter().map(String::as_str).collect()
++}
++
++#[test]
++fn the_archive_must_hold_the_four_kinds_of_file() {
++    let built = |target: &str| Built {
++        plan: plan(target).unwrap(),
++        dir: PathBuf::new(),
++        archive: PathBuf::new(),
++    };
++    let mac = built("aarch64-apple-darwin");
++    let top = "game-testbed-aarch64-apple-darwin";
++    let mut paths = vec![
++        format!("{top}/"),
++        format!("{top}/THIRD-PARTY-NOTICES.txt"),
++        format!("{top}/game-testbed"),
++        format!("{top}/game-testbed.dSYM/"),
++        format!("{top}/game-testbed.dSYM/Contents/Resources/DWARF/"),
++        format!("{top}/game-testbed.dSYM/Contents/Resources/DWARF/game_testbed-0123abcd"),
++        format!("{top}/version.json"),
++    ];
++    holds(&mac, &refs(&paths)).unwrap();
++    paths.retain(|p| !p.ends_with("version.json"));
++    let err = holds(&mac, &refs(&paths)).unwrap_err();
++    assert!(err.contains("version.json"), "{err}");
++    // A dSYM with no DWARF file in it.
++    paths.retain(|p| !p.contains("game_testbed-0123abcd"));
++    let err = holds(&mac, &refs(&paths)).unwrap_err();
++    assert!(
++        err.contains("game-testbed.dSYM/Contents/Resources/DWARF/"),
++        "{err}"
++    );
++    let windows = built("x86_64-pc-windows-msvc");
++    let top = "game-testbed-x86_64-pc-windows-msvc";
++    let paths = [
++        format!("{top}/"),
++        format!("{top}/game-testbed.exe"),
++        format!("{top}/version.json"),
++        format!("{top}/THIRD-PARTY-NOTICES.txt"),
++    ];
++    let err = holds(&windows, &refs(&paths)).unwrap_err();
++    assert!(err.contains("game_testbed.pdb"), "{err}");
++}
++
++#[test]
++fn the_stamp_must_be_a_release_for_the_target() {
++    let stamp = |profile: &str, assertions: bool, target: &str| {
++        serde_json::json!({"build": {
++            "profile": profile, "debug_assertions": assertions, "target": target,
++            "engine_sha": "abc",
++        }})
++        .to_string()
++    };
++    let host = "x86_64-unknown-linux-gnu";
++    assert!(release_stamp(&stamp("release", false, host), host).is_ok());
++    for bad in [
++        stamp("debug", true, host),
++        stamp("release", true, host),
++        stamp("release", false, "aarch64-unknown-linux-gnu"),
++    ] {
++        assert!(
++            release_stamp(&bad, host).unwrap_err().contains("[E-DIST]"),
++            "{bad}"
++        );
++    }
++}
++
++/// A minimal ELF64 file: the null section, `names` and the section-name
++/// table last.
++fn elf(names: &[&str]) -> Vec<u8> {
++    let mut table = vec![0u8];
++    let mut offsets = vec![0u32];
++    for name in names.iter().chain([&".shstrtab"]) {
++        offsets.push(table.len() as u32);
++        table.extend(name.as_bytes());
++        table.push(0);
++    }
++    let count = offsets.len();
++    let shoff = 64 + table.len();
++    let mut bytes = vec![0u8; shoff + 64 * count];
++    bytes[..6].copy_from_slice(b"\x7fELF\x02\x01");
++    bytes[0x28..0x30].copy_from_slice(&(shoff as u64).to_le_bytes());
++    bytes[0x3a..0x3c].copy_from_slice(&64u16.to_le_bytes());
++    bytes[0x3c..0x3e].copy_from_slice(&(count as u16).to_le_bytes());
++    bytes[0x3e..0x40].copy_from_slice(&((count - 1) as u16).to_le_bytes());
++    bytes[64..shoff].copy_from_slice(&table);
++    for (i, name) in offsets.iter().enumerate() {
++        let at = shoff + 64 * i;
++        bytes[at..at + 4].copy_from_slice(&name.to_le_bytes());
++    }
++    let last = shoff + 64 * (count - 1);
++    bytes[last + 0x18..last + 0x20].copy_from_slice(&64u64.to_le_bytes());
++    bytes[last + 0x20..last + 0x28].copy_from_slice(&(table.len() as u64).to_le_bytes());
++    bytes
++}
++
++#[test]
++fn elf_section_names_are_read() {
++    let names = elf_sections(&elf(&[".text", ".gnu_debuglink"])).unwrap();
++    assert_eq!(names, ["", ".text", ".gnu_debuglink", ".shstrtab"]);
++    assert!(elf_sections(b"MZ not elf").is_err());
++    assert!(elf_sections(&elf(&[".text"])[..80]).is_err(), "cut short");
++}
++
++#[test]
++fn a_stripped_elf_binary_keeps_no_symbols_or_debug_info() {
++    let names = |list: &[&str]| list.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
++    // What objcopy --strip-all leaves of a Rust binary (aarch64 Linux).
++    let stripped = names(&[".text", ".debug_gdb_scripts", ".gnu_debuglink", ".shstrtab"]);
++    assert!(elf_unstripped(&stripped).is_empty());
++    let full = names(&[".text", ".symtab", ".strtab", ".debug_info", ".zdebug_line"]);
++    assert_eq!(
++        elf_unstripped(&full),
++        [".symtab", ".debug_info", ".zdebug_line"]
++    );
++}
++
++/// A PE file's COFF symbol count, the 4 bytes 16 past the `PE\0\0` that
++/// offset 0x3c points at.
++#[test]
++fn pe_coff_symbols_are_counted() {
++    let pe = |symbols: u32| {
++        let mut bytes = vec![0u8; 0x80];
++        bytes[..2].copy_from_slice(b"MZ");
++        bytes[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
++        bytes[0x40..0x44].copy_from_slice(b"PE\0\0");
++        bytes[0x50..0x54].copy_from_slice(&symbols.to_le_bytes());
++        bytes
++    };
++    assert_eq!(pe_symbols(&pe(0)).unwrap(), 0);
++    assert_eq!(pe_symbols(&pe(7)).unwrap(), 7);
++    let mut not_pe = pe(0);
++    not_pe[0x40] = b'X';
++    assert!(pe_symbols(&not_pe).is_err());
++    assert!(pe_symbols(b"MZ").is_err(), "cut short");
++}
++
++/// A minimal Mach-O file with one `LC_SYMTAB` over `kinds` (`n_type`s).
++fn macho(kinds: &[u8]) -> Vec<u8> {
++    let symbols = 32 + 24;
++    let mut bytes = vec![0u8; symbols + 16 * kinds.len()];
++    bytes[..4].copy_from_slice(&0xfeed_facfu32.to_le_bytes());
++    bytes[16..20].copy_from_slice(&1u32.to_le_bytes());
++    bytes[32..36].copy_from_slice(&2u32.to_le_bytes());
++    bytes[36..40].copy_from_slice(&24u32.to_le_bytes());
++    bytes[40..44].copy_from_slice(&(symbols as u32).to_le_bytes());
++    bytes[44..48].copy_from_slice(&(kinds.len() as u32).to_le_bytes());
++    for (i, kind) in kinds.iter().enumerate() {
++        bytes[symbols + 16 * i + 4] = *kind;
++    }
++    bytes
++}
++
++#[test]
++fn macho_debug_maps_and_local_symbols_are_counted() {
++    // N_OSO and N_FUN stabs; a local N_SECT; an external N_SECT; undefined.
++    assert_eq!(
++        macho_symbols(&macho(&[0x66, 0x24, 0x0e, 0x0f, 0x01])).unwrap(),
++        (2, 1)
++    );
++    assert_eq!(macho_symbols(&macho(&[0x0f, 0x01])).unwrap(), (0, 0));
++    assert!(macho_symbols(b"\x7fELF").is_err());
++}
++
++/// The readers on this test binary, which is neither stripped nor split:
++/// an ELF one keeps `.symtab` and DWARF, a Mach-O one its debug map.
++#[test]
++fn this_unstripped_test_binary_reads_as_unstripped() {
++    let bytes = fs::read(std::env::current_exe().unwrap()).unwrap();
++    if bytes.starts_with(b"\x7fELF") {
++        let names = elf_sections(&bytes).unwrap();
++        assert!(names.iter().any(|n| n == ".symtab"), "{names:?}");
++        assert!(names.iter().any(|n| n == ".text"), "{names:?}");
++    } else if bytes.starts_with(&0xfeed_facfu32.to_le_bytes()) {
++        let (stabs, locals) = macho_symbols(&bytes).unwrap();
++        assert!(stabs > 0 && locals > 0, "{stabs} stabs, {locals} locals");
++    }
++}
++
++/// The workflow installs cargo-about where the notices are made, and keeps
++/// the archive of each runner whose host `dist` packages.
++#[test]
++fn the_workflow_installs_cargo_about_and_keeps_the_archives() {
++    let workflow = fs::read_to_string(root().join(".github/workflows/ci.yml"))
++        .unwrap()
++        .replace("\r\n", "\n");
++    let install = format!(
++        "cargo install --locked cargo-about@{} --features cli",
++        crate::dist_notices::ABOUT_VERSION
++    );
++    assert_eq!(
++        workflow.matches(&install).count(),
++        2,
++        "lint and native install {install}"
++    );
++    assert!(workflow.contains("name: dist-${{ matrix.runner }}"));
++    assert!(workflow.contains("path: target/dist/*.tar.gz"));
++    let packaged: Vec<&str> = crate::ci_native::RUNNERS
++        .iter()
++        .filter(|(_, host)| PLAYABLE.contains(host))
++        .map(|(runner, _)| *runner)
++        .collect();
++    assert_eq!(packaged, ["ubuntu-24.04", "windows-2025", "macos-26"]);
++    let condition = packaged
++        .iter()
++        .map(|runner| format!("matrix.runner == '{runner}'"))
++        .collect::<Vec<_>>()
++        .join(" || ");
++    assert_eq!(workflow.matches(&condition).count(), 2, "{condition}");
++}
+diff --git a/xtask/src/main.rs b/xtask/src/main.rs
+index 0dc409da5819a062d86d8e76aea06b2e41f0ee2b..d23dd26841735ee2fc61399b04fc8788c59a326e 100644
+--- a/xtask/src/main.rs
++++ b/xtask/src/main.rs
+@@ -13,6 +13,10 @@ mod ci_durations;
+ mod ci_native;
+ mod ci_report;
+ mod ci_verdicts;
++mod dist;
++mod dist_check;
++mod dist_notices;
++mod dist_tar;
+ mod docs;
+ mod glob;
+ mod guard;
+@@ -44,6 +48,9 @@ cargo xtask ci --job <job>             a CI job: lint test riscv wasm selftest n
+ cargo xtask arch-check                 layering, core-set purity, crate-root attributes
+ cargo xtask size-check                 warn over 500 lines, fail over 1000
+ cargo xtask docs-check                 AGENTS.md at most 150 lines, no CLAUDE.md
++cargo xtask notices                    the testbed's third-party notices (cargo-about 0.9.3)
++cargo xtask dist [--target T]          target/dist/<target>/ and its .tar.gz: the stripped release
++                                       binary, its debug info, version.json and the notices
+ cargo xtask replay [--regen] [--target T] [--out DIR]
+                                        run the testbed scenarios, compare hash streams
+ cargo xtask compare-hashes DIR DIR...  cross-architecture equality of hash streams
+@@ -75,6 +82,9 @@ fn main() -> ExitCode {
+         ["arch-check"] => util::root().and_then(|root| arch::check(&root)),
+         ["size-check"] => util::root().and_then(|root| size::check(&root)),
+         ["docs-check"] => util::root().and_then(|root| docs::check(&root)),
++        ["notices"] => util::root().and_then(|root| dist_notices::run(&root)),
++        ["dist", rest @ ..] => dist::parse(rest)
++            .and_then(|target| run_lock::run(|| dist::run(&util::root()?, target.as_deref()))),
+         ["replay", rest @ ..] => replay::parse(rest)
+             .and_then(|opts| run_lock::run(|| replay::run(&util::root()?, &opts))),
+         ["compare-hashes", dirs @ ..] if dirs.len() >= 2 => {

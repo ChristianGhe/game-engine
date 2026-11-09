@@ -1,8 +1,8 @@
 diff --git a/xtask/src/docs.rs b/xtask/src/docs.rs
-index 10034a27c38243737972503d633a4157258d9f85..07354362fe668b2c8e5343216d0fb48d1b47075f 100644
+index 10034a27c38243737972503d633a4157258d9f85..382449eb33c01f36d921888efa8a3c284cbc0dc2 100644
 --- a/xtask/src/docs.rs
 +++ b/xtask/src/docs.rs
-@@ -1,11 +1,13 @@
+@@ -1,17 +1,26 @@
  //! `cargo xtask docs-check` (spec 7.4): AGENTS.md stays at most 150 lines,
 -//! no CLAUDE.md is committed beyond a pointer to AGENTS.md, and CODEOWNERS
 -//! gives the owner every protected path.
@@ -19,12 +19,38 @@ index 10034a27c38243737972503d633a4157258d9f85..07354362fe668b2c8e5343216d0fb48d
  
  pub const AGENTS_MAX_LINES: usize = 150;
  
-@@ -28,9 +30,13 @@ pub fn check(root: &Path) -> Result<String, String> {
+ pub fn check(root: &Path) -> Result<String, String> {
++    check_docs(root, root)
++}
++
++/// `docs-check` of the docs under `docs` (AGENTS.md, CLAUDE.md and what
++/// docs-lint reads) against the repo at `root`: its tree, code and
++/// CODEOWNERS. `selftest docs-stale-path` runs it on copies of the docs.
++pub fn check_docs(root: &Path, docs: &Path) -> Result<String, String> {
+     let mut errors = Vec::new();
+-    let agents = fs::read_to_string(root.join("AGENTS.md"))
++    let agents = fs::read_to_string(docs.join("AGENTS.md"))
+         .map_err(|e| format!("[E-DOCS] AGENTS.md: {e}"))?;
+     let lines = agents.lines().count();
+     if lines > AGENTS_MAX_LINES {
+@@ -19,7 +28,7 @@ pub fn check(root: &Path) -> Result<String, String> {
+             "[E-DOCS] AGENTS.md has {lines} lines (max {AGENTS_MAX_LINES})"
+         ));
+     }
+-    if let Ok(claude) = fs::read_to_string(root.join("CLAUDE.md"))
++    if let Ok(claude) = fs::read_to_string(docs.join("CLAUDE.md"))
+         && claude.trim() != "@AGENTS.md"
+     {
+         errors.push(
+@@ -28,9 +37,16 @@ pub fn check(root: &Path) -> Result<String, String> {
          );
      }
      errors.extend(codeowners(root)?);
-+    let lint = docs_lint::check(root, root)?;
-+    errors.extend(lint.stale);
++    let lint = docs_lint::check(root, docs)?;
++    if !lint.stale.is_empty() {
++        errors.extend(lint.stale);
++        errors.push(docs_lint::HINT.into());
++    }
      if errors.is_empty() {
          Ok(format!(
 -            "docs-check: AGENTS.md {lines}/{AGENTS_MAX_LINES} lines; CODEOWNERS covers protected.toml"
@@ -36,31 +62,39 @@ index 10034a27c38243737972503d633a4157258d9f85..07354362fe668b2c8e5343216d0fb48d
          Err(errors.join("\n"))
 diff --git a/xtask/src/docs_lint.rs b/xtask/src/docs_lint.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..425293141139f8a15ca3228b858ed88686789658
+index 0000000000000000000000000000000000000000..e100fb6fc0867ae7fcdeff5351cc06f33e7c0ea5
 --- /dev/null
 +++ b/xtask/src/docs_lint.rs
-@@ -0,0 +1,383 @@
+@@ -0,0 +1,475 @@
 +//! Docs-lint (rung 2, decision 16; spec 7.4 and the plan's difference 8):
 +//! every `cargo xtask` command, probe command, repo path, `ENG_*` variable
 +//! and `[E-*]` or `[W-*]` tag that `AGENTS.md`, `docs/ARCHITECTURE.md` and
 +//! `.claude/skills/*/SKILL.md` name must exist. `docs-check` runs it, and
 +//! each stale reference fails as `[E-DOCS-STALE] <file>:<line>: <what>`.
 +//!
-+//! - **Commands**, read from code only: inline spans, and the lines of
-+//!   fenced blocks (a line ending in `\` goes on; ` #` starts a comment).
-+//!   `cargo xtask <cmd> ...` must be a command of xtask's usage text, with
-+//!   its flags, `ci --job`'s jobs, `selftest`'s cases and `hook`'s choices.
-+//!   `cargo run -p game-testbed [...] -- <cmd> ...` must be a command of the
-+//!   probe's usage text, with its flags; that text is read from
-+//!   [`PROBE_USAGE`](known::PROBE_USAGE), not run.
++//! - **Commands**, read from code: inline spans, the lines of fenced blocks
++//!   (a line ending in `\` goes on), and the spans in a fenced line's `#`
++//!   comment. A command is `cargo xtask <cmd> ...`; `cargo run [flags]
++//!   -p game-testbed [flags] -- <cmd> ...` (or `--package`, `--bin`); or
++//!   `game-testbed <cmd> ...`, after any `NAME=value`. Each must be in the
++//!   usage text of xtask or the probe (read from `PROBE_USAGE`, not run):
++//!   the command, its flags, how many arguments it takes, `ci --job`'s jobs,
++//!   `selftest`'s cases and `hook`'s choices. Every probe command also takes
++//!   the flags its parser matches that the usage leaves out (the test-only
++//!   `--panic-at-tick`). A span of two or more words whose first word is a
++//!   command of either usage (`replay verify`, `dump-world --at-tick N`)
++//!   passes if either accepts it; one whose first word is no command but
++//!   that has a `--flag` fails, unless the word is in [`OTHER_PROGRAMS`]. A
++//!   word alone (`run`, `dump-world`) and a bare list in prose or a comment
++//!   (`# the rest: docs-check, size-check`) are not checked.
 +//! - **Paths**, tokens of path characters, where `<name>` stands for part of
 +//!   a segment and `*` and `**` glob. A path whose first segment is at the
 +//!   root (`docs/adr/`, `Cargo.toml`; a bare word such as `xtask` is prose),
 +//!   or that starts with `**/`, must match something in the tree: a
 +//!   directory if it ends in `/`, and a `:N` or `:N-M` suffix must be lines
-+//!   of the file. An inline span that is one shorter path ending in a source
-+//!   extension ([`SOURCE`](known::SOURCE): `tests/shots.rs`, `crash_json.rs`)
-+//!   must end some file's path. Other short names (`flip/<shot>.png`,
++//!   of a file it matches. An inline span that is one shorter path ending in
++//!   a source extension (`SOURCE`: `tests/shots.rs`, `crash_json.rs`) must
++//!   end some file's path. Other short names (`flip/<shot>.png`,
 +//!   `version.json`, `agent/<name>`) are outputs or not paths, and `target/`
 +//!   holds outputs: neither is checked.
 +//! - **Variables** (`ENG_X`) and **tags** (`[E-X]`, `[W-X]`, or `[E-X-*]`
@@ -68,8 +102,10 @@ index 0000000000000000000000000000000000000000..425293141139f8a15ca3228b858ed886
 +//!   `.rs` files under `crates/` and `xtask/`, except this lint's tests,
 +//!   whose fixtures name what must not exist.
 +//!
-+//! The tree is every file and directory under the root but `.git`, `.jj`,
-+//! `target` and nested checkouts, compared case for case as on Linux. A
++//! The tree is what git would commit, compared case for case as on Linux:
++//! `git ls-files --cached --others --exclude-standard`, so an ignored file
++//! (`target/`, `.claude/guard-unlock`) never counts, and a new file counts
++//! before `git add` (as under jj). Without git, a walk of the directory. A
 +//! doc may name what does not exist only through [`ALLOWED`], with a reason.
 +
 +use std::fs;
@@ -79,17 +115,39 @@ index 0000000000000000000000000000000000000000..425293141139f8a15ca3228b858ed886
 +mod known;
 +pub use known::Known;
 +
++#[path = "docs_lint_usage.rs"]
++mod usage;
++use usage::{flag, placeholder, word};
++
 +/// Starts each stale reference's line.
 +pub const TAG: &str = "[E-DOCS-STALE]";
 +
-+const XTASK: &str = "cargo xtask";
-+const PROBE: &str = "cargo run -p game-testbed";
++/// What to do about a stale reference: the line after the list.
++pub const HINT: &str = "docs-lint: fix the doc; write `<name>` for a part that varies \
++     (`crates/<name>/`); `ALLOWED` and `OTHER_PROGRAMS` in xtask/src/docs_lint.rs are the owner's";
 +
 +/// References the docs may make to what does not exist, as written, and why.
-+pub const ALLOWED: &[(&str, &str)] = &[(
-+    ".claude/guard-unlock",
-+    "the owner's unlock file: git-ignored, it exists only while the owner lifts the guard",
-+)];
++pub const ALLOWED: &[(&str, &str)] = &[
++    (
++        ".claude/guard-unlock",
++        "the owner's unlock file: git-ignored, it exists only while the owner lifts the guard",
++    ),
++    (
++        "CLAUDE.md",
++        "absent by design: spec 7.4 allows at most a pointer to AGENTS.md, and none is committed",
++    ),
++];
++
++/// Programs other than xtask and the probe that a span may show with flags
++/// (`git status --porcelain`, `cargo test -p eng-math --test known_answers`).
++pub const OTHER_PROGRAMS: &[&str] = &[
++    "awk", "bash", "cargo", "cat", "cd", "cmp", "cp", "curl", "diff", "docker", "echo", "find",
++    "gh", "git", "grep", "jj", "ls", "mv", "open", "python3", "rm", "rustc", "rustup", "sed", "sh",
++    "tar", "typos", "unzip", "xvfb-run", "zsh",
++];
++
++/// What ends a simple command on a shell line.
++const BREAKS: [&str; 7] = ["|", "||", "&&", ";", "&", ">", ">>"];
 +
 +#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 +pub enum Kind {
@@ -98,10 +156,12 @@ index 0000000000000000000000000000000000000000..425293141139f8a15ca3228b858ed886
 +    Path {
 +        short: bool,
 +    },
-+    /// `cargo xtask` and what follows.
++    /// The arguments of `cargo xtask`.
 +    Xtask,
-+    /// The probe command after `cargo run -p game-testbed ... --`.
++    /// The probe's arguments, after `cargo run ... --` or `game-testbed`.
 +    Probe,
++    /// A span of words that may be a command of either usage.
++    Command,
 +    Var,
 +    Tag,
 +}
@@ -124,7 +184,8 @@ index 0000000000000000000000000000000000000000..425293141139f8a15ca3228b858ed886
 +}
 +
 +/// Lints the docs under `docs` against the tree, code and usage texts at
-+/// `root` (the same directory, except for `selftest docs-stale-path`).
++/// `root`: the same directory, except in `selftest docs-stale-path`, which
++/// goes through `docs::check_docs` as `docs-check` does.
 +pub fn check(root: &Path, docs: &Path) -> Result<Report, String> {
 +    let known = Known::read(root)?;
 +    let mut report = Report::default();
@@ -141,6 +202,13 @@ index 0000000000000000000000000000000000000000..425293141139f8a15ca3228b858ed886
 +
 +/// The docs docs-lint reads under `docs`, repo-relative.
 +pub fn doc_names(docs: &Path) -> Vec<String> {
++    let mut names = vec!["AGENTS.md".to_string(), "docs/ARCHITECTURE.md".to_string()];
++    names.extend(skill_names(docs));
++    names
++}
++
++/// `.claude/skills/*/SKILL.md` under `docs`, sorted.
++pub fn skill_names(docs: &Path) -> Vec<String> {
 +    let mut skills: Vec<String> = fs::read_dir(docs.join(".claude/skills"))
 +        .map(|dir| {
 +            dir.flatten()
@@ -155,9 +223,7 @@ index 0000000000000000000000000000000000000000..425293141139f8a15ca3228b858ed886
 +        })
 +        .unwrap_or_default();
 +    skills.sort();
-+    let mut names = vec!["AGENTS.md".to_string(), "docs/ARCHITECTURE.md".to_string()];
-+    names.extend(skills);
-+    names
++    skills
 +}
 +
 +/// How many references of `text` it checked, and a line for each stale one.
@@ -201,19 +267,25 @@ index 0000000000000000000000000000000000000000..425293141139f8a15ca3228b858ed886
 +        }
 +        if fenced {
 +            let first = i + 1;
-+            let mut code = comment_cut(line).to_string();
-+            code_paths(first, &code, &mut out);
++            let (code, comment) = split_comment(line);
++            let mut comments = vec![(first, comment)];
++            code_paths(first, code, &mut out);
++            let mut code = code.to_string();
 +            while code.trim_end().ends_with('\\')
 +                && i + 1 < lines.len()
 +                && !lines[i + 1].trim_start().starts_with("```")
 +            {
 +                i += 1;
 +                names(i + 1, lines[i], &mut out);
-+                let next = comment_cut(lines[i]);
++                let (next, comment) = split_comment(lines[i]);
++                comments.push((i + 1, comment));
 +                code_paths(i + 1, next, &mut out);
 +                code = format!("{} {next}", code.trim_end().trim_end_matches('\\'));
 +            }
 +            commands(first, &code, &mut out);
++            for (line, comment) in comments {
++                comment_spans(line, comment, &mut out);
++            }
 +            i += 1;
 +            continue;
 +        }
@@ -239,28 +311,55 @@ index 0000000000000000000000000000000000000000..425293141139f8a15ca3228b858ed886
 +    out
 +}
 +
-+/// A code line without its shell comment.
-+fn comment_cut(line: &str) -> &str {
-+    if line.trim_start().starts_with('#') {
-+        return "";
++/// A shell line's code and its comment, which starts at a `#` that begins
++/// the line or follows a space.
++fn split_comment(line: &str) -> (&str, &str) {
++    if let Some(comment) = line.trim_start().strip_prefix('#') {
++        return ("", comment);
 +    }
-+    line.find(" #").map_or(line, |at| &line[..at])
++    match line.find(" #") {
++        Some(at) => (&line[..at], &line[at + 2..]),
++        None => (line, ""),
++    }
++}
++
++/// The inline spans of a comment, which end with its line.
++fn comment_spans(line: usize, comment: &str, out: &mut Vec<Ref>) {
++    let parts: Vec<&str> = comment.split('`').collect();
++    // Odd parts are inside backticks; an unclosed last one is not a span.
++    for (i, part) in parts.iter().enumerate() {
++        if i % 2 == 1 && i + 1 < parts.len() {
++            inline(line, part, out);
++        }
++    }
 +}
 +
 +/// An inline span: commands, and the path it is or the paths it holds.
 +fn inline(line: usize, content: &str, out: &mut Vec<Ref>) {
 +    let content = content.trim();
 +    commands(line, content, out);
-+    if content.split_whitespace().count() == 1 {
-+        if path_parts(content).is_some() {
-+            out.push(Ref {
-+                line,
-+                kind: Kind::Path { short: true },
-+                text: content.into(),
-+            });
++    let tokens: Vec<&str> = content.split_whitespace().collect();
++    match tokens.as_slice() {
++        [one] => {
++            if path_parts(one).is_some() {
++                out.push(Ref {
++                    line,
++                    kind: Kind::Path { short: true },
++                    text: content.into(),
++                });
++            }
 +        }
-+    } else {
-+        code_paths(line, content, out);
++        [first, _, ..] => {
++            if word(first) && *first != "cargo" && !testbed(first) {
++                out.push(Ref {
++                    line,
++                    kind: Kind::Command,
++                    text: tokens.join(" "),
++                });
++            }
++            code_paths(line, content, out);
++        }
++        [] => {}
 +    }
 +}
 +
@@ -281,35 +380,63 @@ index 0000000000000000000000000000000000000000..425293141139f8a15ca3228b858ed886
 +    }
 +}
 +
-+/// `cargo xtask ...` and `cargo run -p game-testbed ... -- ...` in code, up
-+/// to the end of the command.
++/// The xtask and probe commands of a code line: each simple command, after
++/// its `NAME=value` assignments.
 +fn commands(line: usize, code: &str, out: &mut Vec<Ref>) {
-+    for (prefix, kind) in [(XTASK, Kind::Xtask), (PROBE, Kind::Probe)] {
-+        let mut rest = code;
-+        while let Some(at) = rest.find(prefix) {
-+            rest = &rest[at + prefix.len()..];
-+            if !(rest.is_empty() || rest.starts_with(char::is_whitespace)) {
-+                continue;
-+            }
-+            let mut tokens: Vec<&str> = rest
-+                .split_whitespace()
-+                .take_while(|t| !["|", "||", "&&", ";", "&", ">", ">>"].contains(t))
-+                .collect();
-+            if kind == Kind::Probe {
-+                let Some(dashes) = tokens.iter().position(|t| *t == "--") else {
-+                    continue;
-+                };
-+                tokens.drain(..=dashes);
-+            }
-+            if tokens.first().is_some_and(|t| !placeholder(t)) {
-+                out.push(Ref {
-+                    line,
-+                    kind,
-+                    text: tokens.join(" "),
-+                });
-+            }
++    let tokens: Vec<&str> = code.split_whitespace().collect();
++    for command in tokens.split(|t| BREAKS.contains(t)) {
++        let start = command.iter().take_while(|t| assignment(t)).count();
++        let (kind, args) = match &command[start..] {
++            ["cargo", "xtask", args @ ..] => (Kind::Xtask, args.to_vec()),
++            ["cargo", "run", args @ ..] => match probe_args(args) {
++                Some(args) => (Kind::Probe, args),
++                None => continue,
++            },
++            [program, args @ ..] if testbed(program) => (Kind::Probe, args.to_vec()),
++            _ => continue,
++        };
++        if args
++            .first()
++            .is_some_and(|t| !placeholder(t) && (word(t) || t.starts_with('-')))
++        {
++            out.push(Ref {
++                line,
++                kind,
++                text: args.join(" "),
++            });
 +        }
 +    }
++}
++
++/// The probe's arguments in `cargo run`'s, if its package or binary is
++/// `game-testbed`: what follows `--`.
++fn probe_args<'a>(args: &[&'a str]) -> Option<Vec<&'a str>> {
++    let dashes = args.iter().position(|t| *t == "--")?;
++    let cargo = &args[..dashes];
++    let named = cargo.iter().enumerate().any(|(i, t)| {
++        let value = match *t {
++            "-p" | "--package" | "--bin" => cargo.get(i + 1).copied(),
++            t => t
++                .strip_prefix("--package=")
++                .or_else(|| t.strip_prefix("--bin="))
++                .or_else(|| t.strip_prefix("-p").filter(|v| !v.starts_with('-'))),
++        };
++        value == Some("game-testbed")
++    });
++    named.then(|| args[dashes + 1..].to_vec())
++}
++
++/// `game-testbed`, or a path to it, as a program.
++fn testbed(program: &str) -> bool {
++    program == "game-testbed" || program.ends_with("/game-testbed")
++}
++
++/// `NAME=value`, as a shell sets a variable for one command.
++fn assignment(token: &str) -> bool {
++    token.split_once('=').is_some_and(|(name, _)| {
++        name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
++            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
++    })
 +}
 +
 +/// The `ENG_*` variables and `[E-*]`/`[W-*]` tags on a line.
@@ -411,24 +538,15 @@ index 0000000000000000000000000000000000000000..425293141139f8a15ca3228b858ed886
 +    ok.then_some((path, lines))
 +}
 +
-+/// `<name>`, `[--flag]`, `{a,b}`, `N`, `DIR...`: not a literal word.
-+fn placeholder(token: &str) -> bool {
-+    token.starts_with(['<', '[', '{'])
-+        || token.contains("...")
-+        || token
-+            .chars()
-+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-+}
-+
 +#[cfg(test)]
 +#[path = "docs_lint_tests.rs"]
 +mod tests;
 diff --git a/xtask/src/docs_lint_known.rs b/xtask/src/docs_lint_known.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..efea3ea6d74f364052714a3b9950898059bdd6e1
+index 0000000000000000000000000000000000000000..cc92ed330201951a899aebc300f96205e738e8f7
 --- /dev/null
 +++ b/xtask/src/docs_lint_known.rs
-@@ -0,0 +1,360 @@
+@@ -0,0 +1,303 @@
 +//! What docs-lint holds the docs' references against (`docs_lint.rs` says
 +//! what it reads): the tree, the names in the code, and the usage texts of
 +//! xtask and the probe.
@@ -436,8 +554,10 @@ index 0000000000000000000000000000000000000000..efea3ea6d74f364052714a3b99508980
 +use std::collections::BTreeSet;
 +use std::fs;
 +use std::path::{Path, PathBuf};
++use std::process::Command;
 +
-+use super::{Kind, PROBE, Ref, XTASK, path_parts, placeholder, tags, vars};
++use super::usage::Usage;
++use super::{Kind, OTHER_PROGRAMS, Ref, flag, path_parts, tags, vars};
 +use crate::{ci, glob, selftest, util};
 +
 +/// The probe's usage text, a `const USAGE` of `<game> <command> ...` lines.
@@ -446,7 +566,7 @@ index 0000000000000000000000000000000000000000..efea3ea6d74f364052714a3b99508980
 +/// The extensions of files a doc names by a short path.
 +pub const SOURCE: [&str; 5] = ["rs", "wgsl", "toml", "md", "yml"];
 +
-+/// Directories that are not the tree: version control and build outputs.
++/// Directories the walk without git leaves out: version control, outputs.
 +const SKIP: [&str; 3] = [".git", ".jj", "target"];
 +
 +/// This lint's tests, whose fixtures name what must not exist.
@@ -473,13 +593,22 @@ index 0000000000000000000000000000000000000000..efea3ea6d74f364052714a3b99508980
 +                "[E-DOCS] {PROBE_USAGE}: no `const USAGE`, the probe's usage that docs-lint reads"
 +            )
 +        })?;
++        let mut xtask = Usage::parse(crate::USAGE, "cargo xtask ");
++        xtask.restrict("ci", Some("--job"), &ci::JOBS, "a CI job (ci::JOBS)");
++        xtask.restrict(
++            "selftest",
++            None,
++            &selftest::CASES,
++            "a selftest case (selftest::CASES)",
++        );
 +        let mut known = Known {
 +            root: root.to_path_buf(),
 +            tree: tree(root),
-+            xtask: Usage::parse(crate::USAGE, "cargo xtask "),
++            xtask,
 +            probe: Usage::parse(&probe, "<game> "),
 +            ..Known::default()
 +        };
++        known.probe.hidden_flags(&source);
 +        let code = known.tree.iter().filter(|rel| {
 +            (rel.starts_with("crates/") || rel.starts_with("xtask/"))
 +                && rel.ends_with(".rs")
@@ -516,13 +645,13 @@ index 0000000000000000000000000000000000000000..efea3ea6d74f364052714a3b99508980
 +        let tokens: Vec<&str> = text.split_whitespace().collect();
 +        let verdict = match r.kind {
 +            Kind::Path { short } => return self.path(text, short),
++            Kind::Command => return self.command(text, &tokens),
 +            Kind::Xtask => self
 +                .xtask
 +                .check(&tokens)
-+                .and_then(|()| xtask_values(&tokens))
-+                .map_err(|why| format!("`{XTASK} {text}`: {why} (`{XTASK} help`)")),
++                .map_err(|why| format!("`cargo xtask {text}`: {why} (`cargo xtask help`)")),
 +            Kind::Probe => self.probe.check(&tokens).map_err(|why| {
-+                format!("`{PROBE} -- {text}`: {why} (the probe's usage, {PROBE_USAGE})")
++                format!("`game-testbed {text}`: {why} (the probe's usage, {PROBE_USAGE})")
 +            }),
 +            Kind::Var if self.vars.contains(text) => Ok(()),
 +            Kind::Var => Err(format!(
@@ -543,6 +672,31 @@ index 0000000000000000000000000000000000000000..efea3ea6d74f364052714a3b99508980
 +            }
 +        };
 +        Some(verdict)
++    }
++
++    /// A span of words: a command of the probe or xtask, if either has its
++    /// first word; else, with a flag, a command of neither.
++    fn command(&self, text: &str, tokens: &[&str]) -> Option<Result<(), String>> {
++        let first = tokens.first().copied().unwrap_or_default();
++        let probe = self.probe.has(first).then(|| self.probe.check(tokens));
++        let xtask = self.xtask.has(first).then(|| self.xtask.check(tokens));
++        if probe.is_none() && xtask.is_none() {
++            let flagged = tokens.iter().any(|t| flag(t).is_some());
++            if !flagged || OTHER_PROGRAMS.contains(&first) {
++                return None;
++            }
++            return Some(Err(format!(
++                "`{text}`: no command `{first}` in the probe's or xtask's usage"
++            )));
++        }
++        if probe == Some(Ok(())) || xtask == Some(Ok(())) {
++            return Some(Ok(()));
++        }
++        let whys: Vec<String> = [(probe, "the probe"), (xtask, "xtask")]
++            .into_iter()
++            .filter_map(|(verdict, whose)| Some(format!("{} ({whose})", verdict?.err()?)))
++            .collect();
++        Some(Err(format!("`{text}`: {}", whys.join("; "))))
 +    }
 +
 +    fn path(&self, text: &str, short: bool) -> Option<Result<(), String>> {
@@ -572,166 +726,36 @@ index 0000000000000000000000000000000000000000..efea3ea6d74f364052714a3b99508980
 +            .iter()
 +            .filter(|e| (!dir || e.ends_with('/')) && glob::matches(&pattern, e))
 +            .collect();
-+        let Some(file) = found.first() else {
++        if found.is_empty() {
 +            let what = if dir {
 +                "directory"
 +            } else {
 +                "file or directory"
 +            };
 +            return Some(Err(format!("`{text}`: no such {what} in the tree")));
++        }
++        let Some((from, to)) = lines else {
++            return Some(Ok(()));
 +        };
-+        if let Some((from, to)) = lines
-+            && found.len() == 1
-+            && !file.ends_with('/')
-+        {
-+            let count = fs::read_to_string(self.root.join(file.as_str()))
-+                .map(|t| t.lines().count())
-+                .unwrap_or(0);
-+            if from == 0 || from > to || to > count {
-+                return Some(Err(format!("`{text}`: {file} has {count} lines")));
-+            }
-+        }
-+        Some(Ok(()))
-+    }
-+}
-+
-+/// A usage text's commands: `<prefix><words> [flags...]` lines, with
-+/// indented lines going on, and flags on other lines that every command
-+/// takes (the probe's `--map`).
-+#[derive(Debug, Default)]
-+pub struct Usage {
-+    entries: Vec<Entry>,
-+    shared: BTreeSet<String>,
-+}
-+
-+#[derive(Debug, Default)]
-+struct Entry {
-+    words: Vec<String>,
-+    flags: BTreeSet<String>,
-+    /// `<a|b|c>` after the words: the values it takes.
-+    choices: Vec<String>,
-+}
-+
-+impl Usage {
-+    pub fn parse(text: &str, prefix: &str) -> Usage {
-+        let mut usage = Usage::default();
-+        for line in text.lines() {
-+            let flags = |text: &str| -> Vec<String> {
-+                text.split_whitespace()
-+                    .filter_map(flag)
-+                    .map(String::from)
-+                    .collect()
-+            };
-+            if let Some(rest) = line.strip_prefix(prefix) {
-+                // Two spaces start xtask's description of the command.
-+                let head = rest.split("  ").next().unwrap_or(rest);
-+                let tokens: Vec<&str> = head.split_whitespace().collect();
-+                let n = 1 + tokens.iter().skip(1).take_while(|t| word(t)).count();
-+                let choices = tokens
-+                    .get(n)
-+                    .and_then(|t| t.strip_prefix('<')?.strip_suffix('>'))
-+                    .filter(|t| t.contains('|'))
-+                    .map(|t| t.split('|').map(String::from).collect())
-+                    .unwrap_or_default();
-+                usage.entries.push(Entry {
-+                    words: tokens.iter().take(n).map(|t| t.to_string()).collect(),
-+                    flags: flags(head).into_iter().collect(),
-+                    choices,
-+                });
-+            } else if line.starts_with(char::is_whitespace)
-+                && let Some(last) = usage.entries.last_mut()
-+            {
-+                last.flags.extend(flags(line));
-+            } else {
-+                usage.shared.extend(flags(line));
-+            }
-+        }
-+        usage
-+    }
-+
-+    /// Whether `tokens` (a command and its arguments) is one of the usage's
-+    /// commands, with flags and a value that command takes.
-+    pub fn check(&self, tokens: &[&str]) -> Result<(), String> {
-+        let first = tokens.first().copied().unwrap_or_default();
-+        let mut named = false;
-+        for entry in self.entries.iter().filter(|e| e.words[0] == first) {
-+            named = true;
-+            let fits = entry.words.iter().enumerate().skip(1).all(|(i, w)| {
-+                tokens
-+                    .get(i)
-+                    .is_none_or(|t| placeholder(t) || *t == w.as_str())
-+            });
-+            if !fits {
-+                continue;
-+            }
-+            // `--version` is a command that is also a flag.
-+            for token in tokens.iter().skip(usize::from(!first.starts_with("--"))) {
-+                if let Some(flag) = flag(token)
-+                    && !entry.flags.contains(flag)
-+                    && !self.shared.contains(flag)
-+                {
-+                    return Err(format!("`{}` takes no `{flag}`", entry.words.join(" ")));
-+                }
-+            }
-+            if let Some(value) = tokens.get(entry.words.len())
-+                && word(value)
-+                && !entry.choices.is_empty()
-+                && !entry.choices.iter().any(|c| c == value)
-+            {
-+                return Err(format!(
-+                    "`{first}` takes one of {}, not `{value}`",
-+                    entry.choices.join(" ")
-+                ));
-+            }
-+            return Ok(());
-+        }
-+        let shown: Vec<&str> = tokens
++        // The range must be lines of one of the files the path matches.
++        let counts: Vec<(&String, usize)> = found
 +            .iter()
-+            .take(if named { 2 } else { 1 })
-+            .copied()
++            .filter(|f| !f.ends_with('/'))
++            .map(|f| {
++                let text = fs::read_to_string(self.root.join(f.as_str())).unwrap_or_default();
++                (*f, text.lines().count())
++            })
 +            .collect();
-+        Err(format!("no command `{}`", shown.join(" ")))
++        let fits = |count: usize| from >= 1 && from <= to && to <= count;
++        if counts.is_empty() || counts.iter().any(|(_, count)| fits(*count)) {
++            return Some(Ok(()));
++        }
++        let sizes: Vec<String> = counts
++            .iter()
++            .map(|(file, count)| format!("{file} has {count} lines"))
++            .collect();
++        Some(Err(format!("`{text}`: {}", sizes.join(", "))))
 +    }
-+}
-+
-+/// A command word: lower-case letters, digits and `-`, not a flag.
-+fn word(token: &str) -> bool {
-+    !token.is_empty()
-+        && !token.starts_with('-')
-+        && token
-+            .chars()
-+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-+}
-+
-+/// The `--flag` a token names, without brackets, punctuation or `=value`.
-+fn flag(token: &str) -> Option<&str> {
-+    let token = token.trim_matches(|c: char| "[](),.;:`|".contains(c));
-+    let token = token.split('=').next().unwrap_or(token);
-+    let name = token.strip_prefix("--")?;
-+    let ok = !name.is_empty()
-+        && name
-+            .chars()
-+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-+    ok.then_some(token)
-+}
-+
-+/// The values xtask's own lists give: `ci --job`'s jobs, `selftest`'s cases.
-+fn xtask_values(tokens: &[&str]) -> Result<(), String> {
-+    let job = tokens.iter().position(|t| *t == "--job");
-+    if tokens.first() == Some(&"ci")
-+        && let Some(job) = job.and_then(|at| tokens.get(at + 1))
-+        && word(job)
-+        && !ci::JOBS.contains(job)
-+    {
-+        return Err(format!("no CI job `{job}`"));
-+    }
-+    if let ["selftest", case, ..] = tokens
-+        && word(case)
-+        && !selftest::CASES.contains(case)
-+    {
-+        return Err(format!("no selftest case `{case}`"));
-+    }
-+    Ok(())
 +}
 +
 +/// `<name>` placeholders as `*`, for [`glob::matches`].
@@ -761,9 +785,46 @@ index 0000000000000000000000000000000000000000..efea3ea6d74f364052714a3b99508980
 +    Some(body[..end].replace("\\\"", "\""))
 +}
 +
++/// The tree: what git would commit, else a walk.
++pub fn tree(root: &Path) -> BTreeSet<String> {
++    git_tree(root).unwrap_or_else(|| walk(root))
++}
++
++/// Files git tracks or would add (not those it ignores) that exist, and the
++/// directories that hold them.
++fn git_tree(root: &Path) -> Option<BTreeSet<String>> {
++    let out = Command::new("git")
++        .args([
++            "ls-files",
++            "-z",
++            "--cached",
++            "--others",
++            "--exclude-standard",
++        ])
++        .current_dir(root)
++        .output()
++        .ok()?;
++    if !out.status.success() {
++        return None;
++    }
++    let mut tree = BTreeSet::new();
++    let listed = String::from_utf8_lossy(&out.stdout);
++    for rel in listed.split('\0').filter(|rel| !rel.is_empty()) {
++        // Still in the index, but deleted from the working tree.
++        if !root.join(rel).is_file() {
++            continue;
++        }
++        for (at, _) in rel.match_indices('/') {
++            tree.insert(rel[..=at].to_string());
++        }
++        tree.insert(rel.to_string());
++    }
++    Some(tree)
++}
++
 +/// Every file and directory (with a trailing `/`) under `root`, but [`SKIP`]
 +/// and nested checkouts.
-+fn tree(root: &Path) -> BTreeSet<String> {
++fn walk(root: &Path) -> BTreeSet<String> {
 +    let mut out = BTreeSet::new();
 +    let mut stack = vec![root.to_path_buf()];
 +    while let Some(dir) = stack.pop() {
@@ -791,17 +852,19 @@ index 0000000000000000000000000000000000000000..efea3ea6d74f364052714a3b99508980
 +}
 diff --git a/xtask/src/docs_lint_tests.rs b/xtask/src/docs_lint_tests.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..c3ca52fdae44f01bf2204a739383f215be85d8cd
+index 0000000000000000000000000000000000000000..35e2ed629a22c08994f9fa48c8aaf8bff73b52b3
 --- /dev/null
 +++ b/xtask/src/docs_lint_tests.rs
-@@ -0,0 +1,316 @@
+@@ -0,0 +1,496 @@
 +//! Unit tests for docs-lint on synthetic docs, trees and usage texts. The
 +//! code scan skips this file: its fixtures name what must not exist.
 +
 +use std::fs;
-+use std::path::Path;
++use std::path::{Path, PathBuf};
++use std::process::Command;
 +
-+use super::known::{PROBE_USAGE, Usage, probe_usage};
++use super::known::{PROBE_USAGE, probe_usage, tree};
++use super::usage::Usage;
 +use super::*;
 +
 +const DOC: &str = "\
@@ -812,32 +875,35 @@ index 0000000000000000000000000000000000000000..c3ca52fdae44f01bf2204a739383f215
 +Set ENG_REQUIRE_GPU=1 (not MY_ENG_X) and grep `[E-ARCH-*]` or [W-GONE].
 +
 +```sh
-+cargo xtask quick              # and `cargo xtask nothing`, a comment
-+cargo run -p game-testbed -- dump-world --at-tick N \\
++cargo xtask quick              # fmt, clippy; `replay dump r.rec` prints it
++cargo run --release -p game-testbed -- dump-world --at-tick N \\
 +    --input crates/a/scenarios/<name>.input.toml --out a.json
++ENG_REQUIRE_GPU=1 game-testbed run --ticks 5 && cargo run -p game-testbed-client -- x
 +```
 +
 +A span that `cargo xtask ci
-+--job lint` goes on; `cargo xtask` alone and `cargo xtask <cmd>` name none.
++--job lint` goes on; `cargo xtask` alone and `cargo xtask <cmd>` name none,
++nor do `run` alone or `git status --short`; `play --bindings` is a command.
 +";
 +
-+const TREE: &[&str] = &[
-+    ".claude/",
-+    "Cargo.toml",
-+    "crates/",
-+    "crates/a/",
-+    "crates/a/Cargo.toml",
-+    "crates/a/scenarios/",
-+    "crates/a/scenarios/walk.input.toml",
-+    "crates/a/tests/",
-+    "crates/a/tests/shots.rs",
-+    "docs/",
-+    "docs/adr/",
-+    "docs/adr/0001-x.md",
-+    "docs/rungs/",
-+    "docs/rungs/2/",
-+    "docs/rungs/2/plan.md",
-+];
++/// What a review planted and the first docs-lint missed.
++const PLANTED: &str = "\
++Spans: `replay dumpx`, `dump-wrld --at-tick N`, `game-testbed run --tickz 5`.
++
++```sh
++cargo run --release -p game-testbed -- shoot --frob
++cargo run -q -p game-testbed -- shoot   # then `replay dumpx r.rec`
++```
++";
++
++/// The fixture tree: files, and directories with a trailing `/`.
++const TREE: &str = ".claude/ Cargo.toml crates/ crates/a/ crates/a/Cargo.toml crates/a/scenarios/
++    crates/a/scenarios/walk.input.toml crates/a/tests/ crates/a/tests/shots.rs docs/ docs/adr/
++    docs/adr/0001-x.md docs/rungs/ docs/rungs/2/ docs/rungs/2/plan.md";
++
++fn fixture() -> Known {
++    known(&TREE.split_whitespace().collect::<Vec<_>>())
++}
 +
 +/// A probe's `args.rs`, as [`PROBE_USAGE`] holds it.
 +const PROBE_SOURCE: &str = r#"use std::path::PathBuf;
@@ -848,6 +914,7 @@ index 0000000000000000000000000000000000000000..c3ca52fdae44f01bf2204a739383f215
 +<game> replay verify <recording> [--report report.json]
 +<game> replay dump <recording> [--out recording.json]
 +<game> dump-world --at-tick N --out world.json [--input script.toml]
++<game> play [--ticks N] [--bindings bindings.toml]
 +<game> --version [--json]
 +<game> help
 +
@@ -856,9 +923,12 @@ index 0000000000000000000000000000000000000000..c3ca52fdae44f01bf2204a739383f215
 +
 +fn known(tree: &[&str]) -> Known {
 +    let probe = probe_usage(PROBE_SOURCE).expect("the fixture's USAGE");
++    let mut xtask = Usage::parse(crate::USAGE, "cargo xtask ");
++    xtask.restrict("ci", Some("--job"), &crate::ci::JOBS, "a CI job");
++    xtask.restrict("selftest", None, &crate::selftest::CASES, "a selftest case");
 +    Known {
 +        tree: tree.iter().map(|p| p.to_string()).collect(),
-+        xtask: Usage::parse(crate::USAGE, "cargo xtask "),
++        xtask,
 +        probe: Usage::parse(&probe, "<game> "),
 +        vars: ["ENG_REQUIRE_GPU".to_string()].into(),
 +        tags: ["[E-ARCH-FLOOR]".to_string(), "[E-DESYNC]".to_string()].into(),
@@ -874,8 +944,15 @@ index 0000000000000000000000000000000000000000..c3ca52fdae44f01bf2204a739383f215
 +    })
 +}
 +
++fn scratch(what: &str) -> PathBuf {
++    let dir = std::env::temp_dir().join(format!("xtask-docs-lint-{what}-{}", std::process::id()));
++    let _ = fs::remove_dir_all(&dir);
++    fs::create_dir_all(&dir).expect("scratch");
++    dir
++}
++
 +#[test]
-+fn references_come_from_spans_fences_and_the_text() {
++fn references_come_from_spans_fences_comments_and_the_text() {
 +    let refs = refs(DOC);
 +    let of = |kind: Kind| -> Vec<(usize, &str)> {
 +        refs.iter()
@@ -892,6 +969,7 @@ index 0000000000000000000000000000000000000000..c3ca52fdae44f01bf2204a739383f215
 +            (3, "tests/shots.rs"),
 +            (4, "flip/<shot>.png"),
 +            (4, "target/agent-logs/"),
++            (16, "run"),
 +        ]
 +    );
 +    let code = of(Kind::Path { short: false });
@@ -900,22 +978,37 @@ index 0000000000000000000000000000000000000000..c3ca52fdae44f01bf2204a739383f215
 +        "{code:?}"
 +    );
 +    assert!(code.contains(&(10, "a.json")), "{code:?}");
-+    // The comment's command is not read; a bare `cargo xtask` names none.
-+    assert_eq!(of(Kind::Xtask), [(8, "quick"), (13, "ci --job lint")]);
++    // A bare `cargo xtask` names none; another package is not the probe.
++    assert_eq!(of(Kind::Xtask), [(8, "quick"), (14, "ci --job lint")]);
 +    assert_eq!(
 +        of(Kind::Probe),
-+        [(
-+            9,
-+            "dump-world --at-tick N --input crates/a/scenarios/<name>.input.toml --out a.json"
-+        )]
++        [
++            (
++                9,
++                "dump-world --at-tick N --input crates/a/scenarios/<name>.input.toml --out a.json"
++            ),
++            (11, "run --ticks 5"),
++        ]
 +    );
-+    assert_eq!(of(Kind::Var), [(5, "ENG_REQUIRE_GPU")]);
++    // A comment's spans are read; its bare words are not.
++    assert_eq!(
++        of(Kind::Command),
++        [
++            (8, "replay dump r.rec"),
++            (16, "git status --short"),
++            (16, "play --bindings")
++        ]
++    );
++    assert_eq!(
++        of(Kind::Var),
++        [(5, "ENG_REQUIRE_GPU"), (11, "ENG_REQUIRE_GPU")]
++    );
 +    assert_eq!(of(Kind::Tag), [(5, "[E-ARCH-*]"), (5, "[W-GONE]")]);
 +}
 +
 +#[test]
 +fn a_stale_reference_fails_with_its_file_and_line() {
-+    let (checked, stale) = lint("DOC.md", DOC, &known(TREE));
++    let (checked, stale) = lint("DOC.md", DOC, &fixture());
 +    assert_eq!(
 +        stale,
 +        [
@@ -923,14 +1016,42 @@ index 0000000000000000000000000000000000000000..c3ca52fdae44f01bf2204a739383f215
 +            "[E-DOCS-STALE] DOC.md:5: `[W-GONE]` is in no .rs file under crates/ or xtask/",
 +        ]
 +    );
-+    // 4 spans, 3 names, 2 xtask commands, 1 probe command, 1 path in code.
-+    assert_eq!(checked, 11);
++    // 4 spans, 4 names, 2 xtask and 2 probe commands, 2 command spans, a
++    // path in code; `run` alone and `git status --short` are not checked.
++    assert_eq!(checked, 15);
++}
++
++#[test]
++fn what_a_review_planted_now_fails() {
++    let (_, stale) = lint("AGENTS.md", PLANTED, &fixture());
++    let usage = format!("(the probe's usage, {PROBE_USAGE})");
++    assert_eq!(
++        stale,
++        [
++            "[E-DOCS-STALE] AGENTS.md:1: `replay dumpx`: no command `replay dumpx` (the probe); \
++             `replay` takes no `dumpx` (xtask)"
++                .to_string(),
++            "[E-DOCS-STALE] AGENTS.md:1: `dump-wrld --at-tick N`: no command `dump-wrld` in the \
++             probe's or xtask's usage"
++                .to_string(),
++            format!(
++                "[E-DOCS-STALE] AGENTS.md:1: `game-testbed run --tickz 5`: `run` takes no `--tickz` {usage}"
++            ),
++            format!(
++                "[E-DOCS-STALE] AGENTS.md:4: `game-testbed shoot --frob`: no command `shoot` {usage}"
++            ),
++            format!("[E-DOCS-STALE] AGENTS.md:5: `game-testbed shoot`: no command `shoot` {usage}"),
++            "[E-DOCS-STALE] AGENTS.md:5: `replay dumpx r.rec`: no command `replay dumpx` (the \
++             probe); `replay` takes no `dumpx` (xtask)"
++                .to_string(),
++        ]
++    );
 +}
 +
 +#[test]
 +fn each_stale_line_is_said_once_and_the_allowed_are_spared() {
-+    let doc = "`docs/gone.md` and `docs/gone.md`\n\nUnlock with `.claude/guard-unlock`.\n";
-+    let (checked, stale) = lint("AGENTS.md", doc, &known(TREE));
++    let doc = "`docs/gone.md` and `docs/gone.md`\n\n`.claude/guard-unlock`, `CLAUDE.md`.\n";
++    let (checked, stale) = lint("AGENTS.md", doc, &fixture());
 +    assert_eq!(
 +        stale,
 +        ["[E-DOCS-STALE] AGENTS.md:1: `docs/gone.md`: no such file or directory in the tree"]
@@ -942,14 +1063,18 @@ index 0000000000000000000000000000000000000000..c3ca52fdae44f01bf2204a739383f215
 +}
 +
 +#[test]
-+fn xtask_commands_must_be_in_its_usage_with_their_flags_and_values() {
++fn xtask_commands_must_be_in_its_usage_with_their_flags_and_arguments() {
 +    let k = known(&[]);
 +    for ok in [
 +        "quick",
 +        "help",
++        "--help",
++        "-h",
 +        "replay --regen",
++        "replay --target x86_64-unknown-linux-gnu --out DIR",
 +        "ci --job lint",
 +        "ci --job <job>",
++        "ci --job",
 +        "selftest",
 +        "selftest [CASE]",
 +        "selftest golden-edit",
@@ -958,15 +1083,27 @@ index 0000000000000000000000000000000000000000..c3ca52fdae44f01bf2204a739383f215
 +        "install-hooks --if-stale",
 +        "push --dry-run name",
 +        "compare-hashes DIR DIR...",
++        "compare-hashes a b c",
 +    ] {
 +        assert_eq!(verdict(&k, Kind::Xtask, ok), Some(Ok(())), "{ok}");
 +    }
 +    for (bad, why) in [
 +        ("frobnicate", "no command `frobnicate`"),
 +        ("replay --bless", "`replay` takes no `--bless`"),
-+        ("ci --job nightly", "no CI job `nightly`"),
-+        ("selftest no-such-case", "no selftest case `no-such-case`"),
-+        ("hook nap", "`hook` takes one of guard verify"),
++        ("quick now", "`quick` takes no `now`"),
++        ("ci --job nightly", "`nightly` is not a CI job"),
++        (
++            "selftest no-such-case",
++            "`no-such-case` is not a selftest case",
++        ),
++        (
++            "selftest golden-edit no-such-case",
++            "`selftest` takes no `no-such-case`",
++        ),
++        (
++            "hook nap",
++            "`nap` is not one of guard verify fmt stop session-start",
++        ),
 +    ] {
 +        let err = verdict(&k, Kind::Xtask, bad).expect("checked").unwrap_err();
 +        assert!(
@@ -977,7 +1114,7 @@ index 0000000000000000000000000000000000000000..c3ca52fdae44f01bf2204a739383f215
 +}
 +
 +#[test]
-+fn probe_commands_must_be_in_its_usage_with_their_flags() {
++fn probe_commands_must_be_in_its_usage_with_their_flags_and_arguments() {
 +    let k = known(&[]);
 +    for ok in [
 +        "run --headless --ticks 120 --seed 1 --report r.json --map room",
@@ -986,8 +1123,10 @@ index 0000000000000000000000000000000000000000..c3ca52fdae44f01bf2204a739383f215
 +        "replay",
 +        "replay <verify|dump>",
 +        "dump-world --at-tick 60 --out world.json",
++        "play [--ticks 240 --bindings b.toml]",
 +        "--version --json",
 +        "help",
++        "-h",
 +    ] {
 +        assert_eq!(verdict(&k, Kind::Probe, ok), Some(Ok(())), "{ok}");
 +    }
@@ -999,12 +1138,46 @@ index 0000000000000000000000000000000000000000..c3ca52fdae44f01bf2204a739383f215
 +            "replay verify r.rec --out x",
 +            "`replay verify` takes no `--out`",
 +        ),
++        (
++            "replay verify a.rec b.rec",
++            "`replay verify` takes no `b.rec`",
++        ),
 +        ("--version --yaml", "`--version` takes no `--yaml`"),
 +    ] {
 +        let err = verdict(&k, Kind::Probe, bad).expect("checked").unwrap_err();
-+        let shown = format!("`cargo run -p game-testbed -- {bad}`: {why}");
-+        assert!(err.starts_with(&shown), "{err}");
++        assert!(
++            err.starts_with(&format!("`game-testbed {bad}`: {why}")),
++            "{err}"
++        );
 +    }
++}
++
++#[test]
++fn a_span_of_words_is_a_command_of_either_program_or_of_another() {
++    let k = known(&[]);
++    let command = |text: &str| verdict(&k, Kind::Command, text);
++    // `replay` is the probe's and xtask's: either may accept it.
++    for ok in [
++        "replay verify",
++        "replay --regen",
++        "dump-world --at-tick N",
++        "ci --job",
++    ] {
++        assert_eq!(command(ok), Some(Ok(())), "{ok}");
++    }
++    // Another program's, or words with no flag: not checked.
++    for skipped in [
++        "git status --porcelain",
++        "cargo test -p x --test y",
++        "dirty unknown",
++    ] {
++        assert_eq!(command(skipped), None, "{skipped}");
++    }
++    let err = command("play --bindingz").expect("checked").unwrap_err();
++    assert_eq!(
++        err,
++        "`play --bindingz`: `play` takes no `--bindingz` (the probe)"
++    );
 +}
 +
 +/// The probe's usage is read from eng-cli's source: this finds it there.
@@ -1012,20 +1185,47 @@ index 0000000000000000000000000000000000000000..c3ca52fdae44f01bf2204a739383f215
 +fn the_probe_usage_is_where_docs_lint_reads_it() {
 +    let root = crate::util::find_root(Path::new(env!("CARGO_MANIFEST_DIR"))).expect("root");
 +    let source = fs::read_to_string(root.join(PROBE_USAGE)).expect(PROBE_USAGE);
-+    let usage = Usage::parse(&probe_usage(&source).expect("const USAGE"), "<game> ");
++    let mut usage = Usage::parse(&probe_usage(&source).expect("const USAGE"), "<game> ");
++    usage.hidden_flags(&source);
 +    for command in [
 +        &["run"][..],
-+        &["replay", "verify"],
++        &["replay", "verify", "x.rec"],
 +        &["dump-world"],
 +        &["help"],
++        // Test-only: the parser takes it, the usage does not show it.
++        &["run", "--panic-at-tick", "5"],
 +    ] {
 +        assert_eq!(usage.check(command), Ok(()), "{command:?}");
 +    }
++    // A flag the usage names for one command stays that command's.
++    assert!(
++        usage
++            .check(&["replay", "verify", "--bindings", "b.toml"])
++            .is_err()
++    );
++}
++
++#[test]
++fn flags_the_parser_matches_but_the_usage_hides_are_every_commands() {
++    let source = format!(
++        "{PROBE_SOURCE}\nmatch f {{ \"--panic-at-tick\" if run => {{}}, \"--seed\" => {{}}, \"--version\" => {{}} }}"
++    );
++    let mut usage = Usage::parse(&probe_usage(&source).expect("USAGE"), "<game> ");
++    assert!(
++        usage
++            .check(&["dump-world", "--panic-at-tick", "3"])
++            .is_err()
++    );
++    usage.hidden_flags(&source);
++    assert_eq!(usage.check(&["dump-world", "--panic-at-tick", "3"]), Ok(()));
++    // `--seed` and `--version` are in the usage, so no other command gains them.
++    assert!(usage.check(&["dump-world", "--seed", "1"]).is_err());
++    assert!(usage.check(&["run", "--version"]).is_err());
 +}
 +
 +#[test]
 +fn paths_from_the_root_must_exist_and_short_ones_must_end_one() {
-+    let k = known(TREE);
++    let k = fixture();
 +    let path = |text: &str, short: bool| verdict(&k, Kind::Path { short }, text);
 +    for short in [true, false] {
 +        for ok in [
@@ -1053,7 +1253,7 @@ index 0000000000000000000000000000000000000000..c3ca52fdae44f01bf2204a739383f215
 +    assert_eq!(path("shots.rs", true), Some(Ok(())));
 +    assert_eq!(path("*.input.toml", true), Some(Ok(())));
 +    assert!(path("tests/gone.rs", true).expect("checked").is_err());
-+    // Not from the root otherwise: outputs, branches, code.
++    // Not from the root otherwise: outputs, branches, code, prose.
 +    for skipped in [
 +        ("tests/gone.rs", false),
 +        ("flip/<shot>.png", true),
@@ -1062,21 +1262,22 @@ index 0000000000000000000000000000000000000000..c3ca52fdae44f01bf2204a739383f215
 +        ("target/agent-logs/", true),
 +        ("target/gone.rs", true),
 +        ("eng_math::sqrt", true),
-+        ("docs", true),
 +        ("a/../b.rs", true),
 +        ("<a", true),
++        ("docs", true),
 +    ] {
 +        assert_eq!(path(skipped.0, skipped.1), None, "{skipped:?}");
 +    }
 +}
 +
 +#[test]
-+fn a_line_suffix_must_be_lines_of_the_file() {
-+    let dir = std::env::temp_dir().join(format!("xtask-docs-lint-{}", std::process::id()));
-+    let _ = fs::remove_dir_all(&dir);
++fn a_line_suffix_must_be_lines_of_a_file_it_names() {
++    let dir = scratch("lines");
 +    fs::create_dir_all(dir.join("src")).expect("scratch");
++    fs::create_dir_all(dir.join("lib")).expect("scratch");
 +    fs::write(dir.join("src/a.rs"), "1\n2\n3\n").expect("scratch");
-+    let mut k = known(&["src/", "src/a.rs"]);
++    fs::write(dir.join("lib/a.rs"), "1\n2\n3\n4\n5\n6\n").expect("scratch");
++    let mut k = known(&["src/", "src/a.rs", "lib/", "lib/a.rs"]);
 +    k.root = dir.clone();
 +    let path = |text: &str| verdict(&k, Kind::Path { short: true }, text).expect("checked");
 +    assert_eq!(path("src/a.rs:3"), Ok(()));
@@ -1084,6 +1285,46 @@ index 0000000000000000000000000000000000000000..c3ca52fdae44f01bf2204a739383f215
 +    for bad in ["src/a.rs:4", "src/a.rs:0", "src/a.rs:3-2", "src/a.rs:2-9"] {
 +        assert_eq!(path(bad), Err(format!("`{bad}`: src/a.rs has 3 lines")));
 +    }
++    // A short name matching two files: the lines of either will do.
++    assert_eq!(path("a.rs:5"), Ok(()));
++    assert_eq!(
++        path("a.rs:7"),
++        Err("`a.rs:7`: lib/a.rs has 6 lines, src/a.rs has 3 lines".into())
++    );
++    let _ = fs::remove_dir_all(&dir);
++}
++
++#[test]
++fn the_tree_is_what_git_would_commit_else_a_walk() {
++    let dir = scratch("tree");
++    let git = |args: &[&str]| {
++        let out = Command::new("git")
++            .args(args)
++            .current_dir(&dir)
++            .output()
++            .expect("git");
++        assert!(
++            out.status.success(),
++            "git {args:?}: {}",
++            String::from_utf8_lossy(&out.stderr)
++        );
++    };
++    git(&["init", "-q"]);
++    fs::create_dir_all(dir.join("sub")).expect("scratch");
++    fs::write(dir.join(".gitignore"), "ignored.txt\n").expect("scratch");
++    for file in ["tracked.md", "sub/new.rs", "ignored.txt", "deleted.md"] {
++        fs::write(dir.join(file), "x\n").expect("scratch");
++    }
++    git(&["add", "tracked.md", "deleted.md"]);
++    fs::remove_file(dir.join("deleted.md")).expect("scratch");
++    let listed: Vec<String> = tree(&dir).into_iter().collect();
++    assert_eq!(listed, [".gitignore", "sub/", "sub/new.rs", "tracked.md"]);
++    fs::remove_dir_all(dir.join(".git")).expect("scratch");
++    let walked = tree(&dir);
++    assert!(
++        walked.contains("ignored.txt") && walked.contains("sub/"),
++        "{walked:?}"
++    );
 +    let _ = fs::remove_dir_all(&dir);
 +}
 +
@@ -1110,6 +1351,289 @@ index 0000000000000000000000000000000000000000..c3ca52fdae44f01bf2204a739383f215
 +            .expect("checked")
 +            .is_err()
 +    );
++}
+diff --git a/xtask/src/docs_lint_usage.rs b/xtask/src/docs_lint_usage.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..f59e5395f28b14fdea678b3c1f24ca4e390d6e40
+--- /dev/null
++++ b/xtask/src/docs_lint_usage.rs
+@@ -0,0 +1,277 @@
++//! The usage texts docs-lint reads (`docs_lint.rs` says how): xtask's own
++//! and the probe's, as commands, their flags and their arguments.
++
++use std::collections::{BTreeMap, BTreeSet};
++
++/// A usage text's commands: `<prefix><words> [args...]` lines, with
++/// indented lines going on, and flags on other lines that every command
++/// takes (the probe's `--map`).
++#[derive(Debug, Default)]
++pub struct Usage {
++    entries: Vec<Entry>,
++    /// The shared flags, and whether a value follows each.
++    shared: BTreeMap<String, bool>,
++}
++
++#[derive(Debug, Default)]
++struct Entry {
++    words: Vec<String>,
++    /// The flags, and whether a value follows each.
++    flags: BTreeMap<String, bool>,
++    /// The positional arguments, and what each must be, if anything.
++    slots: Vec<Option<Choice>>,
++    /// The last slot repeats (`DIR...`).
++    repeats: bool,
++    /// What a flag's value must be (`ci --job`).
++    values: BTreeMap<String, Choice>,
++}
++
++/// The values an argument takes, and how to name them.
++#[derive(Debug, Clone)]
++struct Choice {
++    values: Vec<String>,
++    what: String,
++}
++
++impl Usage {
++    pub fn parse(text: &str, prefix: &str) -> Usage {
++        let mut usage = Usage::default();
++        for line in text.lines() {
++            let tokens: Vec<&str> = line.split_whitespace().collect();
++            if let Some(rest) = line.strip_prefix(prefix) {
++                // Two spaces start xtask's description of the command.
++                let head: Vec<&str> = rest
++                    .split("  ")
++                    .next()
++                    .unwrap_or(rest)
++                    .split_whitespace()
++                    .collect();
++                let n = 1 + head.iter().skip(1).take_while(|t| word(t)).count();
++                let mut entry = Entry {
++                    words: head.iter().take(n).map(|t| t.to_string()).collect(),
++                    ..Entry::default()
++                };
++                entry.arguments(head.get(n..).unwrap_or_default());
++                usage.entries.push(entry);
++            } else if line.starts_with(char::is_whitespace)
++                && let Some(last) = usage.entries.last_mut()
++            {
++                last.arguments(&tokens);
++            } else {
++                for (i, token) in tokens.iter().enumerate() {
++                    if let Some(name) = flag(token) {
++                        let value = takes_value(token, tokens.get(i + 1));
++                        usage.shared.insert(name.into(), value);
++                    }
++                }
++            }
++        }
++        usage
++    }
++
++    /// `command`'s `flag` value, or its first positional argument, must be
++    /// one of `values`.
++    pub fn restrict(&mut self, command: &str, flag: Option<&str>, values: &[&str], what: &str) {
++        let choice = Choice {
++            values: values.iter().map(|v| v.to_string()).collect(),
++            what: what.into(),
++        };
++        for entry in self.entries.iter_mut().filter(|e| e.words[0] == command) {
++            match flag {
++                Some(flag) => {
++                    entry.values.insert(flag.into(), choice.clone());
++                }
++                None => {
++                    if let Some(slot) = entry.slots.first_mut() {
++                        *slot = Some(choice.clone());
++                    }
++                }
++            }
++        }
++    }
++
++    /// Flags that the parser in `source` matches (`"--x"`) but the usage
++    /// text leaves out, such as the probe's test-only `--panic-at-tick`:
++    /// every command takes them.
++    pub fn hidden_flags(&mut self, source: &str) {
++        let named: BTreeSet<&str> = self
++            .entries
++            .iter()
++            .flat_map(|e| e.flags.keys().chain(e.words.iter()))
++            .chain(self.shared.keys())
++            .map(String::as_str)
++            .collect();
++        let mut hidden = Vec::new();
++        for (at, _) in source.match_indices("\"--") {
++            let rest = &source[at + 1..];
++            let end = rest[2..]
++                .find(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
++                .map_or(rest.len(), |end| end + 2);
++            let name = &rest[..end];
++            if name.len() > 2 && rest[end..].starts_with('"') && !named.contains(name) {
++                hidden.push(name.to_string());
++            }
++        }
++        for name in hidden {
++            self.shared.insert(name, true);
++        }
++    }
++
++    /// Whether `first` is a command of this usage.
++    pub fn has(&self, first: &str) -> bool {
++        self.entries.iter().any(|e| e.words[0] == first)
++    }
++
++    /// Whether `tokens` (a command and its arguments) is one of the usage's
++    /// commands, with flags and arguments that command takes.
++    pub fn check(&self, tokens: &[&str]) -> Result<(), String> {
++        let first = tokens.first().copied().unwrap_or_default();
++        // Both programs print their usage for these.
++        if matches!(first, "--help" | "-h") {
++            return Ok(());
++        }
++        let mut refusal = None;
++        for entry in self.entries.iter().filter(|e| e.words[0] == first) {
++            let fits = entry.words.iter().enumerate().skip(1).all(|(i, w)| {
++                tokens
++                    .get(i)
++                    .is_none_or(|t| placeholder(t) || *t == w.as_str())
++            });
++            if !fits {
++                continue;
++            }
++            let args = tokens.get(entry.words.len()..).unwrap_or_default();
++            match entry.accepts(args, &self.shared) {
++                Ok(()) => return Ok(()),
++                Err(why) => {
++                    refusal.get_or_insert(why);
++                }
++            }
++        }
++        if let Some(why) = refusal {
++            return Err(why);
++        }
++        let shown: Vec<&str> = tokens
++            .iter()
++            .take(if self.has(first) { 2 } else { 1 })
++            .copied()
++            .collect();
++        Err(format!("no command `{}`", shown.join(" ")))
++    }
++}
++
++impl Entry {
++    /// Reads flags, their values and positional slots, up to a plain word
++    /// (xtask's description of the command).
++    fn arguments(&mut self, tokens: &[&str]) {
++        let mut i = 0;
++        while i < tokens.len() {
++            let token = tokens[i];
++            if let Some(name) = flag(token) {
++                let value = takes_value(token, tokens.get(i + 1));
++                self.flags.insert(name.into(), value);
++                i += usize::from(value);
++            } else if word(token) {
++                break;
++            } else {
++                let inner = token.trim_matches(['[', ']', '<', '>']);
++                let choice = (token.starts_with('<') && inner.contains('|')).then(|| Choice {
++                    values: inner.split('|').map(String::from).collect(),
++                    what: format!("one of {}", inner.replace('|', " ")),
++                });
++                self.repeats = token.contains("...");
++                self.slots.push(choice);
++            }
++            i += 1;
++        }
++    }
++
++    fn accepts(&self, args: &[&str], shared: &BTreeMap<String, bool>) -> Result<(), String> {
++        let name = self.words.join(" ");
++        let mut slot = 0;
++        let mut i = 0;
++        while i < args.len() {
++            let token = args[i];
++            i += 1;
++            if token == "--" || !token.chars().any(|c| c.is_ascii_alphanumeric()) {
++                continue;
++            }
++            if let Some(flag) = flag(token) {
++                let Some(&value) = self.flags.get(flag).or_else(|| shared.get(flag)) else {
++                    return Err(format!("`{name}` takes no `{flag}`"));
++                };
++                if value
++                    && !token.contains('=')
++                    && let Some(next) = args.get(i)
++                    && self::flag(next).is_none()
++                {
++                    i += 1;
++                    if let Some(choice) = self.values.get(flag) {
++                        choice.check(next)?;
++                    }
++                }
++                continue;
++            }
++            let last = if self.repeats {
++                self.slots.last()
++            } else {
++                None
++            };
++            let Some(choice) = self.slots.get(slot).or(last) else {
++                return Err(format!("`{name}` takes no `{token}`"));
++            };
++            if let Some(choice) = choice {
++                choice.check(token)?;
++            }
++            slot += 1;
++        }
++        Ok(())
++    }
++}
++
++impl Choice {
++    fn check(&self, value: &str) -> Result<(), String> {
++        if !word(value) || self.values.iter().any(|v| v == value) {
++            Ok(())
++        } else {
++            Err(format!("`{value}` is not {}", self.what))
++        }
++    }
++}
++
++/// Whether a value follows the flag `token` in a usage text: the next token
++/// is no flag, and the flag's own `[...]` does not close.
++fn takes_value(token: &str, next: Option<&&str>) -> bool {
++    !token.ends_with(']') && !token.contains('=') && next.is_some_and(|n| flag(n).is_none())
++}
++
++/// `<name>`, `[--flag]`, `{a,b}`, `N`, `DIR...`: not a literal word.
++pub fn placeholder(token: &str) -> bool {
++    token.starts_with(['<', '[', '{'])
++        || token.contains("...")
++        || token
++            .chars()
++            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
++}
++
++/// A command word: lower-case letters, digits and `-`, not a flag.
++pub fn word(token: &str) -> bool {
++    !token.is_empty()
++        && !token.starts_with('-')
++        && token.chars().any(|c| c.is_ascii_lowercase())
++        && token
++            .chars()
++            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
++}
++
++/// The `--flag` a token names, without brackets, punctuation or `=value`.
++pub fn flag(token: &str) -> Option<&str> {
++    let token = token.trim_matches(|c: char| "[](),.;:`|".contains(c));
++    let token = token.split('=').next().unwrap_or(token);
++    let name = token.strip_prefix("--")?;
++    let ok = !name.is_empty()
++        && name
++            .chars()
++            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
++    ok.then_some(token)
 +}
 diff --git a/xtask/src/main.rs b/xtask/src/main.rs
 index 0dc409da5819a062d86d8e76aea06b2e41f0ee2b..48a7ee6f4b3e8e1128ff5ba56261fd46a2097589 100644
@@ -1173,41 +1697,78 @@ index 32aa2b97e9b13cc019471a7b1e901cd385f60699..fd2918e6ab56cdad2284b41e2ab64a89
              let input = serde_json::json!({
 diff --git a/xtask/src/selftest_docs.rs b/xtask/src/selftest_docs.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..ad89c2f61b25e2bd6874e4edb2e6946623852f86
+index 0000000000000000000000000000000000000000..ad44bd9e321f19fb2a40667201b6061127f98f0d
 --- /dev/null
 +++ b/xtask/src/selftest_docs.rs
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,118 @@
 +//! `cargo xtask selftest docs-stale-path` (rung 2, criteria 16 and 20): a
-+//! stale path in a scratch copy of AGENTS.md must fail docs-lint.
++//! stale path in a scratch copy of AGENTS.md, of docs/ARCHITECTURE.md and of
++//! a skill must each fail docs-check.
 +//!
-+//! 1. The docs docs-lint reads are copied to `target/selftest/docs-stale-path/`.
-+//! 2. The first path from the root that the copy of AGENTS.md names, and that
-+//!    exists, as docs-lint reads it, gains `-gone`: before its extension, or
-+//!    before its trailing `/`.
-+//! 3. Docs-lint of the copies, against the real tree, must fail on that path
-+//!    at its line, and on nothing else.
++//! 1. AGENTS.md, docs/ARCHITECTURE.md and every skill are copied to
++//!    `target/selftest/docs-stale-path/`.
++//! 2. In the copies of AGENTS.md, ARCHITECTURE.md and the first skill, the
++//!    first backticked path from the root that exists, as docs-lint reads
++//!    it, gains `-gone`: before its extension, or before its trailing `/`.
++//! 3. `docs::check_docs`, the entry `docs-check` itself runs, must fail on
++//!    the copies, against the real tree, with those three lines and no
++//!    other error.
 +
 +use std::fs;
 +use std::path::Path;
 +
++use crate::docs;
 +use crate::docs_lint::{self, Kind, Known};
 +
 +pub fn run(root: &Path) -> Result<String, String> {
 +    let ws = root.join("target/selftest/docs-stale-path");
 +    let _ = fs::remove_dir_all(&ws);
-+    for name in docs_lint::doc_names(root) {
-+        let dest = ws.join(&name);
++    let skills = docs_lint::skill_names(root);
++    let Some(skill) = skills.first() else {
++        return Err("selftest setup: no .claude/skills/*/SKILL.md to plant a stale path in".into());
++    };
++    let mut names = vec!["AGENTS.md".to_string(), "docs/ARCHITECTURE.md".to_string()];
++    names.extend(skills.iter().cloned());
++    for name in &names {
++        let dest = ws.join(name);
 +        fs::create_dir_all(dest.parent().expect("has parent")).map_err(|e| e.to_string())?;
-+        fs::copy(root.join(&name), &dest).map_err(|e| format!("{name}: {e}"))?;
++        fs::copy(root.join(name), &dest).map_err(|e| format!("{name}: {e}"))?;
 +    }
 +    let known = Known::read(root)?;
-+    let agents = ws.join("AGENTS.md");
-+    let text = fs::read_to_string(&agents).map_err(|e| format!("AGENTS.md: {e}"))?;
++    let mut expect = Vec::new();
++    for name in ["AGENTS.md", "docs/ARCHITECTURE.md", skill.as_str()] {
++        expect.push(plant(&ws, name, &known)?);
++    }
++    let found = match docs::check_docs(root, &ws) {
++        Ok(passed) => return Err(format!("docs-check accepted the stale paths: {passed}")),
++        Err(found) => found,
++    };
++    let errors: Vec<&str> = found.lines().filter(|l| l.starts_with("[E-")).collect();
++    let all = expect
++        .iter()
++        .all(|e| errors.iter().any(|l| l.starts_with(e.as_str())));
++    if all && errors.len() == expect.len() {
++        Ok(format!("rejected: {}", errors.join("; ")))
++    } else {
++        Err(format!(
++            "docs-check must fail with exactly:\n{}\nit failed with:\n{found}",
++            expect.join("\n")
++        ))
++    }
++}
++
++/// Renames the first existing path from the root that the copy of `name`
++/// names in backticks; the start of the line docs-lint must give for it.
++fn plant(ws: &Path, name: &str, known: &Known) -> Result<String, String> {
++    let path = ws.join(name);
++    let text = fs::read_to_string(&path).map_err(|e| format!("{name}: {e}"))?;
 +    let Some(named) = docs_lint::refs(&text)
 +        .into_iter()
 +        .find(|r| r.kind == Kind::Path { short: true } && known.exists_from_root(&r.text))
 +    else {
-+        return Err("docs-lint reads no path from the root that AGENTS.md names".into());
++        return Err(format!(
++            "selftest setup: {name} names no path from the root that exists"
++        ));
 +    };
 +    let stale = gone(&named.text);
 +    let mut lines: Vec<String> = text.lines().map(String::from).collect();
@@ -1215,26 +1776,17 @@ index 0000000000000000000000000000000000000000..ad89c2f61b25e2bd6874e4edb2e69466
 +    let span = format!("`{}`", named.text);
 +    if !line.contains(&span) {
 +        return Err(format!(
-+            "selftest setup: AGENTS.md:{} does not contain {span}",
++            "selftest setup: {name}:{} does not contain {span}",
 +            named.line
 +        ));
 +    }
 +    *line = line.replacen(&span, &format!("`{stale}`"), 1);
-+    fs::write(&agents, lines.join("\n") + "\n").map_err(|e| format!("AGENTS.md: {e}"))?;
-+    let report = docs_lint::check(root, &ws)?;
-+    let expect = format!("{} AGENTS.md:{}: `{stale}`", docs_lint::TAG, named.line);
-+    match report.stale.as_slice() {
-+        [only] if only.starts_with(&expect) => Ok(format!("rejected: {only}")),
-+        [] => Err(format!(
-+            "docs-lint accepted `{stale}` at AGENTS.md:{}",
-+            named.line
-+        )),
-+        found => Err(format!(
-+            "docs-lint must fail on `{stale}` at AGENTS.md:{} alone; it found:\n{}",
-+            named.line,
-+            found.join("\n")
-+        )),
-+    }
++    fs::write(&path, lines.join("\n") + "\n").map_err(|e| format!("{name}: {e}"))?;
++    Ok(format!(
++        "{} {name}:{}: `{stale}`",
++        docs_lint::TAG,
++        named.line
++    ))
 +}
 +
 +/// `path` renamed so that it no longer exists: `a/b-gone.md`, `a/b-gone/`.

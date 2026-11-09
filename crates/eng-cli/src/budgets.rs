@@ -134,15 +134,10 @@ impl BudgetTracker {
         self.check(tick, checks)
     }
 
-    /// Records one rendered frame's counters, at the tick it shows, against
-    /// `[gpu]`. Returns false once a budget is exceeded.
-    pub fn observe_frame(&mut self, tick: u64, frame: &FrameCounters) -> bool {
-        self.observe_view_frame(tick, frame, false)
-    }
-
-    /// [`BudgetTracker::observe_frame`] for a frame of either view: a
+    /// Records one rendered frame's counters, at the tick it shows. A
     /// `first_person` frame is held to `[gpu.first_person]` when the file
-    /// has that table, and to `[gpu]` otherwise.
+    /// has that table, every other frame to `[gpu]`. Returns false once a
+    /// budget is exceeded.
     pub fn observe_view_frame(
         &mut self,
         tick: u64,
@@ -305,17 +300,17 @@ native_job_minutes = 25
         for (counters, name, numbers) in over {
             let mut tracker = BudgetTracker::load(WITH_GPU, "budgets.toml").unwrap();
             assert!(
-                tracker.observe_frame(6, &at_limit),
+                tracker.observe_view_frame(6, &at_limit, false),
                 "at the limit is within"
             );
             assert_eq!(tracker.exceeded, None);
-            assert!(!tracker.observe_frame(7, &counters), "{name}");
+            assert!(!tracker.observe_view_frame(7, &counters, false), "{name}");
             assert_eq!(
                 tracker.exceeded.as_deref(),
                 Some(format!("[E-BUDGET] {name} exceeded at tick 7: {numbers}").as_str())
             );
             // The first excess is the one reported.
-            assert!(!tracker.observe_frame(8, &frame(99, 99, 99, 99_999)));
+            assert!(!tracker.observe_view_frame(8, &frame(99, 99, 99, 99_999), false));
             assert!(tracker.exceeded.as_deref().unwrap().contains(name));
         }
     }
@@ -324,9 +319,9 @@ native_job_minutes = 25
     fn frame_peaks_are_kept_per_counter() {
         let mut tracker = BudgetTracker::unlimited();
         assert_eq!(tracker.peak_frame, None, "no frame yet");
-        assert!(tracker.observe_frame(0, &frame(2, 5, 1, 64)));
-        assert!(tracker.observe_frame(1, &frame(3, 2, 1, 32)));
-        assert!(tracker.observe_frame(2, &frame(1, 1, 4, 96)));
+        assert!(tracker.observe_view_frame(0, &frame(2, 5, 1, 64), false));
+        assert!(tracker.observe_view_frame(1, &frame(3, 2, 1, 32), false));
+        assert!(tracker.observe_view_frame(2, &frame(1, 1, 4, 96), false));
         assert_eq!(tracker.peak_frame, Some(frame(3, 5, 4, 96)));
         assert_eq!(tracker.exceeded, None, "nothing is limited");
     }
@@ -414,7 +409,7 @@ max_upload_bytes_per_frame = 1024
         );
         // A top-down frame is `[gpu]`'s, whatever the table says.
         let mut top_down = BudgetTracker::load(WITH_FIRST_PERSON, "budgets.toml").unwrap();
-        assert!(top_down.observe_frame(0, &frame(2, 2, 1, 96)));
+        assert!(top_down.observe_view_frame(0, &frame(2, 2, 1, 96), false));
         assert!(!top_down.observe_view_frame(1, &frame(2, 2, 9, 96), false));
         assert_eq!(
             top_down.exceeded.as_deref(),

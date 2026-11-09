@@ -309,10 +309,12 @@ impl<'g> PlayRun<'g> {
     }
 
     /// Keeps a presented frame's counters for the report's `per_frame`
-    /// peaks.
+    /// peaks; a first-person map's frames are held to the budgets'
+    /// `[gpu.first_person]` table when it has one (rung 2, T16).
     pub fn observe_frame(&mut self, counters: &FrameCounters) {
         let tick = self.session.sim().tick().0;
-        self.budgets.observe_frame(tick, counters);
+        let first_person = self.first_person.is_some();
+        (self.budgets).observe_view_frame(tick, counters, first_person);
     }
 
     /// Counts `ticks` of real time the frame loop dropped (it runs at most a

@@ -1,9 +1,9 @@
 diff --git a/crates/game-testbed/tests/look.rs b/crates/game-testbed/tests/look.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..bb1a04d0d61ac155618d444f98e77d88fc0d75c6
+index 0000000000000000000000000000000000000000..e2d5a9594ead425bba24ed7bce8f6d78a95ff512
 --- /dev/null
 +++ b/crates/game-testbed/tests/look.rs
-@@ -0,0 +1,350 @@
+@@ -0,0 +1,414 @@
 +//! The room's look on a real adapter (rung 2, T16; plan decision 13's
 +//! structured look checks, criterion 7), through the testbed's own `shot`
 +//! where an image is enough and in-process where a check needs the frame's
@@ -23,7 +23,9 @@ index 0000000000000000000000000000000000000000..bb1a04d0d61ac155618d444f98e77d88
 +//!   reference (`eng-render/tests/tone/mod.rs`) on every pixel;
 +//! - the room is closed: every pixel that shows the sky (`info`'s
 +//!   `SurfaceClass::None`) looks out through the skylight's opening, from
-+//!   every spawn and pose tried.
++//!   every spawn and pose tried;
++//! - the marker shows the frame its rotation toward the eye names (frame 0
++//!   in `room-spawn`, 6 in `room-sprites`), and the binary draws that frame.
 +//!
 +//! Without an adapter each test skips, unless `ENG_REQUIRE_GPU=1` (CI)
 +//! makes it fail.
@@ -38,7 +40,10 @@ index 0000000000000000000000000000000000000000..bb1a04d0d61ac155618d444f98e77d88
 +use eng_render::{FirstPersonScene, Look, SurfaceClass};
 +use game_testbed_client::{palette, room};
 +use game_testbed_sim::room::layout::ROOF;
-+use support::{Frame, H, Room, W, distance, look_file, off_look, ray, rgb16, scratch, shot};
++use support::{
++    Frame, H, Room, W, distance, look_file, off_look, ray, rgb16, scene_of, scratch, shot, shot_at,
++    sim_at,
++};
 +
 +/// From spawn 0 at tick 0, looking east, as the `room-spawn` shot.
 +const SPAWN: Option<&str> = None;
@@ -74,6 +79,10 @@ index 0000000000000000000000000000000000000000..bb1a04d0d61ac155618d444f98e77d88
 +    let Some(on) = shot(&dir, "overview-on", OVERVIEW, None) else {
 +        return;
 +    };
++    // The same shot twice is the same image, so a switch's change below is
++    // the switch's, not noise.
++    let again = shot(&dir, "overview-on-again", OVERVIEW, None).unwrap();
++    assert!(again == on, "the same shot twice gave two images");
 +    let room = Room::new().expect("an adapter, as for the shot");
 +    let world = room.world(None);
 +    // Through the binary, every switch off is the plain pipeline's image of
@@ -354,12 +363,67 @@ index 0000000000000000000000000000000000000000..bb1a04d0d61ac155618d444f98e77d88
 +    let frame = room.render(&world, &above, false);
 +    assert!(leaks(&above, &frame).len() > 1_000);
 +}
++
++/// The marker: thing 0, as `room::sprites` numbers the things in entity
++/// order, and its sprite's id at its pixels in `info`.
++const MARKER: u32 = 0;
++
++/// T11's check on the shots (`shots.toml`'s `room-spawn` and
++/// `room-sprites`): the marker turns once every 8 s, so from spawn 0 it
++/// shows rotation (8 - s) % 8 at whole second s, and its eight-frame sheet
++/// draws that rotation's frame, unmirrored. `Sprite::frame_toward(eye)`
++/// names the frame; forcing every rotation to that frame's material leaves
++/// the image as it is, so the frame drawn is that one (forcing the next
++/// frame changes it, so the check can fail); and the binary's shot is this
++/// very image.
++#[test]
++fn the_shots_show_the_markers_frame_its_rotation_names() {
++    let dir = scratch("marker");
++    let Some(room) = Room::new() else { return };
++    let world = room.world(None);
++    for (name, tick, want) in [("room-spawn", 0, 0_u8), ("room-sprites", 120, 6)] {
++        let sim = sim_at(tick);
++        let scene = scene_of(&sim, None, Look::ON);
++        let at = (scene.sprites.iter())
++            .position(|sprite| sprite.id == MARKER)
++            .expect("the marker is a sprite");
++        let marker = scene.sprites[at];
++        let frame = marker.frame_toward(scene.camera.eye);
++        assert_eq!((frame.frame, frame.mirrored), (want, false), "{name}");
++        let drawn = room.render(&world, &scene, false);
++        let pixels = (0..H)
++            .flat_map(|y| (0..W).map(move |x| (x, y)))
++            .map(|(x, y)| drawn.info(x, y))
++            .filter(|info| info.class == SurfaceClass::Sprite && info.id == MARKER)
++            .count();
++        assert!(pixels >= 800, "{name}: {pixels} marker pixels");
++        let force = |frame: usize| {
++            let mut forced = scene.clone();
++            forced.sprites[at].materials = [marker.materials[frame]; 8];
++            room.render(&world, &forced, false).image
++        };
++        assert!(
++            force(usize::from(want)) == drawn.image,
++            "{name}: the marker shows another frame than {want}"
++        );
++        let next = (usize::from(want) + 1) % 8;
++        assert!(
++            force(next) != drawn.image,
++            "{name}: frame {next} looks the same"
++        );
++        let shot = shot_at(&dir, name, tick, None, None).expect("an adapter, as in-process");
++        assert!(
++            shot == drawn.image.rgba8,
++            "{name}: the binary drew another image"
++        );
++    }
++}
 diff --git a/crates/game-testbed/tests/look/mod.rs b/crates/game-testbed/tests/look/mod.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..72fe1bf4bdb51eef2a169e576397902448762acc
+index 0000000000000000000000000000000000000000..50b3fbab7e7372a4f5ddf724e80681e4e1990c1f
 --- /dev/null
 +++ b/crates/game-testbed/tests/look/mod.rs
-@@ -0,0 +1,251 @@
+@@ -0,0 +1,276 @@
 +//! What the room's look checks share (`../look.rs`): the room's shot
 +//! through the binary, look files, and the room's world, scene and frames
 +//! in-process, as `shot --map room` draws them, with readbacks.
@@ -369,6 +433,7 @@ index 0000000000000000000000000000000000000000..72fe1bf4bdb51eef2a169e5763979024
 +use std::time::{Duration, Instant};
 +
 +use eng_cli::{FirstPersonFrame, Pose};
++use eng_core::{PlayerCommand, Tick};
 +use eng_gpu::{Gpu, GpuError, GpuOptions, Image, Targets, Texels};
 +use eng_render::{FirstPersonRenderer, FirstPersonScene, GpuWorld, Info, Look};
 +use eng_sim::{Sim, SimConfig};
@@ -403,11 +468,24 @@ index 0000000000000000000000000000000000000000..72fe1bf4bdb51eef2a169e5763979024
 +/// The room at tick 0 as `shot --map room --seed 1 --at-tick 0` draws it
 +/// from `pose` (player 0's camera without one), with `look` (`None`: every
 +/// switch on), as decoded RGBA8; `None` without an adapter, unless one is
-+/// required. Each run is killed after [`LIMIT`].
++/// required.
 +pub fn shot(dir: &Path, name: &str, pose: Option<&str>, look: Option<&Path>) -> Option<Vec<u8>> {
++    shot_at(dir, name, 0, pose, look)
++}
++
++/// [`shot`] at `tick`, player 0 idle until then. Each run is killed after
++/// [`LIMIT`].
++pub fn shot_at(
++    dir: &Path,
++    name: &str,
++    tick: u64,
++    pose: Option<&str>,
++    look: Option<&Path>,
++) -> Option<Vec<u8>> {
 +    let out = dir.join(format!("{name}.png"));
++    let tick = tick.to_string();
 +    let mut command = Command::new(env!("CARGO_BIN_EXE_game-testbed"));
-+    command.args(["shot", "--map", "room", "--at-tick", "0", "--seed", "1"]);
++    command.args(["shot", "--map", "room", "--at-tick", &tick, "--seed", "1"]);
 +    command.args(["--size", "320x240", "--out"]).arg(&out);
 +    if let Some(pose) = pose {
 +        command.args(["--pose", pose]);
@@ -473,14 +551,36 @@ index 0000000000000000000000000000000000000000..72fe1bf4bdb51eef2a169e5763979024
 +    Path::new(env!("CARGO_MANIFEST_DIR")).join("looks/off.look.toml")
 +}
 +
-+/// The room's sim at tick 0, as the shots build it (`--seed 1`).
-+fn sim() -> Sim {
++/// The room's sim at `ticks`, as the shots build it (`--seed 1`), with
++/// player 0 idle, as `shot` without `--input` runs it.
++pub fn sim_at(ticks: u64) -> Sim {
 +    let config = SimConfig {
 +        tick_rate: game_testbed_sim::TICK_RATE,
 +        players: 1,
 +        seed: 1,
 +    };
-+    game_testbed_sim::room::build(config).unwrap()
++    let mut sim = game_testbed_sim::room::build(config).unwrap();
++    for tick in 1..=ticks {
++        sim.step(&[PlayerCommand::idle(Tick(tick))]).unwrap();
++    }
++    sim
++}
++
++/// The room's scene of `sim` as `shot` draws it, from `pose` if given,
++/// with `look`.
++pub fn scene_of(sim: &Sim, pose: Option<&str>, look: Look) -> FirstPersonScene {
++    let mut scene = room::scene(&FirstPersonFrame {
++        previous: sim,
++        current: sim,
++        alpha: 1.0,
++        width: W,
++        height: H,
++    });
++    if let Some(pose) = pose {
++        scene.camera = Pose::parse(pose).unwrap().apply(scene.camera);
++    }
++    scene.look = look;
++    scene
 +}
 +
 +/// What one frame left.
@@ -515,7 +615,7 @@ index 0000000000000000000000000000000000000000..72fe1bf4bdb51eef2a169e5763979024
 +            gpu,
 +            renderer,
 +            targets,
-+            sim: sim(),
++            sim: sim_at(0),
 +        })
 +    }
 +
@@ -531,21 +631,10 @@ index 0000000000000000000000000000000000000000..72fe1bf4bdb51eef2a169e5763979024
 +        built.load(&self.gpu).unwrap_or_else(|e| panic!("{e}"))
 +    }
 +
-+    /// The room's scene as `shot` draws it, from `pose` if given, with
-+    /// `look`.
++    /// The room's scene at tick 0 as `shot` draws it, from `pose` if
++    /// given, with `look`.
 +    pub fn scene(&self, pose: Option<&str>, look: Look) -> FirstPersonScene {
-+        let mut scene = room::scene(&FirstPersonFrame {
-+            previous: &self.sim,
-+            current: &self.sim,
-+            alpha: 1.0,
-+            width: W,
-+            height: H,
-+        });
-+        if let Some(pose) = pose {
-+            scene.camera = Pose::parse(pose).unwrap().apply(scene.camera);
-+        }
-+        scene.look = look;
-+        scene
++        scene_of(&self.sim, pose, look)
 +    }
 +
 +    /// One frame: the look's graph, or the plain pipeline's.
@@ -956,7 +1045,7 @@ index e6be494d890c2a250d0abb9ee650dfcb5c92d746..64483acc1f4a2136f76958d83f1a7582
      assert!(failures.is_empty(), "{}", failures.join("\n"));
  }
 diff --git a/crates/game-testbed/tests/shots/compare.rs b/crates/game-testbed/tests/shots/compare.rs
-index ea520b35d05f7010a8dc4c180f7d03845362dd4b..a8c9baffe41137baf1b29d4b9028ba1bacd859e8 100644
+index ea520b35d05f7010a8dc4c180f7d03845362dd4b..c452e07af34548dec74111ea86a3b3cb6e32e529 100644
 --- a/crates/game-testbed/tests/shots/compare.rs
 +++ b/crates/game-testbed/tests/shots/compare.rs
 @@ -1,7 +1,9 @@
@@ -1065,7 +1154,7 @@ index ea520b35d05f7010a8dc4c180f7d03845362dd4b..a8c9baffe41137baf1b29d4b9028ba1b
  }
  
  /// FLIP's error between a golden and a shot.
-@@ -163,6 +224,32 @@ impl Verdict {
+@@ -163,6 +224,40 @@ impl Verdict {
              "differing_pixels": self.differing, "flip": flip,
          })
      }
@@ -1074,14 +1163,22 @@ index ea520b35d05f7010a8dc4c180f7d03845362dd4b..a8c9baffe41137baf1b29d4b9028ba1b
 +    /// becomes: "no golden yet" without a golden (`at`), and with one in
 +    /// `ENG_GOLDEN_DIR` (`explicit`), measured but not judged; a golden for
 +    /// it in `golden/` itself fails, as the marker should have gone in the
-+    /// commit that added it.
++    /// commit that added it. The marker excuses only the golden: a failure
++    /// before any comparison (a shot or golden that does not decode, of
++    /// the wrong size, or not opaque, which leaves no pixel count) stays
++    /// the failure it is.
 +    pub(crate) fn pending(&mut self, name: &str, at: &Path, explicit: bool) {
++        if self.status == Status::Fail && self.differing.is_none() {
++            return;
++        }
 +        let marked = "golden = \"pending\" in shots.toml";
 +        if self.status == Status::NoGolden {
 +            self.message = format!("{} ({marked})", self.message);
 +        } else if explicit {
 +            self.status = Status::NoGolden;
-+            let measured = self.message.trim_start_matches(&format!("{name}: "));
++            // Without the comparison's own `[E-GOLDEN]`: nothing failed.
++            let measured = (self.message.trim_start_matches(&format!("{name}: ")))
++                .trim_start_matches("[E-GOLDEN] ");
 +            self.message = format!(
 +                "{name}: [W-NO-GOLDEN] {marked}; measured against ENG_GOLDEN_DIR, not judged: \
 +                 {measured}"
@@ -1098,7 +1195,7 @@ index ea520b35d05f7010a8dc4c180f7d03845362dd4b..a8c9baffe41137baf1b29d4b9028ba1b
  }
  
  /// Compares the shot `name` (its PNG file's bytes) with `refs/<name>.png`,
-@@ -231,18 +318,26 @@ pub(crate) fn check(name: &str, png: &[u8], mode: Mode, refs: &Path, candidates:
+@@ -231,18 +326,26 @@ pub(crate) fn check(name: &str, png: &[u8], mode: Mode, refs: &Path, candidates:
          "FLIP mean {:.6}, p99 {:.6}, p999 {:.6}, max {:.6}; {differing} of {total} pixels differ",
          stats.mean, stats.p99, stats.p999, stats.max
      );
@@ -1134,10 +1231,10 @@ index ea520b35d05f7010a8dc4c180f7d03845362dd4b..a8c9baffe41137baf1b29d4b9028ba1b
  }
 diff --git a/crates/game-testbed/tests/shots/manifest.rs b/crates/game-testbed/tests/shots/manifest.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..ee19a1c46109107233b8c1cc04d9d0faccab666b
+index 0000000000000000000000000000000000000000..67604efa484d6c0426a45f0216fad9a96edd5194
 --- /dev/null
 +++ b/crates/game-testbed/tests/shots/manifest.rs
-@@ -0,0 +1,226 @@
+@@ -0,0 +1,241 @@
 +//! `shots.toml`, the shots' manifest (rung 2, T16; plan decision 12 and
 +//! addition A3), read strictly: every shot the harness renders, the poses
 +//! it names, and the owner's `golden = "pending"` markers. Its tests, which
@@ -1339,13 +1436,28 @@ index 0000000000000000000000000000000000000000..ee19a1c46109107233b8c1cc04d9d0fa
 +        Some((_, pose)) => {
 +            let want = eng_cli::Pose::parse(pose).map_err(|e| e.to_string())?;
 +            let eye = [want.eye.x, want.eye.y, want.eye.z];
-+            let drawn = &view["pose"];
++            let asked = &view["pose"];
 +            let same = posed
-+                && drawn["eye"] == json!(eye)
-+                && drawn["yaw_deg"] == json!(want.yaw_deg)
-+                && drawn["pitch_deg"] == json!(want.pitch_deg);
++                && asked["eye"] == json!(eye)
++                && asked["yaw_deg"] == json!(want.yaw_deg)
++                && asked["pitch_deg"] == json!(want.pitch_deg);
 +            if !same {
 +                return fail("another pose");
++            }
++            // And the camera drawn is the pose's, not only the pose echoed:
++            // its eye exactly, its angles to within the binary angle's
++            // rounding (2^-32 of a turn, under 1e-7 degrees).
++            let camera = &view["camera"];
++            let angle = |key: &str, want: f64| {
++                let got = camera[key].as_f64().unwrap_or(f64::NAN);
++                let apart = (got - want).rem_euclid(360.0);
++                apart <= 1e-6 || apart >= 360.0 - 1e-6
++            };
++            let drawn = camera["eye"] == json!(eye)
++                && angle("yaw_deg", want.yaw_deg)
++                && angle("pitch_deg", want.pitch_deg);
++            if !drawn {
++                return fail("a camera other than the pose's");
 +            }
 +        }
 +        None if posed => return fail("a pose it did not ask for"),
@@ -1366,10 +1478,10 @@ index 0000000000000000000000000000000000000000..ee19a1c46109107233b8c1cc04d9d0fa
 +}
 diff --git a/crates/game-testbed/tests/shots/marker.rs b/crates/game-testbed/tests/shots/marker.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..07108163905fb090e3f34e3e797c9df336c76029
+index 0000000000000000000000000000000000000000..cf6fe0bfa2db5627175064df34eb3bff659ecb4b
 --- /dev/null
 +++ b/crates/game-testbed/tests/shots/marker.rs
-@@ -0,0 +1,369 @@
+@@ -0,0 +1,432 @@
 +//! The harness's rung 2 parts (T16 and plan addition A3), tested without
 +//! a GPU beside `parts.rs`: the owner's `golden = "pending"` marker, the
 +//! manifest `shots.toml` (`manifest.rs`), the per-shot `[flip.<shot>]`
@@ -1454,8 +1566,11 @@ index 0000000000000000000000000000000000000000..07108163905fb090e3f34e3e797c9df3
 +        let new = &summary(&candidates)["shots"][1];
 +        assert_eq!(new["status"], "no-golden");
 +        let message = new["message"].as_str().unwrap();
-+        let says = "measured against ENG_GOLDEN_DIR, not judged: [E-GOLDEN]";
++        let says = "measured against ENG_GOLDEN_DIR, not judged: 21 of 76800 pixels differ";
 +        assert!(message.contains(says) || mode == Mode::Flip, "{message}");
++        // Nothing failed, so no `[E-GOLDEN]`, which selftest golden-edit
++        // reads as a shot's failure.
++        assert!(!message.contains("[E-GOLDEN]"), "{message}");
 +        assert_eq!(new["differing_pixels"], 21, "{message}");
 +        assert_eq!(std::fs::read(candidates.join("new.png")).unwrap(), changed);
 +    }
@@ -1468,6 +1583,47 @@ index 0000000000000000000000000000000000000000..07108163905fb090e3f34e3e797c9df3
 +        assert!(failures[0].starts_with("new: [E-GOLDEN]"), "{failures:?}");
 +        assert!(failures[0].ends_with("clear the marker in the commit that adds the golden"));
 +        assert!(candidates.join("new.png").is_file());
++    }
++}
++
++/// The marker excuses a missing or differing golden, never the shot's own
++/// fault: a marked shot that is not opaque (or not 320x240, or does not
++/// decode) fails as it says, with a golden or without, in `golden/` and in
++/// `ENG_GOLDEN_DIR`.
++#[test]
++fn a_marked_shot_still_fails_for_its_own_faults() {
++    let (refs, candidates) = scratch("marker-faults");
++    let config = pinned_config();
++    let golden = png_of(&picture(SIZE.0, SIZE.1, 10));
++    std::fs::write(refs.join("a-shot.png"), &golden).unwrap();
++    let mut clear = picture(SIZE.0, SIZE.1, 10);
++    clear.rgba8[3] = 254;
++    let wide = png_of(&picture(SIZE.0 + 1, SIZE.1, 10));
++    let faults = [
++        (png_of(&clear), "the shot is not opaque"),
++        (wide, "the shot is 321x240, not 320x240"),
++        (b"not a png".to_vec(), "the shot does not decode"),
++    ];
++    for with_golden in [false, true] {
++        if with_golden {
++            std::fs::write(refs.join("new.png"), &golden).unwrap();
++        }
++        for (png, says) in &faults {
++            for explicit in [false, true] {
++                let shots = [taken("a-shot", golden.clone()), marked("new", png.clone())];
++                for mode in [Mode::Exact, Mode::Flip] {
++                    let failures = judge(&shots, &config, mode, (&refs, explicit), &candidates);
++                    let what = format!("golden {with_golden}, explicit {explicit}: {failures:?}");
++                    assert_eq!(failures.len(), 1, "{what}");
++                    assert!(failures[0].starts_with("new: [E-GOLDEN] "), "{what}");
++                    assert!(failures[0].contains(says), "{what}");
++                    assert!(!failures[0].contains("pending"), "{what}");
++                    let new = &summary(&candidates)["shots"][1];
++                    assert_eq!(new["status"], "fail", "{what}");
++                    assert!(candidates.join("new.png").is_file(), "its candidate");
++                }
++            }
++        }
 +    }
 +}
 +
@@ -1703,10 +1859,29 @@ index 0000000000000000000000000000000000000000..07108163905fb090e3f34e3e797c9df3
 +        "top-down"
 +    );
 +    // What the probe drew must be what the shot asked for.
++    // The camera drawn may differ from the pose by the binary angle's
++    // rounding, and reads its angles from 0 to 360 or signed.
++    let mut rounded = posed.clone();
++    rounded["camera"]["pitch_deg"] = json!(-15.000_000_027_939_677);
++    rounded["camera"]["yaw_deg"] = json!(-90.000_000_01);
++    assert!(view_of(&shot, &report("room", rounded)).is_ok());
 +    let mut other_pose = posed.clone();
 +    other_pose["pose"]["yaw_deg"] = json!(-89.0);
++    // A capture that echoes the pose but draws the game's camera.
++    let mut ignored = posed.clone();
++    ignored["camera"]["eye"] = json!([1.5, 4.5, 1.6]);
++    let mut turned = posed.clone();
++    turned["camera"]["yaw_deg"] = json!(270.001);
++    let mut tilted = posed.clone();
++    tilted["camera"]["pitch_deg"] = json!(0.0);
++    let mut none = posed.clone();
++    none["camera"] = json!(null);
 +    for (shot, map, view) in [
 +        (shot.clone(), "room", other_pose),
++        (shot.clone(), "room", ignored),
++        (shot.clone(), "room", turned),
++        (shot.clone(), "room", tilted),
++        (shot.clone(), "room", none),
 +        (shot.clone(), "dots", posed.clone()),
 +        (shot.clone(), "room", game.clone()),
 +        (room(None, true), "room", game.clone()),

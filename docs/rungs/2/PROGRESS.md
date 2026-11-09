@@ -1060,3 +1060,55 @@ owner at G5)
   be regenerated.
 - **Cost:** about 2 h in three runs (one paused), 393k tokens. It counts
   as one session (25 of 52).
+
+**T15: first-person play** (41ab7de, follow-up c590001; decisions 9, 10
+and 11)
+- **Built** by one builder in a worktree pinned to 44acb7f.
+  - **The window:** `play --map room` opens a fullscreen window
+    (`--windowed` for tests), grabs the cursor per ADR-0022's proposed
+    Amendment 1, and draws the room each frame with T12's view.
+  - **The angles:** mouse look runs through Q3's `MouseLook` into
+    `PlayerCommand`s, the only way into the sim. Between ticks the camera
+    shows `view_now()`, which reads without consuming. A proptest checks
+    each command equals the last read before it.
+  - **The flags,** all first-person-only and refused with exit 64
+    elsewhere: `--windowed`, `--fov` (the near plane derived per frame at
+    the targets' aspect), `--look` (look.toml v1), `--sensitivity` (exact
+    millionths), `--pitch-limit` (rounded down) and `--invert-pitch`.
+  - **The report** gains a `window` object: grab asked and granted,
+    fullscreen, focus losses, refresh rate, frame period, the last
+    frame's lens, and on macOS the GCMouse peak rate per second
+    (criterion 25).
+  - **Other changes:**
+    - a lost surface is remade, and fails with `[E-GPU]` after three
+      remakes in a row;
+    - `Gpu` keeps its wgpu instance;
+    - the dot map's `play` is 1b's path unchanged.
+- **The two pre-G5 points, settled:**
+  - `GameMap` stays `{ name, build, view }`;
+  - a map has exactly one view, and `--view` must name it (T16 builds
+    the check).
+- **Checked:**
+  - `play.rs` and `twin.rs` pass unchanged.
+  - A windowed room run's stream equals `run --headless` with the same
+    script and seed.
+  - The reviewer ran criterion 1's command for real while the Mac was in
+    use: 1,182 first-person frames presented on Metal, the stream
+    byte-identical to headless.
+- **Review:** the builder's own reviewer, then a fresh one (12 min, 201k
+  tokens), found no blockers. The follow-up took four of its points:
+  - `grab_asked`;
+  - the usage line without the prefix that would have hidden the flags
+    from T18's docs-lint;
+  - the error for a surface that stays lost;
+  - a refresh rate under 1 Hz treated as unknown.
+- **For the owner:**
+  - **Scripted runs never grab the cursor,** so a test does not take the
+    desktop's cursor. That departs from decision 10's wording, and it
+    means criterion 10's grab needs a live, unscripted run.
+  - **X11's doubled raw motion** under the `Confined` grab is still open.
+  - **G7's commands** are in the builder's report and the plan's T21 row:
+    play, look switches, flags, and the GCMouse rate.
+- **Carries** are in the plan's T21 and T22 rows.
+- **Cost:** the builder took 55 + 6 min, 469k tokens. It counts as one
+  session (27 of 52).

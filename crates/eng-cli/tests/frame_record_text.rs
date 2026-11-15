@@ -1,9 +1,11 @@
 //! The frame record's writer against its strict reader (rung 2, plan
 //! addition A1): whatever targets a frame reads back (any size, any mix
 //! of objects asked for and not, sky, bad `info`, edges, depth and colour)
-//! and whatever names and boxes the extraction gives, the text the writer
-//! makes is one the reader takes, and it reads back to the same record and
-//! the same bytes. Top-down records and several frames too.
+//! and whatever names and boxes the extraction gives, from any camera
+//! eng-render takes, the text the writer makes is one the reader takes,
+//! and it reads back to the same record and the same bytes. Version 2's
+//! colours and void (rung 2's TA2) too; top-down records and several
+//! frames too.
 
 use std::collections::BTreeMap;
 
@@ -67,7 +69,11 @@ fn case() -> impl Strategy<Value = Case> {
         let pixels = prop::collection::vec(pixel(n), (width * height) as usize);
         let asked = prop::collection::vec(asked(n), 0..10);
         let eye = [(); 3].map(|()| -1.0e6f64..1.0e6);
-        let angles = any::<[u32; 3]>();
+        // Any heading and pitch; a field of view eng-render takes, above 0
+        // and below a half turn (the void below the horizon needs the
+        // camera's rays).
+        let angles =
+            (any::<[u32; 2]>(), 1u32..1 << 31).prop_map(|([yaw, pitch], fov)| [yaw, pitch, fov]);
         let near = 0.001f32..10.0;
         let ticks = prop::collection::btree_set(any::<u64>(), 1..4);
         (pixels, asked, eye, angles, near, ticks).prop_map(

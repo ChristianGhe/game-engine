@@ -53,13 +53,15 @@
 //! and nothing else: the same pixels give the same bytes. Beside each goes
 //! `<out>.frame.json`, its frame record ([`frame_record`], plan addition
 //! A1): per frame the camera, every object the extraction asked for with
-//! its pixels, screen box, luminance and contrast from `info` and the
-//! output, depth probes and a luminance histogram (reduced for a top-down
-//! view), which [`frame_record::FrameRecord::parse`] reads back. Their reports
-//! carry a `gpu` object (the adapter, its capabilities and the per-frame
-//! counters), and the budgets file's `[gpu]` table, when it has one, holds
-//! every frame (exit 13, `[E-BUDGET]`), or its `[gpu.first_person]` table
-//! each first-person frame. `--view` names the view the map must have
+//! its pixels, screen box, colour, luminance and contrast from `info` and
+//! the output, the void below the horizon, the surfaces' luminance, depth
+//! probes and a luminance histogram (reduced for a top-down view), which
+//! [`frame_record::FrameRecord::parse`] reads back and [`scene_rules`]
+//! judges by a scene's rules for "proper" (plan addition A2). Their
+//! reports carry a `gpu` object (the adapter, its capabilities and the
+//! per-frame counters), and the budgets file's `[gpu]` table, when it
+//! has one, holds every frame (exit 13, `[E-BUDGET]`), or its
+//! `[gpu.first_person]` table each first-person frame. `--view` names the view the map must have
 //! (refused before a GPU opens if it lacks it), and for a first-person view
 //! `--pose` sets a camera independent of movement ([`Pose`], plan addition
 //! A3) and `--look` a look file; the report's `view` names the view, the
@@ -108,6 +110,7 @@ mod play;
 mod replay;
 mod report;
 mod run;
+pub mod scene_rules;
 mod session;
 mod shot_view;
 mod ticker;

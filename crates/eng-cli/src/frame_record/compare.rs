@@ -29,8 +29,9 @@ pub struct Tolerances {
     /// luminance, surroundings and contrast left uncompared: a few edge
     /// pixels decide them.
     pub min_pixels: u64,
-    /// An object's and the image's mean luminance, and an object's
-    /// surroundings', apart by at most this.
+    /// An object's, the image's and its surfaces' mean luminance, an
+    /// object's surroundings', and each channel of an object's and its
+    /// surroundings' mean colour, apart by at most this.
     pub luminance: f64,
     /// An object's contrast, apart by at most this plus what `luminance`
     /// allows it: Michelson's contrast moves by up to `2 t / (L + S)` when
@@ -192,6 +193,20 @@ impl Judge<'_> {
         self.used(at, used, worst, format!("{a} and {b} (within {allowed})"));
     }
 
+    /// Two mean colours, both there or both not, channel by channel within
+    /// the luminance tolerance.
+    fn colour(&mut self, at: &str, a: Option<[f64; 3]>, b: Option<[f64; 3]>) {
+        let (Some(a), Some(b)) = (a, b) else {
+            if a.is_some() != b.is_some() {
+                self.fail(at, format!("{a:?} and {b:?}"));
+            }
+            return;
+        };
+        for (channel, (x, y)) in a.iter().zip(b).enumerate() {
+            self.mean(&format!("{at}/{channel}"), Some(*x), Some(y), None);
+        }
+    }
+
     fn object(&mut self, at: &str, a: &ObjectRecord, b: &ObjectRecord) {
         if (a.key, &a.name, a.world_box) != (b.key, &b.name, b.world_box) {
             let key = |o: &ObjectRecord| format!("{} {}", class_name(o.key.class), o.key.id);
@@ -218,7 +233,10 @@ impl Judge<'_> {
             );
         }
         if a.pixels.min(b.pixels) >= self.tol.min_pixels {
+            self.colour(&format!("{at}/colour"), a.colour, b.colour);
             self.mean(&format!("{at}/luminance"), a.luminance, b.luminance, None);
+            let colours = (a.surround_colour, b.surround_colour);
+            self.colour(&format!("{at}/surround_colour"), colours.0, colours.1);
             let around = (a.surround_luminance, b.surround_luminance);
             let at_around = format!("{at}/surround_luminance");
             self.mean(&at_around, around.0, around.1, None);
@@ -269,6 +287,11 @@ impl Judge<'_> {
         if a.invalid_info != b.invalid_info {
             self.fail(&format!("{at}/invalid_info"), "differs".into());
         }
+        match (a.void, b.void) {
+            (Some(x), Some(y)) => self.pixels(&format!("{at}/void"), x, y, 0.0),
+            (x, y) if x != y => self.fail(&format!("{at}/void"), "null on one side".into()),
+            _ => {}
+        }
         if let (Some(ca), Some(cb)) = (a.classes, b.classes) {
             for (code, (ra, rb)) in ca.iter().zip(cb).enumerate() {
                 for (third, (x, y)) in ra.iter().zip(rb).enumerate() {
@@ -288,6 +311,8 @@ impl Judge<'_> {
         }
         let at_luminance = format!("{at}/luminance");
         self.mean(&at_luminance, Some(a.luminance), Some(b.luminance), None);
+        let at_surface = format!("{at}/surface_luminance");
+        self.mean(&at_surface, a.surface_luminance, b.surface_luminance, None);
         let moved: u64 = a
             .histogram
             .iter()

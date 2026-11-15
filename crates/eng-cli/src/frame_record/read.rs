@@ -1,5 +1,5 @@
 //! The frame record's strict reader ([`FrameRecord::parse`]): JSON text
-//! (through `json.rs`) into a [`FrameRecord`], refusing anything version 1
+//! (through `json.rs`) into a [`FrameRecord`], refusing anything version 2
 //! does not hold.
 
 use std::collections::BTreeSet;
@@ -29,6 +29,19 @@ fn triple(value: &Json, at: At<'_>) -> Result<[f64; 3], String> {
     let mut out = [0.0; 3];
     for (i, item) in items.iter().enumerate() {
         out[i] = f64_of(item, &format!("{at}/{i}"))?;
+    }
+    Ok(out)
+}
+
+/// A mean linear colour: three numbers, each 0 to 1.
+fn colour(value: &Json, at: At<'_>) -> Result<[f64; 3], String> {
+    let items = array(value, at)?;
+    if items.len() != 3 {
+        return wrong(at, "not three numbers");
+    }
+    let mut out = [0.0; 3];
+    for (i, item) in items.iter().enumerate() {
+        out[i] = within(item, &format!("{at}/{i}"), 0.0, 1.0)?;
     }
     Ok(out)
 }
@@ -64,23 +77,27 @@ fn camera(value: &Json, at: At<'_>) -> Result<CameraRecord, String> {
 fn object(value: &Json, at: At<'_>, size: (u32, u32)) -> Result<ObjectRecord, String> {
     let keys = [
         "class",
+        "colour",
         "contrast",
         "id",
         "luminance",
         "name",
         "pixels",
         "screen_box",
+        "surround_colour",
         "surround_luminance",
         "world_box",
     ];
     let [
         class_v,
+        colour_v,
         contrast,
         id,
         lum,
         name,
         pixels,
         screen,
+        around_colour,
         around,
         wbox,
     ] = fields(value, at, keys)?;
@@ -102,23 +119,34 @@ fn object(value: &Json, at: At<'_>, size: (u32, u32)) -> Result<ObjectRecord, St
         world_box: world_box(wbox, &format!("{at}/world_box"))?,
         pixels,
         screen_box: nullable(screen, |v| screen_box(v, &format!("{at}/screen_box"), size))?,
+        colour: nullable(colour_v, |v| colour(v, &format!("{at}/colour")))?,
         luminance: unit(lum, "luminance")?,
+        surround_colour: nullable(around_colour, |v| {
+            colour(v, &format!("{at}/surround_colour"))
+        })?,
         surround_luminance: unit(around, "surround_luminance")?,
         contrast: unit(contrast, "contrast")?,
     };
-    let seen = [record.screen_box.is_some(), record.luminance.is_some()];
-    if seen != [pixels > 0; 2] {
+    let seen = [
+        record.screen_box.is_some(),
+        record.colour.is_some(),
+        record.luminance.is_some(),
+    ];
+    if seen != [pixels > 0; 3] {
         return wrong(
             at,
-            "screen_box and luminance are null exactly when pixels is 0",
+            "screen_box, colour and luminance are null exactly when pixels is 0",
         );
     }
-    if record.surround_luminance.is_some() != record.contrast.is_some()
-        || (pixels == 0 && record.contrast.is_some())
-    {
+    let around = [
+        record.surround_colour.is_some(),
+        record.surround_luminance.is_some(),
+        record.contrast.is_some(),
+    ];
+    if around.iter().any(|there| *there != around[0]) || (pixels == 0 && around[0]) {
         return wrong(
             at,
-            "surround_luminance and contrast go together, and need pixels",
+            "surround_colour, surround_luminance and contrast go together, and need pixels",
         );
     }
     if let Some([x0, y0, x1, y1]) = record.screen_box {
@@ -249,10 +277,24 @@ fn frame(
         "luminance",
         "objects",
         "probes",
+        "surface_luminance",
         "tick",
         "unlisted",
+        "void",
     ];
-    let [cam, cls, hist, invalid, lum, objs, probes_v, tick, unl] = fields(value, at, keys)?;
+    let [
+        cam,
+        cls,
+        hist,
+        invalid,
+        lum,
+        objs,
+        probes_v,
+        surface,
+        tick,
+        unl,
+        void,
+    ] = fields(value, at, keys)?;
     let total = u64::from(size.0) * u64::from(size.1);
     let read_objects = array(objs, &format!("{at}/objects"))?.iter().enumerate();
     let read_probes = array(probes_v, &format!("{at}/probes"))?;
@@ -268,6 +310,10 @@ fn frame(
             .collect::<Result<_, _>>()?,
         invalid_info: uint(invalid, &format!("{at}/invalid_info"), total)?,
         classes: nullable(cls, |v| classes(v, &format!("{at}/classes"), total))?,
+        void: nullable(void, |v| uint(v, &format!("{at}/void"), total))?,
+        surface_luminance: nullable(surface, |v| {
+            within(v, &format!("{at}/surface_luminance"), 0.0, 1.0)
+        })?,
         probes: Vec::new(),
         luminance: within(lum, &format!("{at}/luminance"), 0.0, 1.0)?,
         histogram: counts::<HISTOGRAM_BINS>(hist, &format!("{at}/histogram"), total)?,
@@ -312,6 +358,8 @@ fn frame(
         RecordView::TopDown => {
             let reduced = entry.camera.is_none()
                 && entry.classes.is_none()
+                && entry.void.is_none()
+                && entry.surface_luminance.is_none()
                 && entry.objects.is_empty()
                 && entry.unlisted.is_empty()
                 && read_probes.is_empty()
@@ -319,15 +367,31 @@ fn frame(
             if !reduced {
                 return wrong(
                     at,
-                    "a top-down frame has no camera, classes, objects or probes",
+                    "a top-down frame has no camera, classes, void, surface_luminance, objects or \
+                     probes",
                 );
             }
         }
         RecordView::FirstPerson => {
-            let (Some(_), Some(bands)) = (entry.camera, entry.classes) else {
-                return wrong(at, "a first-person frame has a camera and classes");
+            let (Some(_), Some(bands), Some(void)) = (entry.camera, entry.classes, entry.void)
+            else {
+                return wrong(at, "a first-person frame has a camera, classes and void");
             };
             add_up(&entry, &bands, total).map_err(|what| format!("{at}: {what}"))?;
+            let nothing = total_of(bands[usize::from(SurfaceClass::None.code())].into_iter());
+            if u128::from(void) > nothing {
+                return wrong(
+                    &format!("{at}/void"),
+                    "more than the pixels of class none, where nothing was drawn",
+                );
+            }
+            let surfaces = total_of(bands.iter().flatten().copied()) - nothing;
+            if entry.surface_luminance.is_some() != (surfaces > 0) {
+                return wrong(
+                    &format!("{at}/surface_luminance"),
+                    "a number exactly when some pixel shows a surface (a class but none)",
+                );
+            }
             let seen = |p: &Probe| p.key.class == SurfaceClass::None || both.contains(&p.key);
             if let Some(i) = entry.probes.iter().position(|p| !seen(p)) {
                 return wrong(
@@ -365,7 +429,7 @@ fn add_up(entry: &FrameEntry, bands: &ClassBands, total: u64) -> Result<(), Stri
 }
 
 impl FrameRecord {
-    /// Reads a `<out>.frame.json` strictly: version 1 only, every key and
+    /// Reads a `<out>.frame.json` strictly: version 2 only, every key and
     /// no other, in sorted order, every value of its type and range, the
     /// objects and unlisted keys in (class, id) order, the probes at their
     /// grid's pixels on keys the frame lists or the sky, each class's
@@ -378,9 +442,15 @@ impl FrameRecord {
             fields(&json, "", ["frames", "height", "version", "view", "width"])?;
         let version = uint(version, "/version", u64::MAX)?;
         if version != FRAME_RECORD_VERSION {
+            let older = if version < FRAME_RECORD_VERSION {
+                ": an older record, without the colours, `void` and `surface_luminance` \
+                 (render it again)"
+            } else {
+                ""
+            };
             return wrong(
                 "/version",
-                &format!("{version}, not {FRAME_RECORD_VERSION}"),
+                &format!("{version}, not {FRAME_RECORD_VERSION}{older}"),
             );
         }
         let view = match string(view, "/view")? {

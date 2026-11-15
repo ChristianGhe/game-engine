@@ -5,7 +5,7 @@
 //! one entry per frame: a shot's one, or each of a video's, in order. It
 //! is written when the picture is, and a run stopped early writes neither.
 //!
-//! **The format, version 1** ([`FRAME_RECORD_VERSION`]). One JSON object,
+//! **The format, version 2** ([`FRAME_RECORD_VERSION`]). One JSON object,
 //! keys sorted at every level, written by [`FrameRecord::to_text`] in one
 //! fixed layout (an object, probe or unlisted key on a line of its own),
 //! read back strictly by [`FrameRecord::parse`]:
@@ -27,19 +27,22 @@
 //!   - `pixels`: how many pixels `info` gives its (class, id);
 //!   - `screen_box`: `[x0, y0, x1, y1]`, the first and last column and row
 //!     holding them, inclusive, (0, 0) the top left;
+//!   - `colour` (version 2): their mean linear colour, `[R, G, B]`: the
+//!     output's 8-bit sRGB channels decoded by eng-render's
+//!     `srgb_to_linear`, each 0 to 1;
 //!   - `luminance`: their mean luminance, a pixel's being linear: Rec.
-//!     709's `0.2126 R + 0.7152 G + 0.0722 B` of the output's 8-bit sRGB
-//!     channels decoded by eng-render's `srgb_to_linear` ([`luminance`]),
-//!     0 to 1;
-//!   - `surround_luminance`: the mean luminance of its surroundings, the
-//!     pixels within [`SURROUND`] pixels of its screen box (the box grown
-//!     by that on every side, clipped to the image) that are not its own;
-//!   - `contrast`: Michelson's, `|L - S| / (L + S)` of those two means, 0
-//!     to 1, and 0 when both are 0.
+//!     709's `0.2126 R + 0.7152 G + 0.0722 B` of those channels
+//!     ([`luminance`]), 0 to 1;
+//!   - `surround_colour` (version 2) and `surround_luminance`: the mean
+//!     colour and luminance of its surroundings, the pixels within
+//!     [`SURROUND`] pixels of its screen box (the box grown by that on
+//!     every side, clipped to the image) that are not its own;
+//!   - `contrast`: Michelson's, `|L - S| / (L + S)` of the two mean
+//!     luminances, 0 to 1, and 0 when both are 0.
 //!
-//!   Without pixels the four are `null`; without surroundings (its box
-//!   grown is all its own) the last two are. The means are rounded to six
-//!   decimals ([`round6`]), the contrast taken before rounding.
+//!   Without pixels the six are `null`; without surroundings (its box
+//!   grown is all its own) the last three are. The means are rounded to
+//!   six decimals ([`round6`]), the contrast taken before rounding.
 //! - `unlisted` (first person): each (class, id) that `info` shows but no
 //!   object asked for, with its `pixels`: an extraction or shader bug, so
 //!   it is normally empty. The sky, class `none`, is never unlisted.
@@ -48,6 +51,14 @@
 //! - `classes` (first person): for each [`SurfaceClass`] by name, its
 //!   pixels in the image's top, middle and bottom thirds (row `y` is in
 //!   third `3y / height`). `null` for a top-down view.
+//! - `void` (first person; version 2): the pixels where nothing was drawn
+//!   (`info` is class `none`) whose view ray points below the horizon:
+//!   through the pixel's centre, as eng-render's `ViewProj::ray` builds it
+//!   for the image's aspect ratio, with its Z below 0. The sky pass paints
+//!   every pixel no surface covers, so the clear colour never reaches the
+//!   output: a hole in the world shows the sky instead, and below the
+//!   horizon, where the ground stands between the eye and the sky, that
+//!   is a hole (plan addition A2's rule 2). `null` for a top-down view.
 //! - `probes` (first person): depth at a fixed grid of
 //!   [`PROBE_COLUMNS`] by [`PROBE_ROWS`] pixels, row by row from the top
 //!   left; probe (i, j) is at `x = (2i + 1) width / 16`, `y = (2j + 1)
@@ -60,14 +71,26 @@
 //!   neighbour of its own (class, id), 0 without one), which
 //!   [`Tolerances`] needs. Empty for a top-down view.
 //! - `luminance`: the whole image's mean luminance, six decimals.
+//! - `surface_luminance` (first person; version 2): the mean luminance of
+//!   the pixels showing a surface (`info` of any class but `none`), six
+//!   decimals: the scene's exposure without its sky, which A2's rule 1
+//!   holds an object's light to. `null` for a top-down view or a frame of
+//!   sky alone.
 //! - `histogram`: the image's pixels in [`HISTOGRAM_BINS`] bins of
 //!   luminance, bin `k` holding luminance from `srgb_to_linear(k / 16)` up
 //!   to `srgb_to_linear((k + 1) / 16)`: 16 equal steps of the luminance's
 //!   sRGB encoding, so the dark end is not one bin.
 //!
 //! **A top-down view** has no `info` or depth target, so its record is
-//! reduced: `camera` and `classes` `null`, `objects`, `unlisted` and
-//! `probes` empty, and the image's `luminance` and `histogram`.
+//! reduced: `camera`, `classes`, `void` and `surface_luminance` `null`,
+//! `objects`, `unlisted` and `probes` empty, and the image's `luminance`
+//! and `histogram`.
+//!
+//! **Version 1** (rung 2's TA1) had neither `colour`, `surround_colour`,
+//! `void` nor `surface_luminance`; TA2 added them for A2's rules. No version 1 record was ever
+//! committed as a reference (the owner commits the first at G6), so the
+//! reader takes version 2 alone, and tells the reader of an older file to
+//! render it again.
 //!
 //! **Determinism.** Everything comes from the frame's own targets and the
 //! extraction, summed in a fixed order in f64 through eng-math and
@@ -96,7 +119,7 @@ use crate::shot_view::bangle_degrees;
 use crate::view::FirstPersonWorld;
 
 /// The record's format, its `version`.
-pub const FRAME_RECORD_VERSION: u64 = 1;
+pub const FRAME_RECORD_VERSION: u64 = 2;
 
 /// The depth probes' grid: columns across, rows down.
 pub const PROBE_COLUMNS: u32 = 8;
@@ -302,7 +325,10 @@ pub struct ObjectRecord {
     pub pixels: u64,
     /// `[x0, y0, x1, y1]`, inclusive.
     pub screen_box: Option<[u32; 4]>,
+    /// Mean linear red, green and blue.
+    pub colour: Option<[f64; 3]>,
     pub luminance: Option<f64>,
+    pub surround_colour: Option<[f64; 3]>,
     pub surround_luminance: Option<f64>,
     pub contrast: Option<f64>,
 }
@@ -339,6 +365,12 @@ pub struct FrameEntry {
     pub unlisted: Vec<Unlisted>,
     pub invalid_info: u64,
     pub classes: Option<ClassBands>,
+    /// Pixels showing nothing below the horizon; `None` for a top-down
+    /// view.
+    pub void: Option<u64>,
+    /// The mean luminance of the pixels showing a surface (any class but
+    /// none); `None` for a top-down view or a frame of sky alone.
+    pub surface_luminance: Option<f64>,
     pub probes: Vec<Probe>,
     pub luminance: f64,
     pub histogram: [u64; HISTOGRAM_BINS],

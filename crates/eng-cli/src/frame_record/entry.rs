@@ -1,7 +1,8 @@
 //! Each frame's entry, computed from its targets read back: the image's
 //! luminance and histogram, and for a first-person frame each object's
-//! pixels, screen box, luminance and surroundings, the classes' thirds and
-//! the depth probes (see `frame_record.rs` for what each means).
+//! pixels, screen box, colour, luminance and surroundings, the classes'
+//! thirds, the void below the horizon and the depth probes (see
+//! `frame_record.rs` for what each means).
 
 use std::collections::BTreeMap;
 
@@ -31,14 +32,33 @@ fn pixel_luminance(levels: &[f64; 256], [r, g, b]: [u8; 3]) -> f64 {
         + REC709[2] * levels[usize::from(b)]
 }
 
+/// An 8-bit sRGB pixel's linear red, green and blue.
+fn pixel_colour(levels: &[f64; 256], rgb: [u8; 3]) -> [f64; 3] {
+    rgb.map(|channel| levels[usize::from(channel)])
+}
+
+/// `sum` with `colour` added, channel by channel.
+fn add(sum: &mut [f64; 3], colour: [f64; 3]) {
+    for (s, c) in sum.iter_mut().zip(colour) {
+        *s += c;
+    }
+}
+
+/// The mean of `count` colours summed in `sum`, each channel rounded to
+/// six decimals ([`round6`]).
+fn mean_colour(sum: [f64; 3], count: u64) -> [f64; 3] {
+    sum.map(|s| round6(s / count as f64))
+}
+
 /// The histogram's 15 inner edges: `srgb_to_linear(k / 16)`, k = 1 to 15.
 fn histogram_edges() -> [f64; HISTOGRAM_BINS - 1] {
     core::array::from_fn(|k| f64::from(srgb_to_linear((k + 1) as f32 / HISTOGRAM_BINS as f32)))
 }
 
-/// What the whole image says: each pixel's luminance, the mean and the
-/// histogram.
+/// What the whole image says: each pixel's linear colour and luminance,
+/// the mean and the histogram.
 struct ImageStats {
+    colour: Vec<[f64; 3]>,
     luminance: Vec<f64>,
     mean: f64,
     histogram: [u64; HISTOGRAM_BINS],
@@ -48,10 +68,11 @@ fn image_stats(image: &Image) -> ImageStats {
     let levels = linear_levels();
     let edges = histogram_edges();
     let mut histogram = [0; HISTOGRAM_BINS];
-    let luminance: Vec<f64> = image
-        .rgba8
-        .as_chunks::<4>()
-        .0
+    let pixels = image.rgba8.as_chunks::<4>().0;
+    let colour: Vec<[f64; 3]> = (pixels.iter())
+        .map(|p| pixel_colour(&levels, [p[0], p[1], p[2]]))
+        .collect();
+    let luminance: Vec<f64> = pixels
         .iter()
         .map(|p| {
             let y = pixel_luminance(&levels, [p[0], p[1], p[2]]);
@@ -66,6 +87,7 @@ fn image_stats(image: &Image) -> ImageStats {
         sum / luminance.len() as f64
     };
     ImageStats {
+        colour,
         luminance,
         mean: round6(mean),
         histogram,
@@ -82,6 +104,8 @@ pub fn top_down_entry(tick: u64, image: &Image) -> FrameEntry {
         unlisted: Vec::new(),
         invalid_info: 0,
         classes: None,
+        void: None,
+        surface_luminance: None,
         probes: Vec::new(),
         luminance: stats.mean,
         histogram: stats.histogram,
@@ -102,15 +126,37 @@ pub fn probe_points(width: u32, height: u32) -> Vec<(u32, u32)> {
 struct Seen {
     pixels: u64,
     sum: f64,
+    colour: [f64; 3],
     min: (u32, u32),
     max: (u32, u32),
+}
+
+/// Which rows of a `width` x `height` image `camera` sees below the
+/// horizon: those whose view ray through the pixel's centre (eng-render's
+/// `ViewProj::ray`, as the sky pass builds it, for the aspect ratio the
+/// renderer draws with) points down, its Z below 0. The ray's rise does not
+/// change along a row, since the camera's right axis is level.
+fn rows_below_horizon(
+    camera: &FirstPersonCamera,
+    width: u32,
+    height: u32,
+) -> Result<Vec<bool>, String> {
+    let view = camera
+        .view_proj(width as f32 / height as f32)
+        .map_err(|e| e.to_string())?;
+    Ok((0..height)
+        .map(|y| {
+            let ndc_y = 1.0 - (2 * y + 1) as f32 / height as f32;
+            view.ray(0.0, ndc_y).z < 0.0
+        })
+        .collect())
 }
 
 /// A first-person frame's entry, from the frame's camera, the objects
 /// asked for ([`super::asked_objects`], in key order) and its targets read
 /// back: `info` (`Rg32Uint`), depth (`Depth32Float`) and the output, all
-/// of one size. An error, a bug in the caller, if they are not, or if a
-/// probed depth is not finite.
+/// of one size. An error, a bug in the caller, if they are not, if the
+/// camera is one eng-render refuses, or if a probed depth is not finite.
 pub fn first_person_entry(
     tick: u64,
     camera: &FirstPersonCamera,
@@ -141,6 +187,7 @@ pub fn first_person_entry(
     if asked.iter().any(|o| o.key.class == SurfaceClass::None) {
         return Err("an object asked for has class none: the sky is no object".into());
     }
+    let below = rows_below_horizon(camera, width, height)?;
     let stats = image_stats(image);
     let pixel = |x: u32, y: u32| (y as usize) * (width as usize) + x as usize;
     let keys: Vec<Option<ObjectKey>> = (0..height)
@@ -156,6 +203,8 @@ pub fn first_person_entry(
     let mut unlisted: BTreeMap<ObjectKey, u64> = BTreeMap::new();
     let mut classes: ClassBands = [[0; BANDS]; SurfaceClass::ALL.len()];
     let mut invalid_info = 0;
+    let mut void = 0;
+    let (mut surface_sum, mut surface_pixels) = (0.0, 0_u64);
     for y in 0..height {
         let band = (y as u64 * BANDS as u64 / height as u64) as usize;
         for x in 0..width {
@@ -166,19 +215,24 @@ pub fn first_person_entry(
             };
             classes[usize::from(key.class.code())][band] += 1;
             if key.class == SurfaceClass::None {
+                void += u64::from(below[y as usize]);
                 continue;
             }
+            surface_sum += stats.luminance[at];
+            surface_pixels += 1;
             match asked.binary_search_by(|o| o.key.cmp(&key)) {
                 Ok(index) => {
                     let lum = stats.luminance[at];
                     let s = seen[index].get_or_insert(Seen {
                         pixels: 0,
                         sum: 0.0,
+                        colour: [0.0; 3],
                         min: (x, y),
                         max: (x, y),
                     });
                     s.pixels += 1;
                     s.sum += lum;
+                    add(&mut s.colour, stats.colour[at]);
                     s.min = (s.min.0.min(x), s.min.1.min(y));
                     s.max = (s.max.0.max(x), s.max.1.max(y));
                 }
@@ -196,7 +250,9 @@ pub fn first_person_entry(
                 world_box: object.world_box,
                 pixels: 0,
                 screen_box: None,
+                colour: None,
                 luminance: None,
+                surround_colour: None,
                 surround_luminance: None,
                 contrast: None,
             };
@@ -206,6 +262,7 @@ pub fn first_person_entry(
             let mean = s.sum / s.pixels as f64;
             record.pixels = s.pixels;
             record.screen_box = Some([s.min.0, s.min.1, s.max.0, s.max.1]);
+            record.colour = Some(mean_colour(s.colour, s.pixels));
             record.luminance = Some(round6(mean));
             // The box grown by SURROUND, clipped, less the object's own.
             let (x0, y0) = (
@@ -214,13 +271,14 @@ pub fn first_person_entry(
             );
             let x1 = s.max.0.saturating_add(SURROUND).min(width - 1);
             let y1 = s.max.1.saturating_add(SURROUND).min(height - 1);
-            let (mut count, mut sum) = (0_u64, 0.0);
+            let (mut count, mut sum, mut colour) = (0_u64, 0.0, [0.0; 3]);
             for y in y0..=y1 {
                 for x in x0..=x1 {
                     let at = pixel(x, y);
                     if keys[at] != Some(object.key) {
                         count += 1;
                         sum += stats.luminance[at];
+                        add(&mut colour, stats.colour[at]);
                     }
                 }
             }
@@ -232,6 +290,7 @@ pub fn first_person_entry(
                 } else {
                     0.0
                 };
+                record.surround_colour = Some(mean_colour(colour, count));
                 record.surround_luminance = Some(round6(around));
                 record.contrast = Some(round6(contrast));
             }
@@ -292,6 +351,9 @@ pub fn first_person_entry(
             .collect(),
         invalid_info,
         classes: Some(classes),
+        void: Some(void),
+        surface_luminance: (surface_pixels > 0)
+            .then(|| round6(surface_sum / surface_pixels as f64)),
         probes,
         luminance: stats.mean,
         histogram: stats.histogram,

@@ -19,6 +19,7 @@ use super::{
 use crate::view::FirstPersonWorld;
 
 mod text;
+mod void;
 
 const W: u32 = 16;
 const H: u32 = 12;
@@ -155,6 +156,28 @@ fn asked() -> Vec<AskedObject> {
     .collect()
 }
 
+/// A pixel's linear colour, by eng-render's curve.
+fn linear(rgb: [u8; 3]) -> [f64; 3] {
+    rgb.map(|c| f64::from(srgb_to_linear(f32::from(c) / 255.0)))
+}
+
+/// The mean linear colour over `grown` (x0, y0, x1, y1) of the pixels not
+/// `own`, each channel rounded as the record rounds it.
+fn surround_colour(own: ObjectKey, [x0, y0, x1, y1]: [u32; 4]) -> [f64; 3] {
+    let (mut sum, mut count) = ([0.0; 3], 0.0);
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            if shows(x, y) != Some(own) {
+                for (s, c) in sum.iter_mut().zip(linear(rgb_at(x, y))) {
+                    *s += c;
+                }
+                count += 1.0;
+            }
+        }
+    }
+    sum.map(|s| round6(s / count))
+}
+
 /// The mean luminance over `grown` (x0, y0, x1, y1) of the pixels not
 /// `own`, summed row by row as the record sums it.
 fn surround(own: ObjectKey, [x0, y0, x1, y1]: [u32; 4]) -> f64 {
@@ -235,10 +258,13 @@ fn a_frame_counts_each_objects_pixels_box_and_light() {
     assert_eq!((floor.key, floor.pixels), (FLOOR, 16 * 4));
     assert_eq!(floor.screen_box, Some([0, 8, 15, 11]));
     assert_eq!(floor.luminance, Some(round6(luminance(FLOOR_RGB))));
+    assert_eq!(floor.colour, Some(linear(FLOOR_RGB).map(round6)));
     // Its surroundings are the four rows above it: sky, and the thing's
     // bottom row.
     let around = surround(FLOOR, [0, 4, 15, 11]);
     assert_eq!(floor.surround_luminance, Some(round6(around)));
+    let around_colour = surround_colour(FLOOR, [0, 4, 15, 11]);
+    assert_eq!(floor.surround_colour, Some(around_colour));
     assert_eq!((thing.key, thing.name.as_deref()), (THING, Some("lamp")));
     assert_eq!((thing.pixels, thing.screen_box), (12, Some([5, 2, 8, 4])));
     // Around it, 4 px out and clipped: columns 1-12, rows 0-8, less its own
@@ -247,6 +273,15 @@ fn a_frame_counts_each_objects_pixels_box_and_light() {
     let (sky, ground) = (luminance(SKY_RGB), luminance(FLOOR_RGB));
     assert!((around - (84.0 * sky + 12.0 * ground) / 96.0).abs() < 1e-12);
     assert_eq!(thing.surround_luminance, Some(round6(around)));
+    assert_eq!(thing.colour, Some(linear(THING_RGB).map(round6)));
+    let (sky_rgb, floor_rgb) = (linear(SKY_RGB), linear(FLOOR_RGB));
+    let mix: [f64; 3] = core::array::from_fn(|c| (84.0 * sky_rgb[c] + 12.0 * floor_rgb[c]) / 96.0);
+    let thing_around = thing.surround_colour.unwrap();
+    assert!(
+        mix.iter()
+            .zip(thing_around)
+            .all(|(m, t)| (m - t).abs() < 1e-6)
+    );
     let l = luminance(THING_RGB);
     assert_eq!(
         thing.contrast,
@@ -260,6 +295,7 @@ fn a_frame_counts_each_objects_pixels_box_and_light() {
         (hidden.luminance, hidden.surround_luminance, hidden.contrast),
         (None, None, None)
     );
+    assert_eq!((hidden.colour, hidden.surround_colour), (None, None));
     assert_eq!(frame.unlisted.len(), 1);
     assert_eq!(
         (frame.unlisted[0].key, frame.unlisted[0].pixels),
@@ -297,6 +333,15 @@ fn a_frame_counts_each_objects_pixels_box_and_light() {
         (SurfaceClass::None, 0.0, None)
     );
     assert!(sky.edge, "the thing is below it");
+    // Pitched 22.5 degrees down with a 73.74-degree field of view, rows 3
+    // and below look below the horizon: their sky is void, 12 pixels in
+    // row 3 and 4 beside the thing, 16 in each of rows 5 to 7.
+    assert_eq!(frame.void, Some(12 + 12 + 3 * 16));
+    // The surfaces: the floor's 64 pixels, the thing's 12 and the stray
+    // wall pixel (drawn in the sky's colour); the sky is left out.
+    let surfaces = 64.0 * luminance(FLOOR_RGB) + 12.0 * luminance(THING_RGB) + luminance(SKY_RGB);
+    let surface = frame.surface_luminance.unwrap();
+    assert!((surface - surfaces / 77.0).abs() < 1e-6, "{surface}");
 }
 
 #[test]
@@ -414,4 +459,20 @@ fn targets_of_another_size_or_format_are_refused() {
     let t = targets();
     let err = first_person_entry(0, &camera(), &unsorted, &t.info, &t.depth, &t.image).unwrap_err();
     assert!(err.contains("key order"), "{err}");
+}
+
+/// The void needs the camera's rays: a camera eng-render refuses (no field
+/// of view, or half a turn of it) is an error, not a record.
+#[test]
+fn a_camera_eng_render_refuses_is_refused() {
+    let t = targets();
+    for fov_y in [BAngle(0), BAngle(1 << 31)] {
+        let camera = FirstPersonCamera { fov_y, ..camera() };
+        let err =
+            first_person_entry(0, &camera, &asked(), &t.info, &t.depth, &t.image).unwrap_err();
+        assert!(
+            err.contains("[E-SCENE]") && err.contains("field of view"),
+            "{err}"
+        );
+    }
 }

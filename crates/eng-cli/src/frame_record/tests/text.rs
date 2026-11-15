@@ -33,7 +33,11 @@ fn a_top_down_record_is_reduced() {
         frames: vec![top_down_entry(0, &t.image), top_down_entry(4, &t.image)],
     };
     let frame = &record.frames[1];
-    assert_eq!((frame.camera, frame.classes), (None, None));
+    assert_eq!(
+        (frame.camera, frame.classes, frame.void),
+        (None, None, None)
+    );
+    assert_eq!(frame.surface_luminance, None);
     assert!(frame.objects.is_empty() && frame.probes.is_empty());
     assert_eq!(frame.histogram.iter().sum::<u64>(), u64::from(W * H));
     assert_eq!(frame.luminance, record.frames[0].luminance);
@@ -43,7 +47,7 @@ fn a_top_down_record_is_reduced() {
 
 /// Each edit of a good record's text, and what the reader says of it.
 #[test]
-fn the_reader_refuses_what_version_1_does_not_hold() {
+fn the_reader_refuses_what_version_2_does_not_hold() {
     let text = record().to_text();
     let first_object = text
         .lines()
@@ -54,7 +58,60 @@ fn the_reader_refuses_what_version_1_does_not_hold() {
         .to_owned();
     let stray = "{\"class\":\"wall\",\"id\":99,\"pixels\":1}";
     let edits: Vec<(String, &str)> = vec![
-        (text.replace("\"version\": 1", "\"version\": 2"), "/version"),
+        (text.replace("\"version\": 2", "\"version\": 3"), "/version"),
+        (
+            text.replace("\"version\": 2", "\"version\": 1"),
+            "render it again",
+        ),
+        (
+            text.replacen("\"colour\":[0.045186,", "\"colour\":[", 1),
+            "three numbers",
+        ),
+        (
+            text.replacen("\"colour\":[0.045186,", "\"colour\":[1.5,", 1),
+            "from 0 to 1",
+        ),
+        (
+            text.replacen(
+                "\"colour\":[0.045186,0.045186,0.045186]",
+                "\"colour\":null",
+                1,
+            ),
+            "colour and luminance are null exactly",
+        ),
+        (
+            text.replacen(
+                "\"surround_colour\":[",
+                "\"surround_colour\":null,\"x\":[",
+                1,
+            ),
+            "keys",
+        ),
+        (
+            text.replacen(
+                "\"surround_colour\":[0.23583,0.246671,0.542293]",
+                "\"surround_colour\":null",
+                1,
+            ),
+            "go together",
+        ),
+        (text.replace("\"void\": 72", "\"void\": null"), "and void"),
+        (
+            text.replace("\"void\": 72", "\"void\": 115"),
+            "more than the pixels of class none",
+        ),
+        (
+            text.replacen(
+                "\"surface_luminance\": 0.",
+                "\"surface_luminance\": null, \"x\": 0.",
+                1,
+            ),
+            "keys",
+        ),
+        (
+            text.replacen("\"surface_luminance\": 0.", "\"surface_luminance\": 1.", 1),
+            "from 0 to 1",
+        ),
         (
             text.replace("\"view\": \"first-person\"", "\"view\": \"sideways\""),
             "/view",

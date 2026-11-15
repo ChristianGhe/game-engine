@@ -40,6 +40,10 @@ impl ObjectRecord {
     fn json(&self) -> JsonValue {
         JsonValue::object([
             ("class", JsonValue::str(class_name(self.key.class))),
+            (
+                "colour",
+                or_null(self.colour, |c| numbers(&c, JsonValue::F64)),
+            ),
             ("contrast", or_null(self.contrast, JsonValue::F64)),
             ("id", JsonValue::U64(self.key.id.into())),
             ("luminance", or_null(self.luminance, JsonValue::F64)),
@@ -50,6 +54,10 @@ impl ObjectRecord {
                 or_null(self.screen_box, |b| {
                     numbers(&b, |v| JsonValue::U64(v.into()))
                 }),
+            ),
+            (
+                "surround_colour",
+                or_null(self.surround_colour, |c| numbers(&c, JsonValue::F64)),
             ),
             (
                 "surround_luminance",
@@ -152,11 +160,17 @@ impl FrameEntry {
         key(out, "probes");
         lines(out, IN, self.probes.iter().map(Probe::json));
         out.push_str(",\n");
+        key(out, "surface_luminance");
+        out.push_str(&or_null(self.surface_luminance, JsonValue::F64).to_compact());
+        out.push_str(",\n");
         key(out, "tick");
         out.push_str(&JsonValue::U64(self.tick).to_compact());
         out.push_str(",\n");
         key(out, "unlisted");
         lines(out, IN, self.unlisted.iter().map(Unlisted::json));
+        out.push_str(",\n");
+        key(out, "void");
+        out.push_str(&or_null(self.void, JsonValue::U64).to_compact());
         out.push_str("\n    }");
     }
 }

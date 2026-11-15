@@ -11,12 +11,14 @@
 //! (`tests/oracle.rs`). Case 3's mirror image broke the contact rule, in the
 //! grid and the oracle alike, until a still axis entered through its nearer
 //! face (rung 2, T19b follow-up). Two open breaks of the contact rule, (A)
-//! and (B), are checked for what still holds (`OPEN`).
+//! and (B), are checked for what still holds and that they break it (`OPEN`).
 
 #[path = "oracle/brute.rs"]
 mod brute;
 #[path = "oracle/through.rs"]
 mod through;
+
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use brute::Brute;
 use eng_collision_api::{BoxHull, CollisionWorld, Trace, conformance};
@@ -161,7 +163,9 @@ fn the_found_traces_keep_the_rules() {
 /// Amendment 2). What holds, and is checked here: the stop is free, the
 /// trace hits, and nothing is passed through. (A)'s end is inside the slab,
 /// so any trace must stop; (B)'s is free, so a fix may make (B) a graze
-/// instead, and change this test.
+/// instead, and change this test. That each still breaks the rule, with the
+/// message named above, is checked too, so a fix (or a change in the break)
+/// fails here rather than leaving this comment and the exclusions doc stale.
 #[test]
 fn the_open_contact_breaks_stop_free_and_pass_through_nothing() {
     for (i, case, mirror) in OPEN
@@ -190,6 +194,18 @@ fn the_open_contact_breaks_stop_free_and_pass_through_nothing() {
         );
         through::assert_no_pass_through(&grid, from, to, &tr, &hull);
         assert_eq!(grid.trace(from, to, &hull), tr, "{what} (mirror {mirror})");
+        let rule = [
+            "one ulp further on is still free",
+            "the rest of the motion does not hit",
+        ][i];
+        let broken = catch_unwind(AssertUnwindSafe(|| {
+            conformance::check(&grid, from, to, &hull)
+        }));
+        let message = broken.map_err(|e| e.downcast::<String>().map_or(String::new(), |m| *m));
+        assert!(
+            message.as_ref().is_err_and(|m| m.contains(rule)),
+            "{what} (mirror {mirror}) no longer breaks the contact rule with \"{rule}\" (conformance::check: {message:?}): the break is fixed or has changed, so update this test, its doc comment, the module's, and docs/rungs/2/patches/t19b-mutants-exclusions.md"
+        );
     }
 }
 

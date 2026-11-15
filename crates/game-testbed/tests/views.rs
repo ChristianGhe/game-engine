@@ -252,9 +252,12 @@ fn holes(dir: &Path, record: &str) -> Vec<(u64, u64, f64)> {
 /// `shot` and `video` keep the near rectangle inside the hull as `play`
 /// does (T9's limit, eng-render's `near_for`): an eye 0.25 m from the
 /// south wall, as near as the hull stands, looking along it, sees no hole
-/// in the wall at 1280x240. eng-render's 0.1 m plane alone reaches 0.27 m
-/// there and cut 28,800 pixels of void and 57,600 of sky into it. At 4:3
-/// the plane stays 0.1 m.
+/// in the wall at 1280x240. eng-render's 0.1 m plane alone, at the room's
+/// field of view (tan 0.75), has its corners 0.42 m from the eye (0.1 x
+/// sqrt(1 + 0.5625 x (1 + 5.33²))) and reaches 0.40 m to each side, past
+/// the wall 0.25 m away, and cut 28,800 pixels of void and 57,600 of sky
+/// into it; `near_for` brings it in to 0.057 m. At 4:3 the corners are
+/// 0.16 m away and the plane stays 0.1 m.
 #[test]
 fn a_wide_frame_beside_a_wall_opens_no_hole_in_it() {
     let dir = scratch("wide");

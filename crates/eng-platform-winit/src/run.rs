@@ -174,6 +174,16 @@ impl<'a> Run<'a> {
         }
     }
 
+    /// The app's event for one of winit's device events, if any: raw
+    /// motion while the app is live, with focus as it was last told, and
+    /// winit's only while the GCMouse shim's does not replace it.
+    fn device_motion(&self, event: &DeviceEvent) -> Option<PlatformEvent> {
+        if !self.live() {
+            return None;
+        }
+        map::device_event(event, self.requests.focused(), self.motion.runs())
+    }
+
     /// Focus changed: the grab and the GCMouse shim follow before the app
     /// hears of it.
     fn focus(&mut self, focused: bool) {
@@ -240,13 +250,7 @@ impl ApplicationHandler for Run<'_> {
     }
 
     fn device_event(&mut self, event_loop: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
-        if !self.live() {
-            return;
-        }
-        // Raw motion only with focus, as the app was last told of it, and
-        // winit's only while the GCMouse shim's does not replace it.
-        let (focused, shim) = (self.requests.focused(), self.motion.runs());
-        if let Some(event) = map::device_event(&event, focused, shim) {
+        if let Some(event) = self.device_motion(&event) {
             self.deliver(event_loop, event);
         }
     }
@@ -274,5 +278,72 @@ impl ApplicationHandler for Run<'_> {
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.finish();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use eng_platform_api::Wake;
+    use eng_platform_gcmouse::{Feed, Shim, Source};
+    use winit::window::CursorGrabMode;
+
+    use super::*;
+    use crate::request::Target;
+
+    struct Idle;
+
+    impl App for Idle {
+        fn frame(&mut self, _ctx: &mut dyn Control) -> Wake {
+            Wake::OnEvent
+        }
+    }
+
+    /// A window that takes nothing: only focus matters here.
+    struct NoWindow;
+
+    impl Target for NoWindow {
+        fn show_cursor(&self, _shown: bool) {}
+        fn centre_cursor(&self) {}
+        fn grab_cursor(&self, _mode: CursorGrabMode) -> bool {
+            false
+        }
+        fn go_fullscreen(&self, _on: bool) {}
+        fn is_fullscreen(&self) -> bool {
+            false
+        }
+    }
+
+    /// A shim with no mice, so that it runs on any OS.
+    struct NoMice;
+
+    impl Source for NoMice {
+        fn refresh(&mut self, _feed: &Feed) {}
+
+        fn mice(&self) -> usize {
+            0
+        }
+    }
+
+    /// ADR-0021: winit's raw motion reaches the app with focus, unless the
+    /// GCMouse shim runs, whatever the OS; never before `start`.
+    #[test]
+    fn winit_motion_passes_with_focus_unless_the_shim_runs() {
+        let moved = DeviceEvent::MouseMotion { delta: (3.0, -2.0) };
+        for shim in [false, true] {
+            let mut motion = if shim {
+                RawMotion::on(Shim::with_source(Box::new(NoMice)))
+            } else {
+                RawMotion::default()
+            };
+            let mut app = Idle;
+            let mut run = Run::new(&mut app, WindowAttributes::default(), false, &mut motion);
+            run.requests.focus_gained(&NoWindow);
+            assert_eq!(run.device_motion(&moved), None, "before start");
+            run.started = true;
+            let want = (!shim).then_some(PlatformEvent::MouseMotion { dx: 3.0, dy: -2.0 });
+            assert_eq!(run.device_motion(&moved), want, "shim runs: {shim}");
+            run.requests.focus_lost(&NoWindow);
+            assert_eq!(run.device_motion(&moved), None, "without focus");
+        }
     }
 }

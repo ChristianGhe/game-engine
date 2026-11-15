@@ -11,10 +11,14 @@
 //!   at a later one), not one the sweep itself skips;
 //! - the path clipped against each primitive grown by the shrunk hull, in
 //!   plain arithmetic that shares none of the sweep's rules (no graze, slide,
-//!   sliver or nudge): where any of it is left, `overlaps` at its midpoint
-//!   must be false. The grown primitive is the intersection of slabs on X,
-//!   Y, Z and each edge's normal (the Minkowski sum of a box and a convex
-//!   prism has no other faces), so a solid of any thickness is found;
+//!   sliver or nudge) and none of the grid's (its cells, `overlaps`): no
+//!   piece of it may be left. The grown primitive is the intersection of
+//!   slabs on X, Y, Z and each edge's normal (the Minkowski sum of a box and
+//!   a convex prism has no other faces), so a solid of any thickness is
+//!   found, in a cell the grid's lookup misses too. The clip decides alone:
+//!   the shrink is far above f64's rounding on these maps' scale, so a piece
+//!   left is the hull inside solid, never rounding. The message says whether
+//!   `overlaps` agrees at the piece's midpoint;
 //! - `overlaps` at [`SAMPLES`] evenly spaced points from the start to the
 //!   hit fraction, which needs neither of the above to be right.
 //!
@@ -53,9 +57,9 @@ pub fn assert_no_pass_through(
         !again.hit() && !again.start_solid,
         "the trace from {from:?} to {to:?} ({tr:?}) passes through solid: the hull shrunk by {THROUGH} m, traced to the stop, hits {again:?}"
     );
-    if let Some(p) = solid_on_path(world, from, tr.end, &small) {
+    if let Some((p, overlaps)) = solid_on_path(world, from, tr.end, &small) {
         panic!(
-            "the trace from {from:?} to {to:?} ({tr:?}) passes through solid: the path to the stop, clipped against the primitives, is inside solid at {p:?}"
+            "the trace from {from:?} to {to:?} ({tr:?}) passes through solid: the path to the stop, clipped against the primitives, is inside solid at {p:?} (`overlaps` there: {overlaps})"
         );
     }
     for i in 0..=SAMPLES {
@@ -72,11 +76,17 @@ pub fn assert_no_pass_through(
     }
 }
 
-/// A point on the segment from `a` to `b` where `hull` is inside solid, as
-/// `world.overlaps` says, found by clipping the segment against each
-/// primitive grown by `hull`; `None` if `overlaps` is false at the midpoint
-/// of every clipped piece.
-pub fn solid_on_path(world: &Grid, a: WorldPos, b: WorldPos, hull: &BoxHull) -> Option<WorldPos> {
+/// A point on the segment from `a` to `b` where `hull` is inside solid,
+/// found by clipping the segment against each primitive grown by `hull`
+/// alone: the midpoint of the first piece left strictly inside one, with
+/// whether `world.overlaps` agrees there (a disagreement is a bug in the
+/// grid or here); `None` if no piece is left.
+pub fn solid_on_path(
+    world: &Grid,
+    a: WorldPos,
+    b: WorldPos,
+    hull: &BoxHull,
+) -> Option<(WorldPos, bool)> {
     let h = hull.half_extents;
     let (hx, hy, hz) = (f64::from(h.x), f64::from(h.y), f64::from(h.z));
     let walls = world
@@ -126,9 +136,7 @@ pub fn solid_on_path(world: &Grid, a: WorldPos, b: WorldPos, hull: &BoxHull) -> 
                 a.y + (b.y - a.y) * t,
                 a.z + (b.z - a.z) * t,
             );
-            if world.overlaps(p, hull) {
-                return Some(p);
-            }
+            return Some((p, world.overlaps(p, hull)));
         }
     }
     None

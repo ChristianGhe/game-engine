@@ -16,7 +16,9 @@
 //!   and its report names the window. Without a display or an adapter it
 //!   skips, unless `ENG_REQUIRE_DISPLAY=1` and `ENG_REQUIRE_GPU=1`. A
 //!   scripted run never grabs the cursor, and `--windowed` keeps it off
-//!   fullscreen, so the test leaves the desktop it runs on alone.
+//!   fullscreen, so the test leaves the desktop it runs on alone. A second,
+//!   30-tick run without `--windowed` checks that the window is still
+//!   fullscreen at the end: it takes the screen for about a second.
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -356,32 +358,31 @@ fn finish(mut child: Child) -> Output {
     out
 }
 
-/// Criterion 1's command line (`room-window`), compared with `run
-/// --headless` until the committed stream lands at G5.
-#[test]
-fn the_windowed_room_gives_run_headless_stream() {
-    let dir = scratch("window");
+/// The real binary's `play --map room` of the room's walk at seed 1 in
+/// `dir`, with `flags`, waited for as [`finish`] does.
+fn window_run(dir: &Path, flags: &[&str]) -> Output {
     let child = Command::new(env!("CARGO_BIN_EXE_game-testbed"))
-        .args([
-            "play",
-            "--map",
-            "room",
-            "--windowed",
-            "--ticks",
-            "600",
-            "--seed",
-            "1",
-        ])
+        .args(["play", "--map", "room"])
+        .args(flags)
+        .args(["--seed", "1"])
         .args(["--input", &testbed("scenarios/room-walk.input.toml")])
         .args(["--hashes", "h.txt", "--report", "r.json"])
-        .current_dir(&dir)
+        .current_dir(dir)
         .env("ENG_AGENT_LOG_DIR", dir.join("logs"))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("run game-testbed");
-    let out = finish(child);
+    finish(child)
+}
+
+/// Criterion 1's command line (`room-window`), compared with `run
+/// --headless` until the committed stream lands at G5.
+#[test]
+fn the_windowed_room_gives_run_headless_stream() {
+    let dir = scratch("window");
+    let out = window_run(&dir, &["--windowed", "--ticks", "600"]);
     if skipped(&out) {
         return;
     }
@@ -437,4 +438,42 @@ fn the_windowed_room_gives_run_headless_stream() {
     if cfg!(target_os = "macos") {
         assert!(window["gcmouse"].is_object(), "{window:#}");
     }
+}
+
+/// Without `--windowed` the room asks for borderless fullscreen, and the
+/// window is still fullscreen at the end: `fullscreen_at_end` is winit's
+/// account of the window (`Window::fullscreen`), read in `stop`, where
+/// `fullscreen` is only the request's answer, `true` whenever there is a
+/// window. Scripted, so it never grabs.
+///
+/// What `true` shows differs by platform (eng-platform-winit's
+/// `src/window.rs`): macOS and Windows set the state in `set_fullscreen`
+/// itself, and macOS clears it if entering fails or the window leaves
+/// fullscreen; X11 gives the state winit asked the window manager for, so
+/// under CI's Xvfb, with no manager to carry it out, it shows that the
+/// request reached winit's window and the answer is read back from it, not
+/// that the window covers the screen.
+#[test]
+fn the_fullscreen_room_is_fullscreen_at_the_end() {
+    let dir = scratch("fullscreen");
+    let out = window_run(&dir, &["--ticks", "30"]);
+    if skipped(&out) {
+        return;
+    }
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let report = report(&dir);
+    let window = &report["window"];
+    assert_eq!(window["fullscreen_asked"], true, "{window:#}");
+    assert_eq!(window["fullscreen"], true, "{window:#}");
+    assert_eq!(window["grab_asked"], false, "a scripted run never grabs");
+    // A locked or sleeping Mac screen, as above: the window never shows,
+    // and macOS drops the fullscreen too (macOS 26, an M2 Pro: no frame, no
+    // focus, `fullscreen_at_end` false). CI must present.
+    let frames = report["gpu"]["frames"].as_u64().unwrap_or(0);
+    if frames == 0 && !eng_platform_winit::display_required() {
+        eprintln!("no frame presented: the window was never visible");
+        return;
+    }
+    assert!(frames > 0, "no frame presented: {window:#}");
+    assert_eq!(window["fullscreen_at_end"], true, "{window:#}");
 }

@@ -274,7 +274,10 @@ the proposal is to fix them with rung 3's angled walls, beside O12.
   what holds: the start and stop are free, the trace hits, and nothing is
   passed through (`tests/oracle/through.rs`). Its (B) hit is today's
   answer, not a rule ((B)'s end is free), so a fix that makes (B) a graze
-  changes that test.
+  changes that test. It also checks that each of the four still fails the
+  conformance suite with the message named above, so a fix fails it and
+  points here (T23's follow-up; the mutants were not rerun for that check,
+  which can only catch more of them).
 
 ## The contact-rule break found on the way, and its fix (T5's rule)
 

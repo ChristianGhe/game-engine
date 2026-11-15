@@ -185,6 +185,13 @@ fn the_sim_data_hash_follows_the_content_and_the_protocol_the_schemas() {
 
 /// `plain_sim`'s protocol version as eng-sim computed it before constant
 /// resources existed (4407bad, the parent of T6's b9f3795).
+///
+/// The first absolute pin of the protocol version: the other tests compare
+/// versions with each other. An intended change to eng-sim's built-in
+/// resources and their schemas (`SimTick`, `SimInfo`, `TickInputs`,
+/// `GameplayRng`, and `PlayerCommand` within them) or to the protocol's layout
+/// changes this value too, and once G5 protects this file it takes an owner's
+/// edit, with the reason in the commit.
 const PLAIN_PROTOCOL_BEFORE_CONSTANTS: u64 = 0xe277_d809_3577_5da7;
 
 #[test]

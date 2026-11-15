@@ -24,7 +24,8 @@
 //!    and `pe` (`v = pe - ps`). Moving up, it enters at `(lo - ps) / v`
 //!    (never, if `ps >= hi` or `pe <= lo`; at once if `ps > lo`) and leaves at
 //!    `(hi - ps) / v` (never, if `pe < hi`); moving down, the mirror image;
-//!    still, it is inside throughout or never. The hull meets the primitive
+//!    still, it is inside throughout or never, and counts as entered through
+//!    the face nearer `ps` (`lo` on a tie). The hull meets the primitive
 //!    if the latest entry is before the earliest exit; the latest entry's
 //!    axis is the hit's (ties to X, Y, Z, then the edges in order), its
 //!    fraction clamped to `[0, 1)`.
@@ -51,9 +52,13 @@
 //!    hit becomes that of the latest entered edge whose projection is nearer
 //!    its entry face than its exit face; an edge the stop touches at its
 //!    entry face within `4 * NOISE` per meter counts as entered at once (a
-//!    vertex contact). With no such edge, the hit is a graze only if the
-//!    solid is a sliver by depth: midway through the rest's overlap, the hull
-//!    is inside by less than 2^-40 m per meter of coordinate on some axis.
+//!    vertex contact). An edge the motion runs along (its projection still)
+//!    enters through its nearer face (step 1), so a hull sliding along an
+//!    edge, a rounding inside it, that lands on a slab's top with its stop
+//!    on that face, is blocked by the edge, in contact. With no such edge,
+//!    the hit is a graze only if the solid is a sliver by depth: midway
+//!    through the rest's overlap, the hull is inside by less than 2^-40 m
+//!    per meter of coordinate on some axis.
 //! 5. **The first hit wins:** the smallest fraction, ties to the lower
 //!    primitive index (the walls in order, then the slabs). A start inside
 //!    anything is `start_solid`.

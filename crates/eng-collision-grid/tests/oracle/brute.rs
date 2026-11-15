@@ -214,7 +214,8 @@ fn crossing(a: &Axis, ps: f64, pe: f64) -> Option<(f64, f64, bool)> {
         };
         Some((enter, leave, false))
     } else if lo < ps && ps < hi {
-        Some((f64::NEG_INFINITY, f64::INFINITY, true))
+        // Still: through the nearer face, `lo` on a tie.
+        Some((f64::NEG_INFINITY, f64::INFINITY, ps - lo <= hi - ps))
     } else {
         None
     }

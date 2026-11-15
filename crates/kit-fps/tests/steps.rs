@@ -11,6 +11,7 @@ mod boxes;
 
 use boxes::{Boxes, solid};
 use eng_collision_api::{BoxHull, CollisionWorld};
+use eng_collision_grid::{Grid, Point2, Slab};
 use eng_core::{PlayerCommand, Tick};
 use eng_math::{Vec3, WorldPos};
 use kit_fps::{GroundConfig, GroundOutcome, MoveConfig, MoveState, ground_move, pmove};
@@ -157,4 +158,25 @@ fn a_step_up_lands_no_lower_than_it_rose() {
         assert_eq!((out.state.pos.x, out.state.pos.z), (1.75, H), "{ground:?}");
         assert!(out.on_ground, "{ground:?}");
     }
+}
+
+#[test]
+fn a_hull_resting_on_the_floor_keeps_the_sign_of_a_zero_coordinate() {
+    // Standing still at x = -0 on a grid floor: the step-down's trace hits
+    // at once, and a trace's stop is `s + d * t`, which turns -0 into +0. A
+    // hit at fraction 0 is no drop, so the hull stays where it is, bit for
+    // bit (the state hash sees the sign of a zero).
+    let floor = Slab {
+        points: [(-4.0, -4.0), (4.0, -4.0), (4.0, 4.0), (-4.0, 4.0)]
+            .map(|(x, y)| Point2::new(x, y))
+            .to_vec(),
+        bottom: -0.5,
+        top: 0.0,
+    };
+    let world = Grid::new(vec![], vec![floor]).unwrap();
+    let s = state([-0.0, 1.0, H], [0.0; 3]);
+    let out = tick(&world, &s, &cmd(0, 0, 0));
+    assert_eq!(out.state.pos.x.to_bits(), (-0.0f64).to_bits(), "{out:?}");
+    assert_eq!(out.state, s);
+    assert!(out.on_ground);
 }

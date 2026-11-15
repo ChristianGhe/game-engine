@@ -194,6 +194,12 @@ fn a_slab_has_one_axis_per_direction_of_its_edges_off_the_axes() {
     let kite = slab(&[(1.0, 0.0), (2.0, 1.0), (1.0, 2.0), (0.0, 1.5)], 0.0, 1.0);
     let len = |s: Slab| to_bytes(&Grid::new(vec![], vec![s]).unwrap()).len();
     assert_eq!(len(kite), len(diamond.clone()) + 2 * 24);
+    // Two edges with normals that share their y but not their x are two
+    // axes: an isosceles triangle has one more than a right one of the same
+    // bounds, whose third edge is its only one off the axes.
+    let isosceles = slab(&[(0.0, 0.0), (4.0, 0.0), (2.0, 3.0)], 0.0, 1.0);
+    let right = slab(&[(0.0, 0.0), (4.0, 0.0), (4.0, 3.0)], 0.0, 1.0);
+    assert_eq!(len(isosceles), len(right) + 24);
     // The diamond blocks on its own faces: a hull moving south-west onto
     // the north-east face stops in contact with it, off the axes.
     let world = Grid::new(vec![], vec![diamond]).unwrap();

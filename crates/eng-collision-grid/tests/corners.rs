@@ -343,6 +343,41 @@ fn a_hit_with_less_than_an_ulp_of_solid_ahead_goes_to_an_edge_or_grazes() {
 }
 
 #[test]
+fn a_hull_sliding_along_an_edge_onto_a_slabs_top_is_held_by_the_edge() {
+    // Found by the oracle's contract proptest at 16 times its cases (seed
+    // 1): the hull moves down and exactly along a diamond's north-east edge
+    // (its projection there is still), a rounding inside it, and lands on
+    // the top with its stop exactly on that edge's face, so one ulp on is
+    // free on every probe. A still axis enters through its nearer face, here
+    // the edge's outer one, which the stop touches: the edge blocks, in
+    // contact. It used to be taken as entered through the far face, and the
+    // hit on the top was kept, short of contact.
+    let diamond = slab(
+        &[
+            (-0.9795673034842626, -0.2785587047970818),
+            (-0.7184421868659554, -0.01743358817877455),
+            (-0.9795673034842626, 0.24369152843953268),
+            (-1.2406924201025697, -0.01743358817877455),
+        ],
+        1.0,
+        1.4,
+    );
+    let world = Grid::new(vec![], vec![diamond]).unwrap();
+    let hull = BoxHull {
+        half_extents: Vec3::new(0.62900436, 0.8207159, 0.62513196),
+    };
+    let s = at(-0.08943782762065511, 0.8032823160570652, 2.125);
+    let e = at(-0.3394378276206551, 1.0532823160570652, 1.875);
+    conformance::check(&world, s, e, &hull);
+    let tr = world.trace(s, e, &hull);
+    assert!(tr.hit() && off_axes(tr.normal), "{tr:?}");
+    assert!(
+        tr.normal.x > 0.0 && tr.normal.y > 0.0,
+        "the outer face: {tr:?}"
+    );
+}
+
+#[test]
 fn sliding_along_a_wall_off_the_axes_within_rounding_is_not_a_hit() {
     // Step 2's slide rule: from a stop against a wall, a motion along it,
     // and rising off its top. Points on the way flicker in and out of the
@@ -404,4 +439,18 @@ impl CollisionWorld for Gappy {
 fn a_gap_off_the_axes_wider_than_contact_gap_fails_the_check() {
     let world = Grid::new(vec![wall((6.0, 0.0), (0.0, 6.0), 0.0, 3.0)], vec![]).unwrap();
     conformance::check(&Gappy(world), at(1.0, 1.5, H), at(4.0, 3.0, H), &HULL);
+}
+
+#[test]
+fn a_corner_stop_keeps_the_sign_of_a_zero_on_a_face_it_already_touches() {
+    // Step 3's corner rule moves the stop onto a face it is short of, and
+    // leaves one it is on. A block whose grown top is at +0, below a hull at
+    // z = -0 that touches it there: moving east and down, the hull hits the
+    // block's west face at once, and the stop keeps z = -0 rather than the
+    // face's +0 (equal, but a state hash sees the sign).
+    let world = Grid::new(vec![], vec![rect(1.0, -1.0, 3.0, 1.0, -1.875, -0.875)]).unwrap();
+    let s = at(0.75, 0.0, -0.0);
+    let tr = checked(&world, s, at(1.5, 0.0, -1.0));
+    assert_eq!((tr.fraction, tr.normal), (0.0, Vec3::new(-1.0, 0.0, 0.0)));
+    assert_eq!(tr.end.z.to_bits(), (-0.0f64).to_bits(), "{tr:?}");
 }

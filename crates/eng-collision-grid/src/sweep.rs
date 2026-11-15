@@ -108,7 +108,9 @@ pub(crate) fn stop(s: [f64; 3], d: [f64; 3], t: f64, snap: Option<(usize, f64)>)
 
 /// How a centre whose projection moves from `ps` to `pe` meets `g`: when it
 /// enters, when it leaves, and whether it enters through `lo`; `None` if it
-/// is never inside. Entering at once or never leaving is infinite.
+/// is never inside. Entering at once or never leaving is infinite. A still
+/// projection, inside throughout, counts as entered through its nearer face
+/// (`lo` on a tie): the face a stop on it touches, if any.
 fn crossing(g: &Grown, ps: f64, pe: f64) -> Option<(f64, f64, bool)> {
     let v = pe - ps;
     if v > 0.0 {
@@ -142,7 +144,7 @@ fn crossing(g: &Grown, ps: f64, pe: f64) -> Option<(f64, f64, bool)> {
         };
         Some((enter, leave, false))
     } else if g.lo < ps && ps < g.hi {
-        Some((f64::NEG_INFINITY, f64::INFINITY, true))
+        Some((f64::NEG_INFINITY, f64::INFINITY, ps - g.lo <= g.hi - ps))
     } else {
         None
     }

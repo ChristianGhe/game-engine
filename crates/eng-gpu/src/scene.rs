@@ -129,6 +129,12 @@ impl Scene {
 /// storage array ([`crate::FrameInput::instances`]); a mesh draw's
 /// instances index it. In WGSL,
 /// `struct Instance { offset: vec3<f32>, material: u32 }`, 16 bytes.
+///
+/// The fields say what a chunk's record holds. A pipeline may read several
+/// records per instance and give them its own meaning: eng-render's
+/// sprites read two, `2i` and `2i + 1`, for sprite `i` (its feet minus the
+/// eye and its frame's material, then its size, region and id; ADR-0020's
+/// Amendment 1), so a draw's instance count is not its record count.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct InstanceRecord {
     /// The chunk's or sprite's origin minus the eye, in metres.

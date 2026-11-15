@@ -69,8 +69,9 @@ pub struct FrameInput<'a> {
     /// caller's shaders declare them. A whole number of 16-byte rows, and
     /// not empty in a frame that draws a mesh or screen pipeline.
     pub uniform: &'a [u8],
-    /// This frame's record of each drawn chunk or sprite,
-    /// `@group(0) @binding(1)`, which a [`MeshDraw`]'s instances index.
+    /// This frame's records of the drawn chunks and sprites,
+    /// `@group(0) @binding(1)`, which a [`MeshDraw`]'s instances index (a
+    /// pipeline may read several per instance: [`InstanceRecord`]).
     pub instances: &'a [InstanceRecord],
     /// The scene that mesh pipelines draw from, and screen pipelines with
     /// [`crate::ScreenDesc::scene`] bind.

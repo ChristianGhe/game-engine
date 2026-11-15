@@ -72,7 +72,10 @@ pub struct MeshDraw {
     /// Added to each index before it reads the vertex buffer, so that a
     /// chunk's indices may count from its own first vertex.
     pub base_vertex: i32,
-    /// Indexes into [`crate::FrameInput::instances`].
+    /// The instances drawn, as indexes into
+    /// [`crate::FrameInput::instances`], which must hold at least `end`
+    /// records. The shader maps an instance to its records, so it may read
+    /// more than one ([`crate::InstanceRecord`]).
     pub instances: Range<u32>,
 }
 

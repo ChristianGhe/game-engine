@@ -88,6 +88,11 @@ impl Targets {
     /// into a built-in resource's texture; or if `graph` pools a transient
     /// that the frame uses after it into the same texture
     /// ([`Graph::pool`]), which would have drawn over it.
+    ///
+    /// A frame refused before it is encoded (a window's image of another
+    /// size than [`Targets::surface_size`], or given to an offscreen graph)
+    /// leaves the previous frame's transients readable; a frame that fails
+    /// once encoding starts, its passes' checks included, leaves none.
     pub fn read_transient(
         &self,
         gpu: &Gpu,

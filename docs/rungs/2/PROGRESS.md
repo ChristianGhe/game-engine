@@ -1438,3 +1438,48 @@ for the owner at G5)
 
   TA2's and TA4's docs come with them.
 - **Cost:** about 3 h, 526k tokens. It counts as one session (33.5 of 52).
+
+**TA2: scene rules over frame records** (a594518; A2)
+- **Built** by one builder, one clean commit after a review and a
+  rework.
+- **Frame record version 2:**
+  - objects gain `colour` and `surround_colour`;
+  - frames gain `void` (pixels showing nothing below the horizon) and
+    `surface_luminance` (the mean over non-sky pixels).
+- **The checker:** `eng_cli::scene_rules` (a strict `SceneRules::parse`,
+  `judge`, `[E-SCENE-RULE]` findings) and
+  `crates/game-testbed/tests/scene_rules.rs`, which renders the
+  first-person shots and judges their records.
+- **The rules, for the owner to approve at G5:**
+  `crates/game-testbed/scenes/room.rules.toml`, in
+  `docs/rungs/2/patches/ta2-scene-rules.patch` (SHA-256 `3cbaed9c…`).
+  - **Rule 1 (must-see objects):** at least 50 px; an OKLab distance from
+    their surroundings of at least 0.03 (colour, because the red marker
+    in front of the grey pillar has nearly its luminance); and
+    luminance at least 0.2 of the surfaces in view, which catches
+    "drawn black".
+  - **Rule 2:** no void below the horizon. The sky limit is 0, except
+    where a shot's bounded exception gives the skylight's measured sky
+    plus 2%, so a hole in the ceiling fails.
+  - **Rule 3:** the floor covers at least 0.1 of the lower third, and
+    ceiling or sky at least 0.1 of the upper third. Two shots are excused,
+    with bounds and reasons.
+  - **Margins,** on Metal and the pinned lavapipe: pixels 3.2×, contrast
+    +41%, light +126%, thirds 2.9× and 4.5×.
+  - The plan's draft ("contrast at least 0.1", "the clear colour") failed
+    the room's own shots and could not catch drawn black. Its wording in
+    `acceptance.json` needs the owner's amendment.
+- **Selftests** (in the patch): rule-1 plants things drawn black and
+  things not drawn; rule-2 an east wall gone and a ceiling hole; rule-3 a
+  camera pitched up. Each requires its own check, shot, object and measure.
+- **Review:** a fresh reviewer (17 min, 153k tokens) found the commits
+  sound, and two blockers in the patch.
+  - **The blockers:** the patch conflicted with TA4's, and a missing rules
+    file passed silently.
+  - **The rework fixed** the second blocker in the patch's strict test, and
+    took the non-blocking points: light against surfaces, the sky limit,
+    bounded exceptions, more plants, and an error-path test.
+- **Checked:** on `main` after the cherry-pick, `ENG_REQUIRE_GPU=1 quick`
+  7 of 7. The strict form passes on the pinned lavapipe in Docker.
+- **Cost:** about 2 h 20 min, 544k tokens. It counts as one session
+  (34.5 of 52).

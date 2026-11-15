@@ -52,7 +52,17 @@ The four rung 2 crates:
   1 m cells over vertical wall segments and solid horizontal slabs, built
   once from a map's sim data. It implements `CollisionWorld`, stops traces
   in contact (ADR-0024), and gives a brute-force oracle's `Trace` bits
-  (`tests/oracle.rs`); the crate docs list its sweep's six steps.
+  (`tests/oracle.rs`); the crate docs list its sweep's six steps. The
+  oracle (`tests/oracle/brute.rs`) repeats every one of those rules (the
+  still axis's face, `GRAZE`, the `NOISE` slide, the vertex contact's
+  `4 * NOISE`, the 2^-40 sliver, the nudge and the back-off), so its bits
+  test the grid's choice of candidates and of the first hit, not the
+  rules: a wrong rule is wrong in both. What checks the rules is
+  `eng_collision_api::conformance::check` (the contact rule) and
+  `tests/contract.rs`'s pass-through check (`tests/oracle/through.rs`:
+  the hull shrunk by 1e-6 m free on the whole way to each stop, by its own
+  trace, by clipping the path against each primitive in plain arithmetic,
+  and at samples).
 - **`game-testbed-client`**: the testbed's presentation, read from the
   sim's state and never written back: the top-down view, moved unchanged
   from `game-testbed`, and the room's first-person view ("The first-person
@@ -136,6 +146,16 @@ input script (TOML) ──eng-input──▶ PlayerCommand per player, per tick
   dot's protocol keeps its bytes. `Sim::sim_data_hash` is FNV-1a-64 over
   their canonical bytes in name order, 0 with none. `dump-world` shows them
   under `constants`.
+- **Tuning in f32 against geometry in f64** (a note for level format v2):
+  `GroundConfig`'s `step_height` and `snap_distance` are `Real` (f32),
+  widened to f64 where they meet the grid's f64 heights
+  (`crates/kit-fps/src/ground.rs`, `step_up` and `step_down`). f32 0.4 is
+  about 6e-9 m above 0.4, so the room's 0.4 m rises climb and its 0.4 m
+  drop snaps with that to spare; f32 0.7 is about 1.2e-8 m below 0.7, so a
+  0.7 m step with `step_height = 0.7` would block, and a 0.7 m drop with
+  `snap_distance = 0.7` would fall. No rung 2 map has such a pair. Level
+  format v2 should compare tuning and geometry at one precision, or keep
+  both on a grid that f32 holds exactly (multiples of 2^-k m).
 - **Maps** (eng-cli's `GameMaps`, beside `GameDef`): a map is a name, a
   build function and a view (`MapView`: top-down, first person, or none,
   which `shot`, `video` and `play` refuse). `--map NAME` picks one for
@@ -302,7 +322,11 @@ path. The crate docs list the five messages and their layouts.
   new client has no baseline, so `Welcome` and `Denied` carry the high 32
   bits too; the `Welcome` tick is the baseline until the first ack.
 - `Welcome` also carries the session's player count and seed: a sim
-  restores a snapshot only from a session with the same constants.
+  restores a snapshot only from a build with the same protocol and a
+  session with the same tick rate, player count and seed (`SimInfo`).
+  Restore does not check sim data, which no snapshot carries: the sim
+  keeps its own (ADR-0023), and until rung 5's handshake carries the
+  sim-data hash nothing tells two maps with one protocol apart.
 - Commands use eng-core's canonical `PlayerCommand` layout, the one
   recordings use: up to five per message, oldest first.
 - A snapshot's state is opaque to the codec, at most 65,535 bytes.

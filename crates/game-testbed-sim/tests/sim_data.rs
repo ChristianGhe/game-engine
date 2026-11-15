@@ -92,7 +92,7 @@ fn sim_data_is_outside_the_state_its_hash_and_snapshots() {
     }
     data.slabs.push(far);
     let mut a = room_sim(2, 3);
-    let mut b = room::build_with(config(2, 3), data).unwrap();
+    let mut b = room::build_with(config(2, 3), data.clone()).unwrap();
     assert_ne!(a.sim_data_hash(), b.sim_data_hash());
     assert_eq!(a.protocol_version(), b.protocol_version());
     for tick in 0..60 {
@@ -102,11 +102,35 @@ fn sim_data_is_outside_the_state_its_hash_and_snapshots() {
         step(&mut a, 127, 0x1000);
         step(&mut b, 127, 0x1000);
     }
-    // A snapshot restores into a sim with other constants: it carries none.
-    let mut c = room_sim(2, 3);
-    c.restore(&a.snapshot()).unwrap();
+    // A snapshot restores into a sim with other sim data: it carries none,
+    // and `restore` checks the protocol and the session (`SimInfo`), never
+    // the sim data (ADR-0023). The sim keeps its own constants and their
+    // hash, and steps on with them: `b`'s data, out of every player's
+    // reach, steps as `a`'s does.
+    let snapshot = a.snapshot();
+    let mut c = room::build_with(config(2, 3), data).unwrap();
+    c.restore(&snapshot).unwrap();
     assert_eq!(c.state_hash(), a.state_hash());
-    assert_eq!(c.sim_data_hash(), room_sim(1, 0).sim_data_hash());
+    assert_eq!(c.sim_data_hash(), b.sim_data_hash());
+    assert_eq!(c.world().constant::<Grid>(), b.world().constant::<Grid>());
+    assert_ne!(c.world().constant::<Grid>(), a.world().constant::<Grid>());
+    // A faster top speed is in reach: restored the same way, its players
+    // run on at that speed, and its states part from `a`'s. Only rung 5's
+    // handshake (the sim-data hash) can tell such sessions apart.
+    let mut fast = RoomData::room();
+    fast.movement.max_speed = 4.5;
+    let mut fast = room::build_with(config(2, 3), fast).unwrap();
+    assert_eq!(fast.protocol_version(), a.protocol_version());
+    fast.restore(&snapshot).unwrap();
+    assert_eq!(fast.state_hash(), a.state_hash());
+    assert_ne!(fast.sim_data_hash(), a.sim_data_hash());
+    for tick in 0..30 {
+        step(&mut a, 127, 0x1000);
+        step(&mut c, 127, 0x1000);
+        step(&mut fast, 127, 0x1000);
+        assert_eq!(c.state_hash(), a.state_hash(), "tick {tick}");
+    }
+    assert_ne!(fast.state_hash(), a.state_hash());
     // Nor does the state hold the grid's bytes.
     let grid = to_bytes(a.world().constant::<Grid>());
     let state = a.state_bytes();

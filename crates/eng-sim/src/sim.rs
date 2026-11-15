@@ -192,7 +192,8 @@ pub enum RestoreError {
         found: u64,
     },
     Decode(DecodeError),
-    /// The snapshot is from a session with other constants.
+    /// The snapshot is from a session with another tick rate, player count
+    /// or seed (`SimInfo`).
     Session {
         expected: SimInfo,
         found: SimInfo,
@@ -329,8 +330,10 @@ impl Sim {
     }
 
     /// Replaces the state with a snapshot from a build with the same protocol
-    /// and a session with the same constants. All-or-nothing: on error the
-    /// state is unchanged.
+    /// and a session with the same tick rate, player count and seed
+    /// (`SimInfo`). The sim data (constant resources) is not in a snapshot
+    /// and is not checked: the sim keeps its own (ADR-0023). All-or-nothing:
+    /// on error the state is unchanged.
     pub fn restore(&mut self, snapshot: &[u8]) -> Result<(), RestoreError> {
         let mut reader = eng_schema_core::Reader::new(snapshot);
         let found = reader.read_u64().map_err(RestoreError::Decode)?;

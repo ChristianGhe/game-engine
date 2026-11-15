@@ -10,10 +10,13 @@
 //! oracle search found are also checked against the brute-force oracle
 //! (`tests/oracle.rs`). Case 3's mirror image broke the contact rule, in the
 //! grid and the oracle alike, until a still axis entered through its nearer
-//! face (rung 2, T19b follow-up).
+//! face (rung 2, T19b follow-up). Two open breaks of the contact rule, (A)
+//! and (B), are checked for what still holds (`OPEN`).
 
 #[path = "oracle/brute.rs"]
 mod brute;
+#[path = "oracle/through.rs"]
+mod through;
 
 use brute::Brute;
 use eng_collision_api::{BoxHull, CollisionWorld, Trace, conformance};
@@ -108,11 +111,6 @@ fn bits(t: &Trace) -> ([u64; 4], [u32; 3], bool) {
     )
 }
 
-/// As `tests/contract.rs`: the hull shrunk by this much on every side must
-/// be free at every sample of the way to the stop.
-const THROUGH: f32 = 1.0e-6;
-const SAMPLES: u32 = 32;
-
 #[test]
 fn the_found_traces_keep_the_rules() {
     for (i, case, mirror) in CASES
@@ -149,23 +147,76 @@ fn the_found_traces_keep_the_rules() {
             continue;
         }
         conformance::check(&grid, from, to, &hull);
-        let shrunk = BoxHull {
-            half_extents: Vec3::new(hx - THROUGH, hy - THROUGH, hz - THROUGH),
-        };
-        for k in 0..=SAMPLES {
-            let t = got.fraction * f64::from(k) / f64::from(SAMPLES);
-            let p = WorldPos::new(
-                from.x + (to.x - from.x) * t,
-                from.y + (to.y - from.y) * t,
-                from.z + (to.z - from.z) * t,
-            );
-            assert!(
-                !grid.overlaps(p, &shrunk),
-                "case {i} (mirror {mirror}): {got:?} passes through solid at {p:?}"
-            );
-        }
+        through::assert_no_pass_through(&grid, from, to, &got, &hull);
     }
 }
+
+/// The two open breaks of ADR-0024's contact rule in step 4 of the crate
+/// docs, (A) and (B) of `docs/rungs/2/patches/t19b-mutants-exclusions.md`,
+/// each with its mirror image: a hull beside a slab's edge off the axes. The
+/// conformance suite fails both, (A) with "one ulp further on is still free"
+/// (held on the top, short of the boundary) and (B) with "the rest of the
+/// motion does not hit" (stopped with the edge's normal, short of it).
+/// Whether to fix the grid or narrow the rule is the owner's (ADR-0024,
+/// Amendment 2). What holds, and is checked here: the stop is free, the
+/// trace hits, and nothing is passed through. (A)'s end is inside the slab,
+/// so any trace must stop; (B)'s is free, so a fix may make (B) a graze
+/// instead, and change this test.
+#[test]
+fn the_open_contact_breaks_stop_free_and_pass_through_nothing() {
+    for (i, case, mirror) in OPEN
+        .iter()
+        .enumerate()
+        .flat_map(|(i, case)| [(i, case, false), (i, case, true)])
+    {
+        let (walls, slabs) = case.parts(mirror);
+        let grid = Grid::new(walls, slabs).unwrap();
+        let [hx, hy, hz] = case.hull;
+        let hull = BoxHull {
+            half_extents: Vec3::new(hx, hy, hz),
+        };
+        let (from, to) = case.ends(mirror);
+        let what = if i == 0 { "(A)" } else { "(B)" };
+        assert!(!grid.overlaps(from, &hull), "{what} (mirror {mirror})");
+        assert_eq!(grid.overlaps(to, &hull), i == 0, "{what} (mirror {mirror})");
+        let tr = grid.trace(from, to, &hull);
+        assert!(
+            tr.hit() && !tr.start_solid,
+            "{what} (mirror {mirror}): {tr:?}"
+        );
+        assert!(
+            !grid.overlaps(tr.end, &hull),
+            "{what} (mirror {mirror}): {tr:?} ends inside solid"
+        );
+        through::assert_no_pass_through(&grid, from, to, &tr, &hull);
+        assert_eq!(grid.trace(from, to, &hull), tr, "{what} (mirror {mirror})");
+    }
+}
+
+/// (A), then (B), as found (the slabs from z 0).
+#[rustfmt::skip]
+const OPEN: &[Case] = &[
+    Case {
+        check: Check::Contract,
+        walls: &[],
+        slabs: &[
+            (&[0.8342246031076089, 0.22523066479828902, -0.5587184072985766, 0.5130715888515152, -1.1209500218753434, -1.661382543707628, 0.2649472301686788, -0.6111264719388632], 0.0, 0.7545323315703691),
+        ],
+        hull: [0.26983458, 0.14706548, 0.72871894],
+        from: [-1.1284023191669874, -0.49954267624878423, 1.684434015645078],
+        to: [-1.2618060870558636, -1.0154872840786453, 1.007474930349261],
+    },
+    Case {
+        check: Check::Contract,
+        walls: &[],
+        slabs: &[
+            (&[1.8083400316838976, 2.7251160814529642, -0.35575512839208945, 2.2516321346073775, -0.11336571303549503, 1.0940975268012743, 1.710195340442799, 1.3599845674512399], 0.0, 1.4747776309330871),
+        ],
+        hull: [0.9827255, 0.48495227, 0.99043757],
+        from: [-1.2732884835113105, 1.4553536667774594, 2.750962695091877],
+        to: [-1.0899426147761797, 0.5797825208421452, 2.4121203546379055],
+    },
+];
 
 /// The cases, each under the mutant it was found against; one primitive a line.
 #[rustfmt::skip]

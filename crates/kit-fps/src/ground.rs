@@ -187,6 +187,12 @@ fn step_up<C: CollisionWorld + ?Sized>(
     ground: &GroundConfig,
     world: &C,
 ) -> Option<MoveOutcome> {
+    // The f32 step height, widened, meets f64 geometry: f32 0.4 is about
+    // 6e-9 m above 0.4, so a 0.4 m rise climbs with that to spare, but f32
+    // 0.7 is about 1.2e-8 m below 0.7, so a 0.7 m rise with a 0.7 step
+    // height would block. Not reachable in rung 2 (its tuning is 0.4); a
+    // note for level format v2 (docs/ARCHITECTURE.md, "Data flow of one
+    // tick").
     let top = WorldPos::new(start.x, start.y, start.z + f64::from(ground.step_height));
     let up = world.trace(start, top, hull);
     let rise = up.end.z - start.z;
@@ -211,6 +217,9 @@ fn step_down<C: CollisionWorld + ?Sized>(
     ground: &GroundConfig,
     world: &C,
 ) -> WorldPos {
+    // As in `step_up`, the f32 distance meets f64 geometry: f32 0.4 is a
+    // little over 0.4, so a 0.4 m drop snaps, but a 0.7 m drop with a 0.7
+    // snap distance would fall (f32 0.7 is a little under 0.7).
     let snap = f64::from(ground.snap_distance);
     // A trace that ends exactly touching floor reports no hit, so look one
     // probe further and then check the drop, which keeps the snap distance

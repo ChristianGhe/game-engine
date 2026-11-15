@@ -26,10 +26,19 @@ against its own package's tests), on this Mac (macOS, arm64), `-j 3`:
   expression, all caught): 781 mutants in 23 min: 687 caught, 54 missed, 7
   timed out (the same 7), 33 unviable. The 54 are the 22 equivalent and the
   32 open ones below; no other mutant is missed.
+- After T23's review (tests only: (A) and (B) below committed as
+  `tests/found.rs`'s
+  `the_open_contact_breaks_stop_free_and_pass_through_nothing`, and the
+  pass-through check made exact in `tests/oracle/through.rs`): the 32 open
+  mutants alone, rerun with the same settings (`--re` for each, 2 min): 2
+  caught, the guard's `267:33` and `267:42`, both by the new test; 30
+  missed. The other mutants were not rerun: tests were only added or made
+  stricter, so none caught before is missed now. That leaves 52 missed:
+  the 22 equivalent and 30 open.
 
-So 94 of the 148 first missed now have a test that catches them (and the
+So 96 of the 148 first missed now have a test that catches them (and the
 fix's own 5 do). Criterion 19 passes if the owner adds the 20 patterns of the
-next section and the 14 of the one after; with the first 20 alone, 32
+next section and the 12 of the one after; with the first 20 alone, 30
 mutants still fail it.
 
 ## Equivalent: the exclusions proposed (`exclude_re`)
@@ -160,15 +169,19 @@ of solid ahead (both of the check's ulp probes free):
   `403:14`, `403:22`, `403:30`; `404:14` `+` to `-`; `404:30` `*` to `/`;
   `406:28`, `406:41`, `406:54` `+` to `*`; `406:61` `/` to `%` and `*`;
   `410:37` `<` to `<=` and `>`.
-- the guard that calls it (2): `267:33` the match guard `grazed() &&
-  sliver(..)` replaced with `true`, and `267:42` its `&&` to `||`. Before the
-  grid's fix these were caught, but only by cases that broke the contact
-  rule (the guard was false on the way to a kept hit short of contact); with
-  the fix those cases are held by the edge instead. **Correction (the
-  second follow-up's review):** other cases do reach the guard false. Every
-  open break (A) below does, on its way to a kept hit short of contact
-  (snap on Z, both probes free, `edge_at_entry` finds no edge), so these two
-  are not "never observed": the searches here missed (A).
+
+Caught since T23's review: the guard that calls `sliver` (2), `267:33` the
+match guard `grazed() && sliver(..)` replaced with `true`, and `267:42` its
+`&&` to `||`. Before the grid's fix these were caught, but only by cases
+that broke the contact rule (the guard was false on the way to a kept hit
+short of contact); with the fix those cases are held by the edge instead.
+**Correction (the second follow-up's review):** other cases do reach the
+guard false. Every open break (A) below does, on its way to a kept hit short
+of contact (snap on Z, both probes free, `edge_at_entry` finds no edge), so
+these two are not "never observed": the searches here missed (A). (A)'s end
+is inside the slab, so with either mutant its trace runs on to that end,
+unblocked; `found.rs`'s test of what (A) still does (it hits, it stops
+free) catches both.
 
 The search for them (all on this Mac, none of it committed): cargo-mutants
 with the grid's proptests at 128 times their cases (`PROPTEST_CASES=131072`,
@@ -177,7 +190,7 @@ corners, nudged by ulps, moving along edges or at random (1 million cases at
 seed 1, then 4 million at seeds 2 and 3, over every mutant left), before and
 after the fix. These found the cases in `tests/found.rs`, which catch the
 other 8 `sliver` mutants, 12 of `edge_at_entry`'s 16 and more of `sweep.rs`,
-but none of these 32. Then, before the fix, a copy of the crate instrumented
+but none of these 30 (nor the guard's 2). Then, before the fix, a copy of the crate instrumented
 to evaluate the 30 of `sliver` and `edge_at_entry` beside the real code at
 each call, over the crate's tests, the proptests at 128 times (seed 3) and 8
 million aimed cases (seed 5): `edge_at_entry` ran 64,000 times and none of
@@ -189,12 +202,14 @@ contract proptest, but changed no trace.
 
 So, by these searches, `sliver` only ever answers true; but the guard is
 reached false by the open breaks (A) below, so step 4's rule is not dead,
-only untested at the margins these mutants move. Don't exclude these 32
-until (A) and (B) are fixed: their tests are likely to catch some of them.
+only untested at the margins these mutants move. Don't exclude these 30
+until (A) and (B) are fixed: tests of the fixed contact are likely to catch
+some of them (the tests of what (A) and (B) do today catch none of the 30).
 Two choices, after that fix:
 
 - exclude them as never observed, with these patterns (each checked to
-  match only these 32; three keep the line, since lines 402 to 404 share
+  match only these 30, the last time against `cargo mutants --list` of
+  eng-collision-grid after T23's tests; three keep the line, since lines 402 to 404 share
   their columns with mutants that are caught):
 
   ```toml
@@ -207,8 +222,6 @@ Two choices, after that fix:
     "sweep\\.rs:[0-9]+:(28|41|54): replace \\+ with \\* in sliver$",
     "sweep\\.rs:[0-9]+:61: replace / with [%*] in sliver$",
     "sweep\\.rs:[0-9]+:37: replace < with (<=|>) in sliver$",
-    "sweep\\.rs:.*: replace match guard grazed\\(\\) && sliver\\(.*\\) with true in sweep$",
-    "sweep\\.rs:[0-9]+:42: replace && with \\|\\| in sweep$",
     "sweep\\.rs:[0-9]+:44: replace - with [+/] in edge_at_entry$",
     "sweep\\.rs:[0-9]+:57: replace \\+ with \\* in edge_at_entry$",
     "sweep\\.rs:[0-9]+:70: replace \\+ with \\* in edge_at_entry$",
@@ -253,6 +266,15 @@ the proposal is to fix them with rung 3's angled walls, beside O12.
   `125:27`/`140:27` above) assumes projection rounding is small next to the
   rest's motion along the axis; that fails for (A)'s near-still axes. It is
   unlikely to matter, but re-check it with (A)'s fix.
+- Neither lets a hull through solid: T23's review traced the hull shrunk by
+  1e-6 m from each failing case's start to its stop (exact, not sampled),
+  over 60,000 cases, and nothing was hit. Both reproducers, and their mirror
+  images, are now `tests/found.rs`'s
+  `the_open_contact_breaks_stop_free_and_pass_through_nothing`, which checks
+  what holds: the start and stop are free, the trace hits, and nothing is
+  passed through (`tests/oracle/through.rs`). Its (B) hit is today's
+  answer, not a rule ((B)'s end is free), so a fix that makes (B) a graze
+  changes that test.
 
 ## The contact-rule break found on the way, and its fix (T5's rule)
 

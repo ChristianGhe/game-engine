@@ -233,16 +233,39 @@ fn a_snapshot_restores_into_a_sim_with_its_own_sim_data() {
     for tick in 1..=10 {
         source.step(&[cmd(tick)]).unwrap();
     }
+    let snapshot = source.snapshot();
     let mut target = data_sim(0.5, 3);
-    target.restore(&source.snapshot()).unwrap();
+    target.restore(&snapshot).unwrap();
     assert_eq!(target.state_hash(), source.state_hash());
     assert_eq!(target.world().constant::<Walls>(), &walls(3));
     assert_eq!(target.sim_data_hash(), source.sim_data_hash());
-    // Stepping on gives the same states.
+    // Other sim data, under the same protocol: a snapshot carries none, and
+    // `restore` checks the protocol and the session (`SimInfo`), never the
+    // sim data (ADR-0023), so it restores. The sim keeps its own constants
+    // and their hash, and steps on with them: here a smaller gain, so the
+    // states part at the first tick that moves. Only rung 5's handshake
+    // (the sim-data hash) can tell the two sessions apart.
+    let mut other = data_sim(0.25, 4);
+    assert_eq!(other.protocol_version(), source.protocol_version());
+    other.restore(&snapshot).unwrap();
+    assert_eq!(other.state_hash(), source.state_hash());
+    assert_eq!(other.world().constant::<Gain>(), &Gain(0.25));
+    assert_eq!(other.world().constant::<Walls>(), &walls(4));
+    assert_eq!(other.sim_data_hash(), data_sim(0.25, 4).sim_data_hash());
+    assert_ne!(other.sim_data_hash(), source.sim_data_hash());
+    assert_eq!(source.world().resource::<Value>().0, 10.0);
+    // Stepping on gives the same states with the same sim data, and other
+    // states with the other: tick 11 moves forward by 1.
     for tick in 11..=20 {
         source.step(&[cmd(tick)]).unwrap();
         target.step(&[cmd(tick)]).unwrap();
+        other.step(&[cmd(tick)]).unwrap();
         assert_eq!(target.state_hash(), source.state_hash());
+        if tick == 11 {
+            assert_eq!(source.world().resource::<Value>().0, 10.5);
+            assert_eq!(other.world().resource::<Value>().0, 10.25);
+        }
+        assert_ne!(other.state_hash(), source.state_hash(), "tick {tick}");
     }
 }
 

@@ -2,6 +2,17 @@
 //! It follows the rules in `eng_collision_grid`'s crate docs from the walls
 //! and slabs alone. Part of the oracle test (`../oracle.rs`).
 //!
+//! It repeats every rule of the grid's sweep (`src/sweep.rs`): a still
+//! axis entering through its nearer face, the `GRAZE` test, the `NOISE`
+//! slide, `edge_at_entry`'s `4 * NOISE` vertex contact, `sliver`'s 2^-40,
+//! and step 6's nudge and back-off. So the grid matching it bit for bit
+//! shows that the grid picks its candidate primitives, visits each once and
+//! keeps the first hit as a plain loop over every primitive does; it does
+//! not show that the rules are right, since a wrong rule is wrong here too.
+//! The checks of the rules themselves are `eng_collision_api::conformance`
+//! (the contact rule, ADR-0024) and the pass-through check of
+//! `../contract.rs` (`through.rs`).
+//!
 //! `eng-bench` includes this file too, by `#[path]`, for its brute-force
 //! trace benchmarks (`benches/collision/main.rs`) and their tests, so it
 //! keeps to the public items of the crates it names and uses no proptest.

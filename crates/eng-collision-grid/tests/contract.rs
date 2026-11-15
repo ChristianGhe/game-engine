@@ -1,6 +1,9 @@
 //! The grid keeps the collision contract (`eng_collision_api::conformance`,
 //! with ADR-0024's contact rule): exact on faces square to an axis, within
-//! `CONTACT_GAP` off them.
+//! `CONTACT_GAP` off them; no trace passes through solid (`oracle/through.rs`).
+
+#[path = "oracle/through.rs"]
+mod through;
 
 use eng_collision_api::{BoxHull, CollisionWorld, conformance};
 use eng_collision_grid::{Grid, GridError, MAX_COORD, Point2, Slab, Wall};
@@ -433,39 +436,36 @@ fn step() -> impl Strategy<Value = Goal> {
     prop_oneof![3 => by, 2 => place().prop_map(Goal::To), 3 => aim]
 }
 
-/// How far inside solid a point on the way may be (m): the hull shrunk by
-/// this on every side must stay free on the traced segment before the hit,
-/// at `SAMPLES` evenly spaced points from the start to the hit fraction.
-/// Grazes (`GRAZE`), slides (`NOISE`) and slivers go far less deep.
-const THROUGH: f32 = 1.0e-6;
-const SAMPLES: u32 = 32;
-
 /// Checks each trace of a chain from `start`, each from where the last
-/// stopped, often in contact: the conformance suite, and no pass-through.
+/// stopped, often in contact: the conformance suite, and no pass-through
+/// on the whole way to the stop, not only at samples.
 fn chain(world: &Grid, start: WorldPos, steps: &[Goal], hull: &BoxHull) {
-    let h = hull.half_extents;
-    let shrunk = BoxHull {
-        half_extents: Vec3::new(h.x - THROUGH, h.y - THROUGH, h.z - THROUGH),
-    };
     let mut from = start;
     for goal in steps {
         let to = goal.from(from, world, hull);
         conformance::check(world, from, to, hull);
         let tr = world.trace(from, to, hull);
-        for i in 0..=SAMPLES {
-            let t = tr.fraction * f64::from(i) / f64::from(SAMPLES);
-            let p = at(
-                from.x + (to.x - from.x) * t,
-                from.y + (to.y - from.y) * t,
-                from.z + (to.z - from.z) * t,
-            );
-            assert!(
-                !world.overlaps(p, &shrunk),
-                "the trace from {from:?} to {to:?} ({tr:?}) passes through solid at {p:?}"
-            );
-        }
+        through::assert_no_pass_through(world, from, to, &tr, hull);
         from = tr.end;
     }
+}
+
+/// A wall with no thickness, grown to 0.1 m by a 0.05 m hull, 9.7 m along
+/// a 17 m trace, between two of `through::SAMPLES` (0.53 m apart), with a
+/// wall behind it. A trace that skipped it passes every sample; the clipped
+/// path finds it, and the shrunk hull's trace if it stopped at the wall.
+#[test]
+fn a_thin_wall_far_along_a_long_trace_blocks_it() {
+    let walls = [10.0, 17.0].map(|x| wall((x, -1.0), (x, 1.0), 0.0, 1.0));
+    let world = Grid::new(walls.to_vec(), vec![]).unwrap();
+    let h = Vec3::new(0.05, 0.05, 0.05);
+    let hull = BoxHull { half_extents: h };
+    let (start, end) = (at(0.3, 0.0, 0.5), at(17.3, 0.0, 0.5));
+    let tr = world.trace(start, end, &hull);
+    through::assert_no_pass_through(&world, start, end, &tr, &hull);
+    conformance::check(&world, start, end, &hull);
+    let stop = at(10.0 - f64::from(h.x), 0.0, 0.5);
+    assert_eq!((tr.end, tr.normal), (stop, Vec3::new(-1.0, 0.0, 0.0)));
 }
 
 proptest! {

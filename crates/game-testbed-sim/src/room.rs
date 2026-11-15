@@ -267,6 +267,13 @@ fn move_players(world: &mut World) {
             .storage::<MoveState>()
             .iter()
             .filter_map(|(e, state)| {
+                // A player with no command this tick is skipped whole, so
+                // gravity skips it too: one in the air would hang there for
+                // the tick. `Sim::step` takes one command per player, and a
+                // Memory session has each one, so rung 2 never skips; how a
+                // network session fills a command that has not arrived
+                // (idle, or the last repeated), and whether gravity should
+                // act without one, is rung 5's question.
                 let cmd = slots.get(e).and_then(|slot| inputs.for_player(*slot))?;
                 let outcome = ground_move(state, cmd, movement, ground, dt, grid);
                 Some((e, outcome, View::of(cmd)))

@@ -31,6 +31,7 @@ run, dump-world, shot, video and play take [--map NAME]: the game's first map by
 --look, play's --windowed, --fov, --sensitivity, --pitch-limit and --invert-pitch, and
 shot's and video's --pose (meters, degrees) are for first-person maps only; --view names
 the map's own view.
+shot and video also write <out>.frame.json, the frame record: camera, objects, probes, histogram.
 exit codes: 0 ok, 10 assertion failed, 11 desync, 12 panic, 13 budget exceeded, 64 usage";
 
 /// Keeps per-tick timings and recordings within memory.

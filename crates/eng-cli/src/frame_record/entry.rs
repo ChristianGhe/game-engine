@@ -138,6 +138,9 @@ pub fn first_person_entry(
     if asked.windows(2).any(|pair| pair[0].key >= pair[1].key) {
         return Err("the objects asked for must be in key order, each once".into());
     }
+    if asked.iter().any(|o| o.key.class == SurfaceClass::None) {
+        return Err("an object asked for has class none: the sky is no object".into());
+    }
     let stats = image_stats(image);
     let pixel = |x: u32, y: u32| (y as usize) * (width as usize) + x as usize;
     let keys: Vec<Option<ObjectKey>> = (0..height)

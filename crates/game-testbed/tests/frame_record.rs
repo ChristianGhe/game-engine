@@ -8,7 +8,10 @@
 //!   pinned lavapipe; elsewhere within `frame-tolerances.toml`'s per-shot
 //!   tolerances. Without any, each record is saved as a candidate and the
 //!   test passes ("no reference yet"), as the golden shots do. Once one
-//!   exists every shot needs its own, and one that no shot names fails;
+//!   exists every shot needs its own, and one that no shot names fails. A
+//!   shot marked `golden = "pending"` (T16's marker) has none yet by the
+//!   owner's choice and fails nothing, and a reference for it in
+//!   `golden/frames/` fails until the marker is cleared (`harness::judge`);
 //! - **a video** has one record entry per frame, the shot's at its tick;
 //! - **planted bugs** are `tests/frame_bugs.rs`'s, a binary of its own.
 //!
@@ -27,8 +30,8 @@
 mod harness;
 
 use eng_cli::frame_record::{FrameRecord, RecordView};
-use harness::{Mode, Rendered, Shot, candidates, render, shots, tolerances};
-use serde_json::{Value, json};
+use harness::{Mode, Rendered, Shot, candidates, judge, render, shots, tolerances};
+use serde_json::json;
 
 /// Every shot's record, rendered twice, checked and compared.
 #[test]
@@ -69,44 +72,33 @@ fn every_shot_has_a_frame_record_and_rerenders_it_exactly() {
     let mut failures = Vec::new();
     for (shot, ours) in &rendered {
         let path = refs.join(format!("{}.frame.json", shot.name));
-        let (status, worst, problems) = match std::fs::read_to_string(&path) {
-            Err(_) if explicit || any => {
-                let why = format!("[E-GOLDEN] {} is missing", path.display());
-                ("fail", Value::Null, vec![why])
-            }
-            Err(_) => ("no-reference", Value::Null, Vec::new()),
-            Ok(text) if mode == Mode::Exact => {
-                if text == ours.text {
-                    ("pass", Value::Null, Vec::new())
-                } else {
-                    let why = "[E-GOLDEN] not byte for byte the reference on the pinned \
-                               configuration"
-                        .to_owned();
-                    ("fail", Value::Null, vec![why])
-                }
-            }
-            Ok(text) => {
-                let theirs =
-                    FrameRecord::parse(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-                let tolerance = tolerances.for_shot(&shot.name);
-                let comparison = ours.record.compare(&theirs, &tolerance);
-                let status = if comparison.failures.is_empty() {
-                    "pass"
-                } else {
-                    "fail"
-                };
-                let worst = harness::worst_json(&comparison.worst);
-                (status, worst, comparison.failures)
-            }
+        let reference = std::fs::read_to_string(&path).ok();
+        let at = harness::References {
+            at: &path,
+            explicit,
+            complete: any,
         };
-        eprintln!("{}: {status} {worst}", shot.name);
-        for problem in &problems {
+        let tolerance = tolerances.for_shot(&shot.name);
+        let ours_read = (ours.text.as_str(), &ours.record);
+        let verdict = judge(
+            shot.pending(),
+            ours_read,
+            reference.as_deref(),
+            at,
+            mode,
+            &tolerance,
+        );
+        eprintln!("{}: {} {}", shot.name, verdict.status, verdict.worst);
+        for note in &verdict.notes {
+            eprintln!("  {note}");
+        }
+        for problem in &verdict.failures {
             eprintln!("  {problem}");
             failures.push(format!("{}: {problem}", shot.name));
         }
         results.push(json!({
-            "name": shot.name, "status": status, "worst": worst,
-            "failures": problems,
+            "name": shot.name, "pending": shot.pending(), "status": verdict.status,
+            "worst": verdict.worst, "failures": verdict.failures, "notes": verdict.notes,
         }));
     }
     // A reference no shot names (a shot renamed or dropped) would never be
@@ -191,4 +183,93 @@ fn the_tolerances_name_only_shots_that_exist() {
         let t = tolerances.for_shot(&shot.name);
         assert!(t.luminance > 0.0 && t.histogram > 0.0, "{}", shot.name);
     }
+}
+
+/// A 4x2 top-down record of one grey, and its text.
+fn grey(level: u8) -> (String, FrameRecord) {
+    let image = eng_gpu::Image {
+        width: 4,
+        height: 2,
+        rgba8: [level, level, level, 255].repeat(8),
+    };
+    let entry = eng_cli::frame_record::top_down_entry(0, &image);
+    let record = FrameRecord {
+        view: RecordView::TopDown,
+        width: 4,
+        height: 2,
+        frames: vec![entry],
+    };
+    (record.to_text(), record)
+}
+
+fn refs(explicit: bool, complete: bool) -> harness::References<'static> {
+    harness::References {
+        at: std::path::Path::new("golden/frames/a-shot.frame.json"),
+        explicit,
+        complete,
+    }
+}
+
+/// A shot `shots.toml` marks `golden = "pending"` has no reference yet,
+/// whatever the others have, and fails nothing; an unmarked one fails as
+/// missing once any shot has its reference.
+#[test]
+fn a_marked_shot_without_a_reference_fails_nothing() {
+    let (text, record) = grey(100);
+    let ours = (text.as_str(), &record);
+    let tol = eng_cli::frame_record::Tolerances::DEFAULT;
+    for (explicit, complete) in [(false, false), (false, true), (true, true)] {
+        let at = refs(explicit, complete);
+        let marked = judge(true, ours, None, at, Mode::Tolerances, &tol);
+        assert_eq!((marked.status, marked.failures.len()), ("no-reference", 0));
+        assert!(marked.notes[0].contains("[W-NO-GOLDEN]"), "{marked:?}");
+        let unmarked = judge(false, ours, None, at, Mode::Tolerances, &tol);
+        let fails = explicit || complete;
+        assert_eq!(unmarked.status == "fail", fails, "{unmarked:?}");
+        if !explicit && complete {
+            assert!(unmarked.failures[0].contains("missing; other shots have theirs"));
+        }
+    }
+}
+
+/// A reference for a marked shot in `golden/frames/` fails, telling the
+/// owner to clear the marker; in `ENG_FRAME_DIR` it is measured and
+/// reported, not judged. Unmarked shots are judged: within tolerances off
+/// the pinned configuration, byte for byte on it.
+#[test]
+fn a_reference_for_a_marked_shot_in_golden_frames_fails() {
+    let (text, record) = grey(100);
+    let (dark, _) = grey(20);
+    let ours = (text.as_str(), &record);
+    let tol = eng_cli::frame_record::Tolerances::DEFAULT;
+    let tolerances = Mode::Tolerances;
+
+    let committed = judge(true, ours, Some(&text), refs(false, true), tolerances, &tol);
+    assert_eq!(committed.status, "fail");
+    let says = "exists, but golden = \"pending\" in shots.toml: clear the marker";
+    assert!(committed.failures[0].contains(says), "{committed:?}");
+
+    let measured = judge(true, ours, Some(&dark), refs(true, true), tolerances, &tol);
+    assert_eq!((measured.status, measured.failures.len()), ("pending", 0));
+    assert!(!measured.notes.is_empty(), "the difference is reported");
+
+    let judged = judge(false, ours, Some(&dark), refs(true, true), tolerances, &tol);
+    assert_eq!(judged.status, "fail");
+    assert!(judged.failures.iter().any(|f| f.contains("histogram")));
+    let same = judge(
+        false,
+        ours,
+        Some(&text),
+        refs(false, true),
+        tolerances,
+        &tol,
+    );
+    assert_eq!((same.status, same.failures.len()), ("pass", 0));
+
+    let exact = Mode::Exact;
+    let respaced = text.replace("\"tick\": 0", "\"tick\":  0");
+    let byte = judge(false, ours, Some(&respaced), refs(false, true), exact, &tol);
+    assert!(byte.failures[0].contains("byte for byte"), "{byte:?}");
+    let equal = judge(false, ours, Some(&text), refs(false, true), exact, &tol);
+    assert_eq!(equal.status, "pass");
 }

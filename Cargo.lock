@@ -475,6 +475,7 @@ dependencies = [
  "eng-session",
  "eng-sim",
  "png",
+ "proptest",
  "serde",
 ]
 

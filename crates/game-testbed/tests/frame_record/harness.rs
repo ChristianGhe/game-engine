@@ -35,9 +35,19 @@ pub struct Shot {
     pub input: Option<String>,
     pub pose: Option<String>,
     pub look: Option<String>,
+    /// The owner's marker, `"pending"`: no golden, and so no reference
+    /// record, yet by choice.
+    pub golden: Option<String>,
     /// The shot's `--pose` value, from `[pose]`.
     #[serde(skip)]
     pub pose_value: Option<String>,
+}
+
+impl Shot {
+    /// Whether `shots.toml` marks it `golden = "pending"`.
+    pub fn pending(&self) -> bool {
+        self.golden.as_deref() == Some("pending")
+    }
 }
 
 #[derive(Deserialize)]
@@ -54,6 +64,12 @@ pub fn shots() -> Vec<Shot> {
     let mut shots = manifest.shot;
     for shot in &mut shots {
         shot.pose_value = shot.pose.as_ref().map(|name| manifest.pose[name].clone());
+        let marker = shot.golden.as_deref();
+        assert!(
+            marker.is_none() || shot.pending(),
+            "{}: golden is \"pending\" or absent",
+            shot.name
+        );
     }
     assert!(!shots.is_empty());
     shots
@@ -439,6 +455,108 @@ pub fn check_shot(shot: &Shot, rendered: &Rendered) {
     assert_eq!(names, ["marker", "crate", "barrel"], "{name}");
     assert!(frame.objects.len() > 40, "{name}: the room's faces");
     assert!(frame.objects.iter().any(|o| o.pixels > 0), "{name}");
+}
+
+/// How one shot's record fared against its reference, as `frames.json`
+/// writes it: `pass`, `fail`, `no-reference`, or `pending` (a marked
+/// shot's record measured against an `ENG_FRAME_DIR` reference, not
+/// judged); the worst use of each tolerance when compared within them;
+/// what failed it; and what was found that could not.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Verdict {
+    pub status: &'static str,
+    pub worst: Value,
+    pub failures: Vec<String>,
+    pub notes: Vec<String>,
+}
+
+/// Where a reference was looked for: whether `ENG_FRAME_DIR` named the
+/// directory (`explicit`), and whether any shot has a reference there
+/// (`complete`).
+#[derive(Clone, Copy, Debug)]
+pub struct References<'a> {
+    pub at: &'a Path,
+    pub explicit: bool,
+    pub complete: bool,
+}
+
+/// Judges `ours` (a shot's record text, read) against `reference`, the
+/// text at `refs.at` if there is one, as `tests/shots.rs` judges goldens:
+/// - none: "no reference yet", unless the directory was asked for or
+///   holds any shot's, when it is missing and fails;
+/// - on the pinned configuration ([`Mode::Exact`]) byte for byte, else
+///   within `tolerance`.
+///
+/// A shot `shots.toml` marks `golden = "pending"` (T16's marker) has no
+/// reference yet by the owner's choice, whatever the others have: it fails
+/// nothing, with `ENG_FRAME_DIR` too, where a reference it has is measured
+/// and reported but cannot fail it. A reference for a marked shot in
+/// `golden/frames/` itself fails: the marker should have been cleared in
+/// the commit that added it.
+pub fn judge(
+    pending: bool,
+    ours: (&str, &FrameRecord),
+    reference: Option<&str>,
+    refs: References<'_>,
+    mode: Mode,
+    tolerance: &Tolerances,
+) -> Verdict {
+    let marked = "golden = \"pending\" in shots.toml";
+    let verdict = |status, worst, failures, notes| Verdict {
+        status,
+        worst,
+        failures,
+        notes,
+    };
+    let at = refs.at.display();
+    let Some(text) = reference else {
+        if pending {
+            let note = format!("[W-NO-GOLDEN] no reference yet ({marked})");
+            return verdict("no-reference", Value::Null, Vec::new(), vec![note]);
+        }
+        if refs.explicit || refs.complete {
+            let why = if refs.explicit {
+                "ENG_FRAME_DIR is set"
+            } else {
+                "other shots have theirs"
+            };
+            let failure = format!("[E-GOLDEN] {at} is missing; {why}");
+            return verdict("fail", Value::Null, vec![failure], Vec::new());
+        }
+        return verdict("no-reference", Value::Null, Vec::new(), Vec::new());
+    };
+    if pending && !refs.explicit {
+        let failure = format!(
+            "[E-GOLDEN] {at} exists, but {marked}: clear the marker in the commit that adds \
+             the reference"
+        );
+        return verdict("fail", Value::Null, vec![failure], Vec::new());
+    }
+    let (worst, problems) = if mode == Mode::Exact {
+        let same = text == ours.0;
+        let why = "[E-GOLDEN] not byte for byte the reference on the pinned configuration";
+        (
+            Value::Null,
+            if same {
+                Vec::new()
+            } else {
+                vec![why.to_owned()]
+            },
+        )
+    } else {
+        match FrameRecord::parse(text) {
+            Ok(theirs) => {
+                let comparison = ours.1.compare(&theirs, tolerance);
+                (worst_json(&comparison.worst), comparison.failures)
+            }
+            Err(e) => (Value::Null, vec![format!("[E-GOLDEN] {at}: {e}")]),
+        }
+    };
+    match (pending, problems.is_empty()) {
+        (true, _) => verdict("pending", worst, Vec::new(), problems),
+        (false, true) => verdict("pass", worst, Vec::new(), Vec::new()),
+        (false, false) => verdict("fail", worst, problems, Vec::new()),
+    }
 }
 
 /// A comparison's worst uses, as `frames.json` writes them.

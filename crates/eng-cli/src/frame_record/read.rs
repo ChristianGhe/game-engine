@@ -172,10 +172,11 @@ fn probe(value: &Json, at: At<'_>, want: (u32, u32)) -> Result<Probe, String> {
     if p.depth < 0.0 || p.slope < 0.0 {
         return wrong(at, "a negative depth or slope");
     }
-    if p.distance.is_some() != (p.depth > 0.0) || p.distance.is_some_and(|d| d <= 0.0) {
+    // Six decimals of a distance under half a micrometre read 0.
+    if p.distance.is_some() != (p.depth > 0.0) || p.distance.is_some_and(|d| d < 0.0) {
         return wrong(
             at,
-            "distance is above 0 where depth is, and null where it is 0",
+            "distance is a number, not below 0, where depth is above 0, and null where it is 0",
         );
     }
     Ok(p)

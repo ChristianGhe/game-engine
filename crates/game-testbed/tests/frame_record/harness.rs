@@ -193,10 +193,15 @@ pub fn probe_as_is(dir: &Path, args: &[&str]) -> Option<Output> {
 
 fn run(dir: &Path, args: &[&str], pin_llvmpipe: bool) -> Option<Output> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_game-testbed"));
+    // Mesa's on-disk shader cache off: on Debian's lavapipe (Mesa 25.0.7,
+    // arm64) shot processes run side by side corrupted it, and every one
+    // after then died with SIGSEGV or SIGABRT (16 of 16 ran with it off).
+    // It changes what is compiled when, never what is drawn.
     command
         .args(args)
         .current_dir(dir)
-        .env("ENG_AGENT_LOG_DIR", dir.join("logs"));
+        .env("ENG_AGENT_LOG_DIR", dir.join("logs"))
+        .env("MESA_SHADER_CACHE_DISABLE", "true");
     if pin_llvmpipe {
         for (key, _) in std::env::vars_os() {
             let name = key.to_string_lossy();

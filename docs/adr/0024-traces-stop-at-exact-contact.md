@@ -231,3 +231,39 @@ about 4e-8 times the edge's length. The contact promise holds against the
 grid's own geometry (exactly on the axes, within rounding off them:
 measured at most 8e-15 m); against the authored face it holds within
 `CONTACT_GAP` for edges up to about 20 m.
+
+## Amendment 2 (Proposed, for the owner; T19b found, 2026-11-15)
+
+- **Status:** Proposed (for the owner; written by T22). The decision and
+  Amendment 1 stand. This records one grid rule that T19b changed with the
+  owner away, which the owner may revert, and two known breaks of the
+  contact rule that remain.
+- **Who:** Claude's proposal, from rung 2's mutation-gap task (T19b) and
+  its two reviews. The owner decides. The details and reproducers are in
+  `docs/rungs/2/patches/t19b-mutants-exclusions.md`.
+
+**A still axis enters through its nearer face.** A hull sliding exactly
+along a slab's edge off the axes (its projection on that edge's axis still,
+`v == 0`) was held short of contact on the slab's top: the sweep counted a
+still axis as entered through `lo`, the far face there, so step 4 found no
+edge at its entry and kept the hit on the top. Now a still axis, inside
+throughout, counts as entered through the face nearer its projection
+(`lo` on a tie), in `crates/eng-collision-grid/src/sweep.rs` and in the
+oracle alike, and the crate docs' steps 1 and 4 say so. The trace is held
+by the edge, in contact. The room's and the dots' hash streams keep their
+bytes.
+
+**Two breaks remain, off the axes only**, in step 4's thin-solid rule:
+about 0.14% of an aimed search (a hull beside a slab's edge off the axes,
+1 to 4 ulps inside its grown face, sliding along it past the top):
+- **(A)** one ulp on is still free, the hull held on the top, when the
+  edge's projection moves by rounding (v of 1e-17 to 1e-16) rather than
+  not at all: the same mechanism with v ≠ 0. Counting an axis inside
+  throughout as entered through its nearer face whatever v is removed
+  about 90% of them in a scratch copy of the oracle;
+- **(B)** the rest of the motion does not hit, at any v: a separate flaw.
+
+Rung 2's room has no geometry off the axes, so neither can arise there.
+When to fix them goes with criterion 19's 32 open mutants of step 4, and
+is the owner's call (T19b's entry in `docs/rungs/2/PROGRESS.md`: a grid
+task now, or rung 3's angled walls beside O12).

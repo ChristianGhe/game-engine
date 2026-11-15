@@ -154,3 +154,40 @@ which would mislead playtests on the owner's Mac."
 
 winit delivers uncoalesced raw deltas on macOS; the binding marks these
 methods safe; another crate needs `unsafe`; or Miri joins CI.
+
+## Amendment 1 (2026-11-15): what T14 built
+
+- **Status:** Recorded (rung 2, T22). The decision is unchanged: T14 built
+  within it. One check it names, the signs and units on a real mouse, is
+  still the owner's.
+- **The one file** is `crates/eng-platform-gcmouse/src/macos.rs`, with
+  four `unsafe` blocks, each one unsafe call with its `// SAFETY:` comment:
+  `GCMouse::mice`, `mouseInput`, and `setMouseMovedHandler` to set and to
+  clear the handler. `GCMouse::current` is not used. `shim.rs`, the safe
+  logic, forbids `unsafe_code`; the crate root forbids
+  `clippy::undocumented_unsafe_blocks` and
+  `clippy::multiple_unsafe_ops_per_block`.
+- **Safe code around the calls**, beyond the decision's list:
+  - the handler closure is checked `Send + Sync` at compile time;
+  - its body runs in `catch_unwind` and aborts on a panic, since block2
+    calls it through `C-unwind`;
+  - refreshing the list of mice, and dropping it, run in an autorelease
+    pool.
+- **Focus.** The shim sums motion only while the platform says the window
+  has focus, and a focus change drops what was not drained; every callback
+  is counted, focused or not. eng-platform-winit takes macOS raw motion
+  from the shim only, and exposes the count
+  (`WinitPlatform::raw_motion_callbacks`).
+- **Signs and units, not yet verified.** The decision says the shim maps
+  them once T14 has checked them on the owner's Mac; that needs an
+  unlocked screen, which T14 did not have. The shim takes `deltaY` as
+  positive up, as SDL 3's GCMouse handlers do (they send `-deltaY`), negates
+  it into the contract's `dy`, and takes deltas as counts. The owner's
+  check is `cargo run -p eng-platform-winit --example events -- --grab`;
+  `DELTA_Y_UP` flips the sign.
+- **What no test reaches.** GCMouse lists mice only once AppKit's run loop
+  has run, so `mouseInput`, the handler's install and its removal ran only
+  by hand; `tests/start.rs` starts and stops the real shim with no mouse.
+- **The scan.** Until G5's xtask patch makes `arch-check` refuse
+  `allow(unsafe_code)` outside this file (T21), confinement rests on
+  review. AGENTS.md now says so ("in any crate but the shim's one file").

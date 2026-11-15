@@ -40,3 +40,23 @@ The GPU is used from rung 1. The Doom look is a set of passes on a modern linear
 ## Revisit when
 
 The upgrade rung at the start of Level 2, and the wgpu re-check at Level 3. wgpu majors change only at level starts, or mid-level by ADR for a shipping blocker.
+
+## Later decisions (recorded 2026-11-15, rung 2 T22)
+
+Three accepted ADRs amend this one; its status and its rule ("passes
+declare the virtual resources they read and write") stand.
+
+- **ADR-0017** (accepted 2026-11-07): rung 1b's fixed graph is three
+  passes, draw, tonemap and present, and the surface is `Bgra8UnormSrgb`
+  (or `Bgra8Unorm` drawn through an sRGB view), not "the surface's
+  preferred format", so the blit reproduces the output.
+- **ADR-0019** (accepted 2026-11-07) carries out the rung 2 bullet:
+  ordering, culling, bypass of switched-off passes, transient pooling and
+  labels, in `Graph::sorted`.
+- **ADR-0020** (accepted 2026-11-07): "tone mapping is the last graph
+  pass" reads "the last *scene-referred* pass". In the first-person graph
+  a display-referred palette pass follows it, and with low internal
+  resolution `present` draws the output k×k. Screenshots and golden tests
+  still read the engine-owned output. It also fixes the GPU scene layout
+  that this ADR says is fixed at rung 2. Its Amendment 1, proposed, records
+  how T8 to T11 built it.

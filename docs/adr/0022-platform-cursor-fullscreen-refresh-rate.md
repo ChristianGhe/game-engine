@@ -242,3 +242,45 @@ waiting from `App::window`, and the grab on `FocusGained` replaces it.
   motion with the same X time and deltas as the one before, but winit
   0.30 passes neither on, so both reach the app (`map.rs`). Mouse look on
   X11 would turn twice as far until this is handled.
+
+## Amendment 2 (Proposed, for the owner; T15 found, 2026-11-15)
+
+- **Status:** Proposed (for the owner; written by T22). The decision above,
+  and Amendment 1, stay as they are until the owner takes or refuses this.
+- **What:** how eng-app's first-person `play` (T15) makes the requests,
+  where that departs from "Who asks", and what its report counts. The
+  contract's methods and types do not change.
+- **Who:** Claude's proposal, from rung 2 task T15 and its review. The
+  owner decides.
+
+**Scripted runs never grab.** The decision has eng-app grab the cursor for
+first-person maps. As built, a run with `--input` never asks for the grab
+(`Cursor::new` in `crates/eng-app/src/first_person.rs`): its commands come
+from the script, not the mouse, and a test or a CI step must not take the
+desktop's cursor. It still asks for fullscreen unless `--windowed`. So
+criterion 1's scripted window run reports `grab_asked: false`, and
+criterion 10's grab needs a live, unscripted run that gets focus: under
+Xvfb that needs a window manager or `xdotool windowfocus` (Amendment 1).
+Undoing it is that one line.
+
+**`window.focus_lost` counts every `FocusLost`**, including the one winit
+sends before a new window's first `FocusGained` (Amendment 1; seen on
+macOS 26 and under Xvfb). A run whose window never lost focus to the user
+can so report 1. The count keeps winit's events as they came rather than
+guessing which loss was the early one.
+
+**Frames, as built** (decision 10): at `refresh_rate()` when the window
+reports one, each due a period after the last, less a sixteenth of a
+period; else once per tick (16,666,666 ns), however often events wake the
+loop (`crates/eng-app/src/first_person/pace.rs`). Before, every event batch
+made a frame due at once, so raw motion flooded frames where the present
+does not wait for the display (Xvfb). A rate under 1 Hz counts as unknown.
+
+**The report's `window` object:** `fullscreen_asked`, `fullscreen`,
+`grab_asked`, `grab`, `grab_at_end`, `focus_lost`, `refresh_rate_mhz`
+(null when unknown), `frame_period_ns`, the last frame's lens (`fov_y_deg`,
+`near_m`, `upscale`), and, where the GCMouse shim runs, its `callbacks`,
+`peak_per_second` and `focused_ms` (criterion 25).
+
+**Still open:** X11's doubled raw motion under `Confined` (Amendment 1).
+No CI step can show it, since scripted runs never grab.

@@ -6,7 +6,7 @@ Source: `docs/superpowers/specs/2026-10-20-ai-built-engine-design.md` (draft v3,
 |---|---|---|---|
 | [0001](0001-open-source-and-non-commercial.md) | Open source and non-commercial | Accepted | D5, D20 (P3, G2) |
 | [0002](0002-floor-crates.md) | Floor crates | Accepted | D6 |
-| [0003](0003-graphics-render-graph.md) | Graphics and the render graph | Accepted | D7 |
+| [0003](0003-graphics-render-graph.md) | Graphics and the render graph | Accepted; later decisions noted (ADR-0017, 0019, 0020) | D7 |
 | [0004](0004-units-and-coordinates.md) | Units and coordinates | Accepted | D8 |
 | [0005](0005-deterministic-simulation.md) | Deterministic simulation | Accepted | D9 |
 | [0006](0006-world-model-ecs.md) | World model and ECS | Accepted | D10 |
@@ -15,16 +15,16 @@ Source: `docs/superpowers/specs/2026-10-20-ai-built-engine-design.md` (draft v3,
 | [0009](0009-levels-and-puzzles.md) | Levels and puzzles | Accepted | D13 |
 | [0010](0010-agent-tooling.md) | Agent tooling | Accepted | D14 |
 | [0011](0011-ci.md) | Continuous integration | Accepted | D15 |
-| [0012](0012-playable-builds.md) | Playable builds | Accepted | D16 |
+| [0012](0012-playable-builds.md) | Playable builds | Accepted; rung 2 note proposed (T20, dist) | D16 |
 | [0013](0013-r1-player-count.md) | R1 player count | Accepted | D21 |
 | [0014](0014-direct-commits-to-main.md) | Direct commits to main | Accepted | changes 7.3, 7.6 |
 | [0015](0015-open-pulsar-runs.md) | Unattended runs through open-pulsar | Accepted | changes 7.3, 7.5 |
 | [0016](0016-window-handle-traits.md) | Window-handle traits in public APIs | Accepted | changes 6.2 rule 4 (rung 1b gate G4) |
-| [0017](0017-three-pass-graph.md) | Three passes, not two | Accepted | amends ADR-0003 (D7, 6.7): draw, tonemap, present |
+| [0017](0017-three-pass-graph.md) | Three passes, not two | Accepted; ADR-0020 noted | amends ADR-0003 (D7, 6.7): draw, tonemap, present |
 | [0018](0018-agent-branches.md) | Agents push to agent branches | Accepted | amends ADR-0015: agents push `agent/*` branches with `cargo xtask push` |
-| [0019](0019-render-graph-ordering-and-pooling.md) | The render graph orders, culls, bypasses, pools and labels | Accepted | carries out ADR-0003 (D7, 6.7) for rung 2: `Graph::sorted`, `continues`, bypass, culling, transient pool |
-| [0020](0020-first-person-passes-and-scene-layout.md) | The first-person passes and the GPU scene layout | Accepted | amends ADR-0003 and ADR-0017: a palette pass after the tone map, the k×k upscale in `present`; 6.7's scene layout (megabuffers, storage-buffer instances, material table, texture arrays) |
-| [0021](0021-unsafe-in-the-gcmouse-shim.md) | `unsafe` in the GCMouse shim | Accepted | 6.10: one module of `eng-platform-gcmouse` may use `unsafe`; `arch-check` refuses it anywhere else (O3) |
-| [0022](0022-platform-cursor-fullscreen-refresh-rate.md) | Cursor, fullscreen and refresh rate in the platform contract | Accepted | contract change (6.2 rule 6, 6.10); extends ADR-0016's `Window`: `Control` requests and `Window::refresh_rate`, with default bodies and migration notes (O9) |
-| [0023](0023-maps-and-sim-data.md) | Maps and sim data | Accepted | 6.11 brought forward: constant resources outside the state, `Sim::sim_data_hash` in recordings and stream headers, `GameMaps` beside `GameDef` (O2) |
-| [0024](0024-traces-stop-at-exact-contact.md) | Traces stop at exact contact | Accepted; amended once (T5) | contract change (6.2 rule 6, 6.11): a blocked trace ends in contact, checked by `conformance::check`, with migration notes (O4) |
+| [0019](0019-render-graph-ordering-and-pooling.md) | The render graph orders, culls, bypasses, pools and labels | Accepted; amendment 1 recorded (T8-T10) | carries out ADR-0003 (D7, 6.7) for rung 2: `Graph::sorted`, `continues`, bypass, culling, transient pool |
+| [0020](0020-first-person-passes-and-scene-layout.md) | The first-person passes and the GPU scene layout | Accepted; amendment 1 proposed (T8-T11) | amends ADR-0003 and ADR-0017: a palette pass after the tone map, the k×k upscale in `present`; 6.7's scene layout (megabuffers, storage-buffer instances, material table, texture arrays) |
+| [0021](0021-unsafe-in-the-gcmouse-shim.md) | `unsafe` in the GCMouse shim | Accepted; amendment 1 recorded (T14) | 6.10: one module of `eng-platform-gcmouse` may use `unsafe`; `arch-check` refuses it anywhere else (O3) |
+| [0022](0022-platform-cursor-fullscreen-refresh-rate.md) | Cursor, fullscreen and refresh rate in the platform contract | Accepted; amendments 1 (T13) and 2 (T15) proposed | contract change (6.2 rule 6, 6.10); extends ADR-0016's `Window`: `Control` requests and `Window::refresh_rate`, with default bodies and migration notes (O9) |
+| [0023](0023-maps-and-sim-data.md) | Maps and sim data | Accepted; amendment 1 proposed (T6, T7, T12, T15) | 6.11 brought forward: constant resources outside the state, `Sim::sim_data_hash` in recordings and stream headers, `GameMaps` beside `GameDef` (O2) |
+| [0024](0024-traces-stop-at-exact-contact.md) | Traces stop at exact contact | Accepted; amendment 1 accepted (T5), amendment 2 proposed (T19b) | contract change (6.2 rule 6, 6.11): a blocked trace ends in contact, checked by `conformance::check`, with migration notes (O4) |

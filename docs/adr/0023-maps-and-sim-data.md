@@ -149,3 +149,62 @@ What the code does at HEAD:
 
 Rung 3's level compiler cooks sim data; rung 5's handshake carries its
 hash; or a map's sim data changes during a run (hot reload).
+
+## Amendment 1 (Proposed, for the owner; T6, T7, T12 and T15 built, 2026-11-15)
+
+- **Status:** Proposed (for the owner; written by T22) for its first two
+  points, which widen the decision; the rest records what was built within
+  it. The decision above stays Accepted until the owner takes or refuses
+  this.
+- **Who:** Claude's proposal, from rung 2 tasks T6, T7, T12 and T15 and
+  their reviews. The owner decides.
+
+**The room's constants are four, its tuning among them (T7).** The
+decision names "the room's geometry and grid" as its constants. As built
+the room inserts four:
+- `Grid` (`eng.collision.grid.Grid`, its cell index included);
+- `RoomMap`: regions, spawns and things;
+- kit-fps's `MoveConfig` and `GroundConfig`, the movement tuning.
+
+So tuning is sim data, not state: a new speed or step height changes the
+room's `sim_data_hash` and its streams' headers, not its protocol or its
+snapshots. Systems read the four with `world.constant::<T>()`; reading
+`MoveConfig` as a resource panics on the room. The dot map keeps `BoxRoom`
+and `MoveConfig` as ordinary resources, as the consequences above say.
+Why: tuning never changes during a run, and in the state it would be in
+every snapshot and every tick's hash for nothing.
+
+**Each map names its view (T12, T15).** The decision gives a map a name
+and a build function. As built, `GameMap` is `{ name, build, view }`, which
+G5 freezes for rung 2 (`crates/eng-cli/src/maps/tests.rs`).
+- `MapView` is `TopDown` (the first map, drawn by `GameDef::top_down`),
+  `FirstPerson` (`room`: its world built from the sim's constants and
+  loaded once, then each frame's scene) or `None`, which `shot`, `video`
+  and `play` refuse.
+- `--view` must name the map's own view, or exits 64 with `[E-MAP]`.
+- A first-person map's `play` opens fullscreen and grabs the cursor
+  (ADR-0022), and its live view starts where its scene's camera looks at
+  tick 0.
+- A component, `testbed.View`, keeps each player's view angles in the
+  state, so a shot's first-person camera is a function of the state.
+
+**As built, within the decision:**
+- inserting a constant once the sim is built panics with `[E-SIM-DATA]`;
+  constants are checked finite once, at build;
+- `dump-world` shows a map's constants under `constants`, and an `[E-NAN]`
+  pointer into one starts `/constants/`; the dot's dump has no such key;
+- `Sim::sim_data_hash` is FNV-1a-64 over the constants' canonical bytes in
+  name order. A known answer, `0x87f22d556000363a`, pins the encoding
+  (`crates/eng-sim/tests/sim_data.rs`). The room's hash is
+  `0x3ac50d171e0751f1` and its protocol `0xc2250f5f231ff6d3`;
+- a room stream's second header line ends `sim_protocol=0x… map=room
+  sim_data=0x…`;
+- reports name `map`, `sim_protocol` and `sim_data_hash`, and
+  `files_read`: the version of each file the run read (`input_script`,
+  `assertions`, `budgets`, `bindings`, `look`), since the stamp's `formats`
+  cannot list `look.toml` or `shots.toml` (`version.rs` pins it). Entry
+  points without a `GameMaps` (`PlayRun::start`, the twin test) report
+  `map: "default"`; the testbed's binary reports `"dots"`;
+- the room's snapshot is under 700 bytes for one player and fits 1,200 with
+  four, which its sim data alone would not
+  (`crates/game-testbed-sim/tests/sim_data.rs`).

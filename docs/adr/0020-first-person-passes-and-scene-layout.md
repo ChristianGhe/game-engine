@@ -177,3 +177,87 @@ What eng-gpu has at HEAD:
 A level needs binding arrays or indirect draws (a higher tier); a texture
 above 256 px, or more than 256 in one bucket; mipmaps; or HDR display
 output, which changes the tail.
+
+## Amendment 1 (Proposed, for the owner; T8 to T11 built, 2026-11-15)
+
+- **Status:** Proposed (for the owner; written by T22). The decision above
+  stays Accepted until the owner takes or refuses this. Four points of its
+  text differ from what was built. None changes a pass, a format, the
+  tail or a protected test.
+- **Who:** Claude's proposal, from rung 2 tasks T9, T10 and T11 and their
+  reviews (`docs/rungs/2/PROGRESS.md`). The owner decides.
+
+**Chunks carry their materials per vertex (T9).** The decision says a draw
+names a material by index, and each frame writes "one record per drawn
+chunk or sprite". As built, a chunk's vertices (`WorldVertex`) carry the
+material with the region, class and id that `info` takes, so a chunk of
+several materials is still one record and one draw. A chunk's record holds
+only its origin minus the eye; its `material` field is read by sprites.
+Why: a record per (chunk, material) would multiply records and draws, and
+`info` needs per-vertex data anyway.
+
+**A sprite takes two records (T11).** Sprite `i` has records `2i` and
+`2i + 1`, before the chunks' records: the first holds its feet minus the
+eye (in f64, then rounded to f32) and the material of the frame it shows;
+the second holds its signed width (negative when mirrored), height and
+region as `offset`, and its id as `material`. All sprites are one
+instanced draw of the world's six billboard indices, whose
+`MeshDraw::instances` counts sprites, not records. eng-gpu's
+`InstanceRecord` is unchanged, and its docs say that a pipeline may read
+several records per instance. Why: a thing's id, region, size and mirror
+change from frame to frame, and a shared billboard has no vertices of its
+own to carry them; a wider record would have been an eng-gpu change.
+
+**The caller makes the upscaled targets (T10, T15).** The decision says
+"eng-render makes the first-person `Targets` at the window's size divided
+by an integer k", and leaves to T10 how a window size that k does not
+divide is filled. As built:
+- eng-gpu has `Targets::upscaled(gpu, width, height, k)`, and the caller
+  makes the window's targets with it: eng-app's first-person window, at
+  `Look::low_resolution` (4 by default, which acts only there; a shot is
+  `output` at its own size);
+- the targets are the window's size over k, rounded down. `present` draws
+  each texel as k×k pixels, centred, and clears the remainder (under k
+  pixels across and down) to opaque black. A window narrower than k on a
+  side takes the largest k that fits;
+- `render_to` compares the window's image with `Targets::surface_size`,
+  the window's size, not the targets' own.
+
+Why: the window and its size are the caller's, not eng-render's, and
+eng-gpu already owned `Targets` and the present pass's viewport.
+
+**The uniform has 39 rows of 16 bytes, 624 bytes (T8 to T10).** The
+decision lists the camera's projection and rotation, EV100 exposure and
+the look switches. The WGSL `Frame` struct holds:
+- the clip-from-eye matrix (4 rows), then `forward` (whose `w` is the
+  near plane), `ray_right` and `ray_up` (3 rows);
+- the sky's horizon and zenith colours, the look's values and its
+  switches (4 rows);
+- the 32 light steps in lux (8 rows), each region's light (4 rows) and
+  each region's fog colour and density (16 rows).
+
+Region looks travel in the uniform because the layout has no table
+binding for them, so a frame has at most 16 regions (`MAX_REGIONS`).
+Every first-person shader declares the same struct, which a layout test
+pins. A frame's `upload_bytes` is 624, plus 16 per drawn chunk and 32 per
+sprite.
+
+**Smaller points, as built and within the decision:**
+- the light pass's switches are `falloff`, `banding` and `contrast`; the
+  sky's is `sky_gradient`, and the palette's dither is `dither`;
+- the bind groups are as decided: the frame (uniform, instance records),
+  the scene (materials, the six texture arrays, a nearest sampler) and the
+  pass's reads. `info` is read as an unsigned-integer texture;
+- `Gpu::new` refuses an adapter without `VERTEX_STORAGE`, with `[E-GPU]`
+  naming the flag;
+- the 32³ palette table is 8 layers of the 64 px sRGB array;
+- the first-person graph pools five transient textures (`albedo` and
+  `fogged` share one). The room's shot costs 7 draws, 7 pipeline switches,
+  15 bind-group switches and 736 bytes offscreen, and a presented frame 8,
+  7 and 16: the numbers `[gpu.first_person]` is sized from at G5.
+
+**If the owner refuses a point:** a record per (chunk, material) changes
+eng-render's chunk upload and `opaque.wgsl`; one record per sprite needs a
+wider `InstanceRecord` in eng-gpu; eng-render making the targets needs it
+to hold the window's size. The 39 rows follow from the decision's list
+once region looks have no table.

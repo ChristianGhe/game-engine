@@ -214,3 +214,41 @@ it.
 - Timestamp queries arrive (spec 6.7: used where available, `null`
   otherwise).
 - Pooled memory needs a limit.
+
+## Amendment 1 (2026-11-15): what T8 to T10 built
+
+- **Status:** Recorded (rung 2, T22). Each point follows a decision the
+  owner has already taken: plan decision 5 (T8 adds several writes and
+  `Format`'s new values), O11 at G1 (timestamps when the adapter has
+  them) and ADR-0020 at G4 (low internal resolution). Nothing here is for
+  the owner to decide, and the decision above is otherwise as accepted.
+- **Several writes are drawn** (T8, as "Several writes are planned, not
+  drawn" foresaw): `Graph::render` draws a pass's up to four colour
+  targets and one depth target, all of one size. `Graph::new` still
+  requires exactly one write.
+- **`Format`** has four values: `Rgba16Float`, `Rgba8UnormSrgb`,
+  `Rg32Uint` (the first-person `info`) and `Depth32Float` (reversed Z:
+  cleared to 0, compared `GreaterEqual`).
+- **The divisor.** "`divisor` divides the targets' size, rounding up, for
+  low internal resolution" now reads "for a pass that runs below the
+  targets' size". ADR-0020 decided that low internal resolution shrinks
+  the targets instead: `Targets::upscaled` makes them at the window's size
+  over k, every pass runs at that size with divisor 1, and only `present`
+  sees the window's. No rung 2 pass uses a divisor above 1.
+- **Out of scope, now in:**
+  - per-pass GPU times (O11). The device asks for `TIMESTAMP_QUERY` when
+    the adapter has it, and the tier stays 0. Timing is opt-in per
+    `Targets` (`time_passes`, read with `frame_stats`), so a frame with it
+    off encodes as before. A pass whose timestamps the GPU did not write
+    reads `None`, which reports write as null;
+  - the pool's count, `Targets::transient_textures`, which criterion 21
+    puts in the report (wired at G5).
+- **A new readback** (T9): `Targets::read_transient` reads what the last
+  frame drew into a transient, as the graph that drew it pools it. A frame
+  of a graph that pools otherwise is refused (`[E-GPU]`), and so is a
+  transient whose bypass draws it into a built-in resource.
+- **The first-person graph** (ADR-0020) pools five transient textures:
+  `albedo` and `fogged` share one (T10).
+- **"Revisit when"**: its first item came true (T8 draws several targets
+  and a depth target, and eng-render runs the planned graph since T9), and
+  its third (timestamps). Neither changed a rule above.

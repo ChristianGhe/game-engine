@@ -88,3 +88,20 @@ the surface, which shots cannot read. Three passes meet every rule. Rung
 
 Rung 2 replaces the fixed list with a graph that orders and culls passes;
 HDR display output arrives; or a runner's surface offers no BGRA format.
+
+## Later decisions (recorded 2026-11-15, rung 2 T22)
+
+- **ADR-0020** (accepted 2026-11-07) changes two sentences of this one
+  for the first-person graph; the top-down graph keeps them as written.
+  - "Only the present blit follows it, and the blit reproduces the
+    output's bytes" holds there only with low internal resolution off
+    (k = 1). With k above 1 the targets are the window's size over k
+    (`Targets::upscaled`, made by the caller) and `present` draws each
+    texel as k×k pixels, centred with a black border, so a window shows a
+    shot's pixels scaled.
+  - "The last pass that shapes the image" is the palette pass when it is
+    on; the tone map is the last scene-referred pass.
+- **"Revisit when"**: rung 2 added the graph that orders and culls passes
+  (ADR-0019) beside the fixed list, which the top-down view keeps, so this
+  ADR stands.
+- The spec's 6.7 and 9.2 still say two passes; that text is the owner's.

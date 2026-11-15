@@ -7,7 +7,7 @@
 use core::fmt;
 
 macro_rules! keys {
-    ($($(#[$meta:meta])* $key:ident,)+) => {
+    ($($(#[doc = $doc:literal])* $key:ident,)+) => {
         /// A physical key, named by its W3C UI Events `code` value
         /// (<https://www.w3.org/TR/uievents-code/>), the same name a
         /// bindings file uses.
@@ -24,7 +24,7 @@ macro_rules! keys {
         /// messages use [`Key::name`].
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub enum Key {
-            $($(#[$meta])* $key,)+
+            $($(#[doc = $doc])* $key,)+
         }
 
         impl Key {

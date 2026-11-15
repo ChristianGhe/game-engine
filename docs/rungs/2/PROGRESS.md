@@ -1543,3 +1543,104 @@ the owner at G5)
   `cargo xtask selftest` and the JSON say "known miss".
 - **Cost:** about 2 h 20 min in two runs, 560k tokens; the two reviews
   took 452k. It counts as one session at 2 units (36.5 of 52).
+
+**T21: the G5 package** (3893051, bac7064, d992062, b3f6184; the G5 rows;
+for the owner at sitting 2)
+- **Built** by one builder in a worktree pinned to b433f85, with a
+  scratch clone holding the whole package applied, then reworked after
+  two fresh reviews and an automated security review.
+- **On `main`** (no protected path):
+  - 3893051: the shot and video reports' `gpu.pass_times` (null without
+    timestamp queries, or when a budget stops the run before the timed
+    frame) and `gpu.transient_textures` (criterion 21, T8's carry). The
+    last frame rendered is timed with `Targets::time_passes(true)`, so a
+    video whose `--every` does not divide `--ticks` times its last
+    multiple. Test: `crates/game-testbed/tests/gpu_report.rs`.
+  - bac7064: ARCHITECTURE.md's "What gate G5 adds" names what the
+    package builds.
+  - d992062: `eng-platform-api`'s `keys!` macro passes doc comments only.
+    It was the workspace's one `#[$meta]`, which patch 20 now refuses.
+  - b3f6184: the package, `docs/rungs/2/patches/g5/`: 24 patches and a
+    README with each SHA-256, what each changes and the owner's
+    decisions.
+- **The package:** 01-18 are the reviewed patches. 09, 10, 13, 17 and 18
+  are rebased where they meet (`JOBS` 10, `CASES` 41, the `mod` lists,
+  `needs:`), and a reviewer compared their `+`/`-` lines with the
+  originals. T21's own:
+  - 19: the tokenizer's char and byte literals, lifetimes, labels, raw
+    identifiers and escaped line ends, a fix to 1b's `arch_scan.rs`
+    (found by an automated security review);
+  - 20: arch-check's `[E-ARCH-UNSAFE]` over every workspace `.rs` file,
+    `architecture.toml`'s `unsafe_file`, selftests `unsafe-outside-shim`
+    (13 plants, each matched to its own finding) and
+    `gcmouse-outside-shim`;
+  - 21: the test, native, lint and summary steps (102 native checks),
+    with tests holding every acceptance check to a step;
+  - 22: the workflow, with `MESA_SHADER_CACHE_DISABLE` job-wide in native
+    and selftest, and frame, rules and video artifacts;
+  - 23: `[gpu.first_person]` (28/28/60, 2,944 bytes: four times the room
+    shot's 7/7/15, 736), `[ci]` minutes (bench and mutants job minutes
+    are placeholders for T24), and 85 new protected paths with their
+    CODEOWNERS lines;
+  - 24: `current.txt` to `2`, criterion 19's `mutants-shards` check, and
+    the scene-rules wording (a proposal).
+- **The unsafe scan, after review:** besides `allow`/`warn`/`expect` of
+  `unsafe_code` outside `macos.rs`, it refuses:
+  - `macro_rules!` in `macos.rs`, and an allow there other than its
+    leading inner attribute;
+  - an `unsafe_code` token outside `deny`/`forbid`, and a `$` in an
+    attribute that names a lint level;
+  - `include` under any name;
+  - a `#[path]` with a backslash, or one naming `macos.rs`, a non-`.rs`
+    file or a file outside the workspace's crates.
+
+  Its known limit, in the README: a proc-macro crate could still build
+  the lint's name from a string. It is a lint, not a sandbox: rustc's
+  `forbid` in the core crates is the hard line.
+- **Reviews:**
+  - **Steps and mechanics** (16 min, 206k tokens). Finding: a video
+    timed no frame when `--every` did not divide `--ticks`, so its report
+    said "no timestamps" on an adapter with them. Two fail-open verdicts:
+    a missing window-room report, and a missing `failures` list. The
+    WIP commit should not reach `main`. All fixed. Also confirmed: the
+    24 SHA-256s, plain `git apply --index` in order, and the result's
+    tree equals the scratch clone's.
+  - **Scans and protection** (16 min, 165k tokens). Four unsafe-scan
+    escapes, each confirmed with rustc 1.99.1: a macro in `macos.rs`; a
+    `#[path]` to a non-`.rs` file; `r#unsafe_code`; a macro taking the
+    lint's name. Two protection gaps: `src/**/tests.rs` (the geometry
+    tests) and `look_between_ticks.rs`; a sweep then found
+    `eng-gpu/tests/rig/**`. All fixed.
+  - **Security review**, automated, of the reworked scan: `$` deeper in
+    an attribute, `#[path]`'s backslashes, and `include` by alias. All
+    fixed, each with a plant.
+- **Checked** in the scratch clone with all 24 applied and `current.txt`
+  at 2, on Metal:
+  - `quick` 7 of 7; the lint job 9 of 9; xtask's tests 227 passed;
+  - the selftest job 39 of 41: golden-edit is pending (it needs the
+    pinned lavapipe), and render-bug-3 fails by design until the owner
+    decides;
+  - native: window-room presented 600 frames on `room-walk.seed1.txt`'s
+    stream, and gpu-budgets held the room shot and window to
+    `[gpu.first_person]`. poses, look, scene-rules, window and
+    clippy-shim passed. shot-flip and frame-record are pending (no
+    goldens).
+
+  Linux, Windows and the pinned lavapipe ran nowhere: T24's first run is
+  their first.
+- **Where the plan needed adjusting** (in the README): criterion 8's
+  sprites tests need a GPU, so they run in the native `look` step;
+  ADR-0021 puts the exempt file in `architecture.toml`; `view.rs`'s tests
+  are inline; `sim_data` and `room` each exist in two packages.
+- **For the owner at G5** (the README's list):
+  - TA2's rules and the scene-rules wording;
+  - render bug 3: a known miss, or caught by rule 1;
+  - criterion 19's mutation exclusions (T19b's options);
+  - the Proposed ADR amendments;
+  - T20's std notices section and unfilled MIT copyright lines;
+  - T21's own choices: `unsafe_file`, the three paths protected beyond
+    the row, a separate `proof-video` artifact, and the shader cache off
+    in selftest too.
+- **Cost:** about 1 h 35 min of building in two runs, 1.19M tokens, 452
+  tool calls; the two reviews took 371k. It counts as two sessions
+  (38.5 of 52).

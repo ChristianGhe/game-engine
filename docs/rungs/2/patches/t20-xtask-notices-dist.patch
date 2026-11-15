@@ -413,10 +413,10 @@ index 0000000000000000000000000000000000000000..b5139f2637f4c1ad726d6d0d324458d9
 +mod tests;
 diff --git a/xtask/src/dist_check.rs b/xtask/src/dist_check.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..a7db970cf3242096870880057f48c4edf5dc7075
+index 0000000000000000000000000000000000000000..bfb690c27ef679457ef592e74f1d277436522219
 --- /dev/null
 +++ b/xtask/src/dist_check.rs
-@@ -0,0 +1,333 @@
+@@ -0,0 +1,334 @@
 +//! The native job's `dist` step (rung 2, criterion 18) on the runners of
 +//! the playable targets (`dist_notices::PLAYABLE`): `cargo xtask dist` for
 +//! the host, then the archive checked as someone who downloads it would
@@ -626,12 +626,13 @@ index 0000000000000000000000000000000000000000..a7db970cf3242096870880057f48c4ed
 +    let release = build["profile"] == "release" && build["debug_assertions"] == false;
 +    if !release || build["target"] != target {
 +        return Err(format!(
-+            "[E-DIST] the stamp says {} {} (debug assertions {}), not a {target} release",
++            "[E-DIST] the stamp says {} {} (debug assertions {}), not a release build for \
++             {target}",
 +            build["target"], build["profile"], build["debug_assertions"]
 +        ));
 +    }
 +    Ok(format!(
-+        "a {target} release of {}",
++        "a release build for {target} of {}",
 +        build["engine_sha"].as_str().unwrap_or("?")
 +    ))
 +}
@@ -752,10 +753,10 @@ index 0000000000000000000000000000000000000000..a7db970cf3242096870880057f48c4ed
 +}
 diff --git a/xtask/src/dist_notices.rs b/xtask/src/dist_notices.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..06c61611a8189bc292952ef7d4ac0c6a2e63c703
+index 0000000000000000000000000000000000000000..222fb3e231cfb8e42070b03ab45a82f4958503f1
 --- /dev/null
 +++ b/xtask/src/dist_notices.rs
-@@ -0,0 +1,300 @@
+@@ -0,0 +1,339 @@
 +//! `cargo xtask notices` and the lint job's `notices` step (rung 2,
 +//! decision 17, criterion 17; spec 4 and 8.4): the third-party notices of
 +//! the testbed binary, from cargo-about.
@@ -765,7 +766,10 @@ index 0000000000000000000000000000000000000000..06c61611a8189bc292952ef7d4ac0c6a
 +//!   `[licenses] allow`, in the same order, and their targets the three
 +//!   playable ones ([`PLAYABLE`], spec D16), with build and dev
 +//!   dependencies left out: what is linked into the binary. xtask fails if
-+//!   either list drifts from what it should be.
++//!   either list drifts from what it should be, or if `about.toml` has any
++//!   other key (a crate's own table could accept a licence off the list).
++//!   The template ends with fixed text for Rust's standard library, which
++//!   cargo-about cannot see.
 +//! - **The run:** `cargo fetch`, then cargo-about =0.9.3 with `--offline`
 +//!   (licence files come from the crates' own sources, never from a
 +//!   repository fetched at run time), `--fail`, and `deny.toml`'s
@@ -849,13 +853,7 @@ index 0000000000000000000000000000000000000000..06c61611a8189bc292952ef7d4ac0c6a
 +    ]);
 +    let mut cmd = util::cargo(root);
 +    cmd.args(&args);
-+    util::run_quiet(root, "notices", &mut cmd).map_err(|e| {
-+        if e.contains("failed to satisfy license requirements") {
-+            format!("[E-NOTICES] a crate's licence is off deny.toml's list: {e}")
-+        } else {
-+            format!("[E-NOTICES] cargo-about failed: {e}")
-+        }
-+    })?;
++    util::run_quiet(root, "notices", &mut cmd).map_err(|e| about_failed(&e))?;
 +    let notices = read(&out)?;
 +    let mut graph = BTreeSet::new();
 +    for target in PLAYABLE {
@@ -882,13 +880,53 @@ index 0000000000000000000000000000000000000000..06c61611a8189bc292952ef7d4ac0c6a
 +    fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
 +}
 +
-+/// Holds `about.toml` (`about`) to `deny.toml` (`deny`): the same licences
-+/// in the same order, the playable targets, no build or dev dependencies,
-+/// our own crates ignored. Returns `deny.toml`'s confidence threshold.
++/// The `[E-NOTICES]` error for a failed cargo-about run (`log`: what
++/// [`util::run_quiet`] returned): a licence off the list, or another
++/// failure.
++pub(crate) fn about_failed(log: &str) -> String {
++    if log.contains("failed to satisfy license requirements") {
++        format!("[E-NOTICES] a crate's licence is off deny.toml's list: {log}")
++    } else {
++        format!("[E-NOTICES] cargo-about failed: {log}")
++    }
++}
++
++/// The keys `about.toml` may have. Anything else is refused: a crate's own
++/// table (`[name]`, with `accepted` or `clarify`) or `workarounds` could
++/// let a licence off deny.toml's list through, and `max-depth` could hide
++/// licence files.
++const ABOUT_KEYS: [&str; 6] = [
++    "accepted",
++    "targets",
++    "ignore-build-dependencies",
++    "ignore-dev-dependencies",
++    "ignore-transitive-dependencies",
++    "private",
++];
++
++/// Holds `about.toml` (`about`) to `deny.toml` (`deny`): only the keys of
++/// [`ABOUT_KEYS`]; the same licences in the same order; the playable
++/// targets; no build or dev dependencies, every transitive one; our own
++/// crates ignored, and nothing else in `private`. Returns `deny.toml`'s
++/// confidence threshold.
 +pub(crate) fn config(deny: &str, about: &str) -> Result<f64, String> {
 +    let deny: toml::Table = deny.parse().map_err(|e| format!("deny.toml: {e}"))?;
 +    let about: toml::Table = about.parse().map_err(|e| format!("about.toml: {e}"))?;
-+    let licences = &deny["licenses"];
++    let unknown: Vec<&str> = about
++        .keys()
++        .map(String::as_str)
++        .filter(|key| !ABOUT_KEYS.contains(key))
++        .collect();
++    if !unknown.is_empty() {
++        return Err(format!(
++            "[E-NOTICES] about.toml may set only {ABOUT_KEYS:?}, not {unknown:?}: per-crate \
++             tables, `workarounds` or `max-depth` could let a licence off deny.toml's list \
++             through or hide licence files"
++        ));
++    }
++    let licences = deny
++        .get("licenses")
++        .ok_or("[E-NOTICES] deny.toml has no [licenses] table")?;
 +    let strings = |value: Option<&toml::Value>| -> Vec<String> {
 +        value
 +            .and_then(toml::Value::as_array)
@@ -913,18 +951,20 @@ index 0000000000000000000000000000000000000000..06c61611a8189bc292952ef7d4ac0c6a
 +             {targets:?}"
 +        ));
 +    }
-+    let flag = |key: &str| about.get(key).and_then(toml::Value::as_bool) == Some(true);
-+    let private = about
-+        .get("private")
-+        .and_then(|p| p.get("ignore"))
-+        .and_then(toml::Value::as_bool);
-+    if !flag("ignore-build-dependencies")
-+        || !flag("ignore-dev-dependencies")
-+        || private != Some(true)
++    let flag = |key: &str| about.get(key).and_then(toml::Value::as_bool);
++    let private = about.get("private").and_then(toml::Value::as_table);
++    let private_ok = private.is_some_and(|p| {
++        p.len() == 1 && p.get("ignore").and_then(toml::Value::as_bool) == Some(true)
++    });
++    if flag("ignore-build-dependencies") != Some(true)
++        || flag("ignore-dev-dependencies") != Some(true)
++        || flag("ignore-transitive-dependencies").unwrap_or(false)
++        || !private_ok
 +    {
 +        return Err(
-+            "[E-NOTICES] about.toml must set ignore-build-dependencies, ignore-dev-dependencies \
-+             and private.ignore: the notices cover what is linked into the binary"
++            "[E-NOTICES] about.toml must set ignore-build-dependencies and \
++             ignore-dev-dependencies, keep transitive dependencies, and set only `ignore = true` \
++             in `private`: the notices cover what is linked into the binary"
 +                .into(),
 +        );
 +    }
@@ -1058,17 +1098,17 @@ index 0000000000000000000000000000000000000000..06c61611a8189bc292952ef7d4ac0c6a
 +mod tests;
 diff --git a/xtask/src/dist_notices_tests.rs b/xtask/src/dist_notices_tests.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..128d6c4e8c98d851ba085cb09b2dd211dc9e6f64
+index 0000000000000000000000000000000000000000..345d2562f271e1f5f6e94bd6e7f098d255afbaa1
 --- /dev/null
 +++ b/xtask/src/dist_notices_tests.rs
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,282 @@
 +//! The notices' config against deny.toml, and the check of cargo-about's
 +//! output against the testbed's graph.
 +
 +use std::collections::BTreeSet;
 +use std::path::Path;
 +
-+use super::{PLAYABLE, check, config, third_party};
++use super::{PLAYABLE, about_failed, check, config, third_party};
 +
 +fn root() -> &'static Path {
 +    Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1118,6 +1158,72 @@ index 0000000000000000000000000000000000000000..128d6c4e8c98d851ba085cb09b2dd211
 +    let narrower = deny.replacen("  \"BSL-1.0\",\n", "", 1);
 +    assert_ne!(narrower, deny);
 +    assert!(config(&narrower, &about).is_err());
++}
++
++/// Only the known keys: a crate's own table could accept a licence off
++/// the list for that crate (cargo-about appends it to the global list),
++/// and `workarounds`, `clarify` or `max-depth` change what is read.
++#[test]
++fn about_toml_with_any_other_key_fails() {
++    let deny = read("deny.toml");
++    let about = read("about.toml");
++    let cases = [
++        format!("{about}\n[ring]\naccepted = [\"OpenSSL\"]\n"),
++        format!("{about}\n[foldhash.clarify]\nlicense = \"MIT\"\n"),
++        format!("workarounds = [\"ring\"]\n{about}"),
++        format!("max-depth = 1\n{about}"),
++        about.replace(
++            "ignore-transitive-dependencies = false",
++            "ignore-transitive-dependencies = true",
++        ),
++        about.replace(
++            "private = { ignore = true }",
++            "private = { ignore = true, registries = [\"sauce\"] }",
++        ),
++    ];
++    for (i, case) in cases.iter().enumerate() {
++        assert_ne!(case, &about, "case {i} changed nothing");
++        let err = config(&deny, case).expect_err(&format!("case {i} passed"));
++        assert!(err.contains("[E-NOTICES]"), "case {i}: {err}");
++    }
++    let err = config(&deny, &cases[0]).unwrap_err();
++    assert!(err.contains("\"ring\""), "names the key: {err}");
++    // Leaving the transitive flag out is the same as false.
++    let without = about.replace("ignore-transitive-dependencies = false\n", "");
++    assert_ne!(without, about);
++    assert!(config(&deny, &without).is_ok());
++}
++
++/// A deny.toml without its [licenses] table is an error, not a panic.
++#[test]
++fn deny_toml_without_licences_fails() {
++    let about = read("about.toml");
++    let err = config("[bans]\nmultiple-versions = \"warn\"\n", &about).unwrap_err();
++    assert!(err.contains("no [licenses] table"), "{err}");
++    let err = config("[licenses]\nallow = []\n", &about).unwrap_err();
++    assert!(err.contains("[E-NOTICES]"), "{err}");
++}
++
++/// cargo-about's own words for an off-list licence become that error; any
++/// other failure says cargo-about failed. Both keep the log's text. (The
++/// mapping is a function so this runs without cargo-about failing for
++/// real; the lint step's own failure was checked by hand, with Zlib taken
++/// off both lists.)
++#[test]
++fn a_failed_cargo_about_run_names_its_cause() {
++    let off = "notices failed (exit status: 1); full log: x.log\nerror: failed to satisfy \
++               license requirements\n  foldhash-0.2.0/Cargo.toml:40:12";
++    let err = about_failed(off);
++    assert!(
++        err.starts_with("[E-NOTICES] a crate's licence is off deny.toml's list: "),
++        "{err}"
++    );
++    assert!(err.contains("foldhash-0.2.0"), "{err}");
++    let other = about_failed("cannot start \"cargo\" \"about\": No such file");
++    assert!(
++        other.starts_with("[E-NOTICES] cargo-about failed: cannot start"),
++        "{other}"
++    );
 +}
 +
 +#[test]
@@ -1260,6 +1366,22 @@ index 0000000000000000000000000000000000000000..128d6c4e8c98d851ba085cb09b2dd211
 +        "{{{text}}}",
 +    ] {
 +        assert!(template.contains(marker), "about.hbs lacks {marker:?}");
++    }
++    // Fixed text before the crate list or after the licence texts (the
++    // standard library's section, a default the owner may drop) must not
++    // look like a licence heading or a `Used by:` line.
++    let head = &template[..template.find(super::CRATES_HEADING).unwrap()];
++    let texts = template.find("{{#each licenses}}").unwrap();
++    let end = texts + template[texts..].find("\n{{/each}}").unwrap() + "\n{{/each}}".len();
++    let tail = &template[end..];
++    for (part, text) in [("header", head), ("tail", tail)] {
++        for line in text.lines() {
++            let marker = line.starts_with(super::LICENCE) || line.starts_with(super::USED_BY);
++            assert!(
++                !marker,
++                "about.hbs's {part} has a line the check reads: {line:?}"
++            );
++        }
 +    }
 +}
 diff --git a/xtask/src/dist_tar.rs b/xtask/src/dist_tar.rs
@@ -1583,10 +1705,10 @@ index 0000000000000000000000000000000000000000..e2c45e8ac2a56293518c0a394fefd3cf
 +}
 diff --git a/xtask/src/dist_tests.rs b/xtask/src/dist_tests.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..4c58c80cc7901bedd87b77dc2c187cac80c72269
+index 0000000000000000000000000000000000000000..81b256e820be1c97779af9d5937086a71cb51652
 --- /dev/null
 +++ b/xtask/src/dist_tests.rs
-@@ -0,0 +1,484 @@
+@@ -0,0 +1,506 @@
 +//! dist's per-target plan, its archive format, and the native step's
 +//! checks of what it unpacks.
 +
@@ -1807,6 +1929,28 @@ index 0000000000000000000000000000000000000000..4c58c80cc7901bedd87b77dc2c187cac
 +        );
 +        assert_eq!(mode(&out.join("top/version.json")), 0);
 +    }
++    fs::remove_dir_all(&dir).unwrap();
++}
++
++/// A link in the folder is refused, not followed or archived as a link
++/// (Unix: Windows needs privileges to make one).
++#[cfg(unix)]
++#[test]
++fn a_link_in_the_folder_is_refused() {
++    let dir = scratch("link");
++    let src = folder(&dir);
++    std::os::unix::fs::symlink("version.json", src.join("latest.json")).unwrap();
++    let archive = dir.join("a.tar.gz");
++    let err = dist_tar::write(&src, "top", 0, &[], &archive).unwrap_err();
++    assert!(
++        err.contains("latest.json") && err.contains("no links"),
++        "{err}"
++    );
++    // A link to a directory too, wherever it sits.
++    fs::remove_file(src.join("latest.json")).unwrap();
++    std::os::unix::fs::symlink("..", src.join("game-testbed.dSYM/up")).unwrap();
++    let err = dist_tar::write(&src, "top", 0, &[], &archive).unwrap_err();
++    assert!(err.contains("up") && err.contains("no links"), "{err}");
 +    fs::remove_dir_all(&dir).unwrap();
 +}
 +

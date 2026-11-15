@@ -1,0 +1,1174 @@
+diff --git a/xtask/selftest/render-bugs/01-thing-skipped.patch b/xtask/selftest/render-bugs/01-thing-skipped.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..9872ff6322cee1ed49596ecd0fb80f92465cbf6d
+--- /dev/null
++++ b/xtask/selftest/render-bugs/01-thing-skipped.patch
+@@ -0,0 +1,13 @@
++diff --git a/crates/game-testbed-client/src/room.rs b/crates/game-testbed-client/src/room.rs
++index 9a65cb7ff444eb5933fa6682969750afd2d5ecfe..af7d8338f024bd113024cfc96fbe931a10fac4ab 100644
++--- a/crates/game-testbed-client/src/room.rs
+++++ b/crates/game-testbed-client/src/room.rs
++@@ -228,6 +228,8 @@ pub fn sprites(frame: &FirstPersonFrame<'_>) -> Vec<Sprite> {
++         .storage::<Thing>()
++         .iter()
++         .enumerate()
+++        // Entity 0 is player 0 (T7), not a thing.
+++        .skip(1)
++         .map(|(number, (e, thing))| {
++             let from = previous.get::<Thing>(e).map_or(thing.feet, |t| t.feet);
++             let feet = lerp_pos(from, thing.feet, frame.alpha);
+diff --git a/xtask/selftest/render-bugs/02-slab-sides-inward.patch b/xtask/selftest/render-bugs/02-slab-sides-inward.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..f7cb47b9b58ad5c74b20b0a5827491664409858e
+--- /dev/null
++++ b/xtask/selftest/render-bugs/02-slab-sides-inward.patch
+@@ -0,0 +1,13 @@
++diff --git a/crates/game-testbed-client/src/room/geometry.rs b/crates/game-testbed-client/src/room/geometry.rs
++index 3677d519eef5fe904882eaf7fcb6a15001b26bc7..95d344f58346338b70f641a051730ec5dca6e373 100644
++--- a/crates/game-testbed-client/src/room/geometry.rs
+++++ b/crates/game-testbed-client/src/room/geometry.rs
++@@ -326,7 +326,7 @@ impl Builder<'_> {
++         for e in 0..n {
++             let (a, b) = (slab.points[e], slab.points[(e + 1) % n]);
++             let (left, right) = normals(a, b);
++-            let outward = if counter_clockwise { right } else { left };
+++            let outward = if counter_clockwise { left } else { right };
++             let id = slab_id(index, 2 + e as u32);
++             self.vertical([a, b], [slab.bottom, slab.top], outward, material, id);
++         }
+diff --git a/xtask/selftest/render-bugs/03-texture-tag-linear.patch b/xtask/selftest/render-bugs/03-texture-tag-linear.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..8a319aa7d454e73a120e460d3b1fa5c33223bc68
+--- /dev/null
++++ b/xtask/selftest/render-bugs/03-texture-tag-linear.patch
+@@ -0,0 +1,13 @@
++diff --git a/crates/game-testbed-client/src/room.rs b/crates/game-testbed-client/src/room.rs
++index 9a65cb7ff444eb5933fa6682969750afd2d5ecfe..b320dfbcdc26254250c1acc018e835805630a2f5 100644
++--- a/crates/game-testbed-client/src/room.rs
+++++ b/crates/game-testbed-client/src/room.rs
++@@ -92,7 +92,7 @@ pub fn world(sim: &Sim) -> FirstPersonWorld {
++         .iter()
++         .map(|surface| WorldTexture {
++             side: crate::textures::SIDE as u32,
++-            tag: ColourTag::Srgb,
+++            tag: ColourTag::Linear,
++             rgba8: surface.texture(),
++         })
++         .collect();
+diff --git a/xtask/selftest/render-bugs/04-offset-rounded-first.patch b/xtask/selftest/render-bugs/04-offset-rounded-first.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..196e5556d3c18c4aa2c2fbf30a7f242af02d1f18
+--- /dev/null
++++ b/xtask/selftest/render-bugs/04-offset-rounded-first.patch
+@@ -0,0 +1,13 @@
++diff --git a/crates/eng-gpu/src/scene.rs b/crates/eng-gpu/src/scene.rs
++index 40e6869d5f298aa31e7fe01d668d07ca4b2812d0..daf3579da338762f6646bc802863db69805111bc 100644
++--- a/crates/eng-gpu/src/scene.rs
+++++ b/crates/eng-gpu/src/scene.rs
++@@ -146,7 +146,7 @@ impl InstanceRecord {
++     /// rounded once to f32 (spec 6.7), so that a chunk far from the world's
++     /// origin keeps its offset from the eye to f32's precision.
++     pub fn relative(origin: [f64; 3], eye: [f64; 3], material: u32) -> Self {
++-        let offset = |axis: usize| (origin[axis] - eye[axis]) as f32;
+++        let offset = |axis: usize| origin[axis] as f32 - eye[axis] as f32;
++         Self {
++             offset: [offset(0), offset(1), offset(2)],
++             material,
+diff --git a/xtask/selftest/render-bugs/05-sprite-sector-off-by-one.patch b/xtask/selftest/render-bugs/05-sprite-sector-off-by-one.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..48a5672b8860cd31dbc77fbed0a019e1f023a1c8
+--- /dev/null
++++ b/xtask/selftest/render-bugs/05-sprite-sector-off-by-one.patch
+@@ -0,0 +1,22 @@
++diff --git a/crates/eng-render/src/sprite_rot.rs b/crates/eng-render/src/sprite_rot.rs
++index e7bedabe2a87b7da056eedc626921b4692ac3b05..04faf8cc9ff4d92603b37bd589993335efa26b7e 100644
++--- a/crates/eng-render/src/sprite_rot.rs
+++++ b/crates/eng-render/src/sprite_rot.rs
++@@ -26,8 +26,6 @@ use eng_math::{BAngle, TAU_F64, WorldPos, atan2_f64, round_f64};
++ /// How many rotations a sprite has.
++ pub const SPRITE_ROTATIONS: u8 = 8;
++
++-/// Half a 45° sector, in binary angle units (22.5°).
++-const HALF_SECTOR: u32 = 1 << 28;
++ /// The shift from a binary angle to its sector (45° is 2^29).
++ const SECTOR_SHIFT: u32 = 29;
++
++@@ -36,7 +34,7 @@ const SECTOR_SHIFT: u32 = 29;
++ /// docs for the rule and its tie at sector boundaries.
++ pub const fn sprite_rotation(facing: BAngle, to_viewer: BAngle) -> u8 {
++     let from_front = to_viewer.0.wrapping_sub(facing.0);
++-    (from_front.wrapping_add(HALF_SECTOR) >> SECTOR_SHIFT) as u8
+++    (from_front >> SECTOR_SHIFT) as u8
++ }
++
++ /// The direction from `from` to `to` seen from above, as the binary angle
+diff --git a/xtask/selftest/render-bugs/06-mirror-ignored.patch b/xtask/selftest/render-bugs/06-mirror-ignored.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..479b0b7b768043a40513403919320718ba2fd1b7
+--- /dev/null
++++ b/xtask/selftest/render-bugs/06-mirror-ignored.patch
+@@ -0,0 +1,19 @@
++diff --git a/crates/eng-render/src/first_person/sprites.rs b/crates/eng-render/src/first_person/sprites.rs
++index 8cfdf33ce2f90974ff8819162425f7235c467e29..65d8537628c43dbf071bddac646121566fdfa962 100644
++--- a/crates/eng-render/src/first_person/sprites.rs
+++++ b/crates/eng-render/src/first_person/sprites.rs
++@@ -149,13 +149,8 @@ pub(crate) fn records(sprites: &[Sprite], eye: WorldPos) -> Vec<InstanceRecord>
++             [eye.x, eye.y, eye.z],
++             sprite.materials[usize::from(shown.frame)],
++         ));
++-        let width = if shown.mirrored {
++-            -sprite.width
++-        } else {
++-            sprite.width
++-        };
++         records.push(InstanceRecord {
++-            offset: [width, sprite.height, f32::from(sprite.region)],
+++            offset: [sprite.width, sprite.height, f32::from(sprite.region)],
++             material: sprite.id,
++         });
++     }
+diff --git a/xtask/selftest/render-bugs/07-sprites-no-depth-write.patch b/xtask/selftest/render-bugs/07-sprites-no-depth-write.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..c408153b2aa747b41524389e563d165a6834ff27
+--- /dev/null
++++ b/xtask/selftest/render-bugs/07-sprites-no-depth-write.patch
+@@ -0,0 +1,13 @@
++diff --git a/crates/eng-render/src/first_person/sprites.rs b/crates/eng-render/src/first_person/sprites.rs
++index 8cfdf33ce2f90974ff8819162425f7235c467e29..330b4523c5dd9ac9d7ebd2a7becf4d1dfceaf3d8 100644
++--- a/crates/eng-render/src/first_person/sprites.rs
+++++ b/crates/eng-render/src/first_person/sprites.rs
++@@ -175,7 +175,7 @@ pub(crate) fn pipeline(gpu: &Gpu) -> Result<MeshPipeline, GpuError> {
++         vertex: &[],
++         reads: SPRITES.reads,
++         writes: SPRITES.writes,
++-        depth_write: true,
+++        depth_write: false,
++         cull_back: false,
++     })
++ }
+diff --git a/xtask/selftest/render-bugs/08-sprite-info-swap.patch b/xtask/selftest/render-bugs/08-sprite-info-swap.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..c64a3ff32f9133a9da4be7583c9827ef6305b5ac
+--- /dev/null
++++ b/xtask/selftest/render-bugs/08-sprite-info-swap.patch
+@@ -0,0 +1,12 @@
++diff --git a/crates/eng-render/src/sprites.wgsl b/crates/eng-render/src/sprites.wgsl
++index 79ca09ebe0cff686a9da64b872945fd966bfb6aa..7c8dcf6f18b1bfe2633f853d468461058cf768f8 100644
++--- a/crates/eng-render/src/sprites.wgsl
+++++ b/crates/eng-render/src/sprites.wgsl
++@@ -83,6 +83,6 @@ fn sprite_vertex(
++     out.uv = vec2<f32>(across + 0.5, 1.0 - up);
++     out.material = place.material;
++     let region = min(u32(shape.offset.z), REGION_MASK);
++-    out.info = vec2<u32>(region | (SPRITE << 16u), shape.material);
+++    out.info = vec2<u32>((region << 16u) | SPRITE, shape.material);
++     return out;
++ }
+diff --git a/xtask/selftest/render-bugs/09-region-light-transposed.patch b/xtask/selftest/render-bugs/09-region-light-transposed.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..07e07d8ead44cc84972289a4a8479c4b2c98e20a
+--- /dev/null
++++ b/xtask/selftest/render-bugs/09-region-light-transposed.patch
+@@ -0,0 +1,13 @@
++diff --git a/crates/eng-render/src/light.wgsl b/crates/eng-render/src/light.wgsl
++index 968149d159b59d989d25790e7328c85a210a77e8..c3d858b902efd7294530f54729836642417d9ec1 100644
++--- a/crates/eng-render/src/light.wgsl
+++++ b/crates/eng-render/src/light.wgsl
++@@ -64,7 +64,7 @@ fn light(p: vec2<i32>, uv: vec2<f32>, falloff: f32, contrast: f32, banding: bool
++     let words = textureLoad(info, p, 0).r;
++     let region = min(words & 0xffffu, LAST_REGION);
++     let surface = (words >> 16u) & 0xffu;
++-    var step = frame.region_light[region / 4u][region % 4u];
+++    var step = frame.region_light[region % 4u][region / 4u];
++     if surface == WALL_FACING_X {
++         step += contrast;
++     } else if surface == WALL_FACING_Y {
+diff --git a/xtask/selftest/render-bugs/10-fog-ahead-not-along-ray.patch b/xtask/selftest/render-bugs/10-fog-ahead-not-along-ray.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..1d3f51c1b17335988fafd27f9b1e5d8af13572e1
+--- /dev/null
++++ b/xtask/selftest/render-bugs/10-fog-ahead-not-along-ray.patch
+@@ -0,0 +1,13 @@
++diff --git a/crates/eng-render/src/fog.wgsl b/crates/eng-render/src/fog.wgsl
++index d26f4e0135de6a12f6145d885127f306f16d6f55..f37fb278a7f34444c85ef43526e158aa60b7cc8c 100644
++--- a/crates/eng-render/src/fog.wgsl
+++++ b/crates/eng-render/src/fog.wgsl
++@@ -33,7 +33,7 @@ const LAST_REGION: u32 = 15u;
++ fn distance(uv: vec2<f32>, d: f32) -> f32 {
++     let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
++     let ray = frame.forward.xyz + ndc.x * frame.ray_right.xyz + ndc.y * frame.ray_up.xyz;
++-    return frame.forward.w / d * length(ray);
+++    return frame.forward.w / d;
++ }
++
++ @fragment
+diff --git a/xtask/selftest/render-bugs/11-tone-start-compression.patch b/xtask/selftest/render-bugs/11-tone-start-compression.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..a295d104434e560fdcdc7934792f2cce7345afef
+--- /dev/null
++++ b/xtask/selftest/render-bugs/11-tone-start-compression.patch
+@@ -0,0 +1,13 @@
++diff --git a/crates/eng-render/src/pbr_neutral.wgsl b/crates/eng-render/src/pbr_neutral.wgsl
++index b6e966b77e0c8531ddfb03eea99d1ebc07018bc9..a4c17fa61c5889b99a2615cfe6b78655e9f9bd8f 100644
++--- a/crates/eng-render/src/pbr_neutral.wgsl
+++++ b/crates/eng-render/src/pbr_neutral.wgsl
++@@ -35,7 +35,7 @@ struct Frame {
++ @group(2) @binding(0) var scene: texture_2d<f32>;
++
++ const F90: f32 = 0.04;
++-const START_COMPRESSION: f32 = 0.8 - F90;
+++const START_COMPRESSION: f32 = 0.8 + F90;
++ const DESATURATION: f32 = 0.15;
++
++ fn pbr_neutral(colour: vec3<f32>) -> vec3<f32> {
+diff --git a/xtask/selftest/render-bugs/12-palette-cell-rounded.patch b/xtask/selftest/render-bugs/12-palette-cell-rounded.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..c5a7af42ccbaaf35f9458c451782d0c9c883fbba
+--- /dev/null
++++ b/xtask/selftest/render-bugs/12-palette-cell-rounded.patch
+@@ -0,0 +1,13 @@
++diff --git a/crates/eng-render/src/palette.wgsl b/crates/eng-render/src/palette.wgsl
++index dbdaafb91622decdb9229c52a4938e87b4b69037..2b23af22e821508c38878943cf29e8e9200cfc9e 100644
++--- a/crates/eng-render/src/palette.wgsl
+++++ b/crates/eng-render/src/palette.wgsl
++@@ -57,7 +57,7 @@ fn palette_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4
++     let codes = round(encode(textureLoad(toned, vec2<i32>(p), 0).rgb) * 255.0);
++     let m = f32(BAYER_4X4[(p.y % 4u) * 4u + p.x % 4u]);
++     let dithered = codes + ((m + 0.5) / 16.0 - 0.5) * frame.look.z;
++-    let cell = vec3<u32>(clamp(dithered, vec3<f32>(0.0), vec3<f32>(255.0))) >> vec3<u32>(3u);
+++    let cell = vec3<u32>(clamp(dithered + 4.0, vec3<f32>(0.0), vec3<f32>(255.0))) >> vec3<u32>(3u);
++     let index = cell.r + 32u * cell.g + 1024u * cell.b;
++     let texel = vec2<u32>(index % 64u, (index % 4096u) / 64u);
++     let layer = frame.switches.y + index / 4096u;
+diff --git a/xtask/src/main.rs b/xtask/src/main.rs
+index 0dc409da5819a062d86d8e76aea06b2e41f0ee2b..e9afcf4b9e7ae605c52b3f89c59b90da9c926c57 100644
+--- a/xtask/src/main.rs
++++ b/xtask/src/main.rs
+@@ -31,6 +31,7 @@ mod replay;
+ mod run_lock;
+ mod selftest;
+ mod selftest_golden;
++mod selftest_render;
+ mod shell;
+ mod size;
+ mod stamp;
+diff --git a/xtask/src/selftest.rs b/xtask/src/selftest.rs
+index 32aa2b97e9b13cc019471a7b1e901cd385f60699..a92e637439a795633347b660abbb4c3799623a9c 100644
+--- a/xtask/src/selftest.rs
++++ b/xtask/src/selftest.rs
+@@ -6,7 +6,9 @@
+ //! too), it empties and rewrites `target/golden-candidates/`. A case that
+ //! needs what this machine lacks (cargo-deny, the pinned lavapipe) says it
+ //! could not run: a failure only on CI or with `ENG_REQUIRE_GPU=1`, as for
+-//! GPU tests, and never a pass (`selftest_verdict.rs`).
++//! GPU tests, and never a pass (`selftest_verdict.rs`). `render-bug-1` to
++//! `render-bug-12` each plant a render bug in a copy and run the checks
++//! that should catch it, GPU tests among them (`selftest_render.rs`).
+ 
+ use std::fs;
+ use std::io::Write;
+@@ -22,7 +24,7 @@ mod verdict;
+ pub use verdict::NOT_RUN;
+ use verdict::{judged, last_line, outcome, status, strict};
+ 
+-pub const CASES: [&str; 22] = [
++pub const CASES: [&str; 34] = [
+     "float-sin",
+     "float-min",
+     "allow-escape",
+@@ -46,6 +48,20 @@ pub const CASES: [&str; 22] = [
+     "rwh-outside-seam",
+     "core-depends-on-gpu",
+     "golden-edit",
++    // Rung 2, addition A4 (`check-misses`): a planted render bug each
++    // (`selftest_render.rs`).
++    "render-bug-1",
++    "render-bug-2",
++    "render-bug-3",
++    "render-bug-4",
++    "render-bug-5",
++    "render-bug-6",
++    "render-bug-7",
++    "render-bug-8",
++    "render-bug-9",
++    "render-bug-10",
++    "render-bug-11",
++    "render-bug-12",
+ ];
+ 
+ /// The cases `cargo xtask selftest [CASE]` names: all with no argument.
+@@ -222,6 +238,9 @@ fn run_case(root: &Path, case: &str) -> Result<String, String> {
+             |ws| add_dependency(ws, "eng-sim", "eng-gpu"),
+         ),
+         "golden-edit" => crate::selftest_golden::run(root),
++        case if case.starts_with("render-bug-") => {
++            crate::selftest_render::run(root, &copy_workspace(root, case)?, case)
++        }
+         "guard-allows-ordinary-edits" => {
+             let ws = copy_workspace(root, case)?;
+             let input = serde_json::json!({
+diff --git a/xtask/src/selftest_render.rs b/xtask/src/selftest_render.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..26a8e3b47f048a2ebb143a479bcb2b17a337db6c
+--- /dev/null
++++ b/xtask/src/selftest_render.rs
+@@ -0,0 +1,461 @@
++//! `cargo xtask selftest render-bug-<n>` (rung 2, addition A4, criterion
++//! `check-misses`): twelve planted render bugs, small mistakes a builder
++//! could make anywhere from the room's extraction to the palette, written by
++//! an agent that did not build the renderer. Each is a patch in
++//! `xtask/selftest/render-bugs/`, and exists nowhere else.
++//!
++//! A case copies the workspace to `target/selftest/render-bug-<n>/`,
++//! applies its bug there, and runs the bug's general checks in turn until
++//! one fails: tests whose verdict comes from a CPU model or a rule that
++//! holds for every scene, so they would catch the bug in a scene nobody
++//! prepared, not tests that know facts of the testbed's room (where an
++//! object is, which shot it is in, a golden). [`BUGS`] names them, from the
++//! bug-by-check run in `docs/rungs/2/PROGRESS.md` (TA4). The case passes
++//! when one of them fails as a test, and fails when all of them pass, or
++//! when the bug no longer applies or builds: refresh its patch with the
++//! code it plants into.
++//!
++//! A bug no general check catches is a **known miss**, listed with the
++//! reason, which the owner accepts by applying this file: its case runs the
++//! room's own checks that catch it instead, so that a miss is at least
++//! caught where the room is, and says it is a known miss.
++//!
++//! The checks pass on the tree itself (the `test` and `native` jobs run
++//! them), so a check that fails here fails for the bug. GPU checks run with
++//! `ENG_REQUIRE_GPU=1`; a case whose check finds no adapter could not run
++//! ([`NOT_RUN`]), a failure only in a strict run. Builds go to
++//! `target/selftest/target`, as the clippy cases' do, which the cases
++//! share: see `mark_planted` for what keeps one case's bug out of the
++//! next one's build.
++
++use std::fs;
++use std::path::Path;
++use std::time::SystemTime;
++
++use crate::selftest::NOT_RUN;
++use crate::util;
++
++#[path = "selftest_render_apply.rs"]
++mod patch_file;
++
++/// Where a check's test lives.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum Target {
++    /// The package's library unit tests (`--lib`).
++    Lib,
++    /// An integration test target, `tests/<name>.rs` (`--test <name>`).
++    Test(&'static str),
++}
++
++/// One test that catches a bug: run as `cargo test -p <package> <target>
++/// -- --exact <test>`.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) struct Check {
++    pub package: &'static str,
++    pub target: Target,
++    /// The test's full name, as `--exact` matches it.
++    pub test: &'static str,
++}
++
++/// A planted bug and what catches it.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) struct Bug {
++    /// Its patch, in `xtask/selftest/render-bugs/`.
++    pub patch: &'static str,
++    /// What it breaks.
++    pub what: &'static str,
++    /// The checks the case runs, cheapest first: general ones, or for a
++    /// known miss the room's.
++    pub checks: &'static [Check],
++    /// Why no general check catches it, for a known miss.
++    pub known_miss: Option<&'static str>,
++}
++
++const fn lib(package: &'static str, test: &'static str) -> Check {
++    Check {
++        package,
++        target: Target::Lib,
++        test,
++    }
++}
++
++const fn test(package: &'static str, file: &'static str, test: &'static str) -> Check {
++    Check {
++        package,
++        target: Target::Test(file),
++        test,
++    }
++}
++
++const CLIENT: &str = "game-testbed-client";
++const RENDER: &str = "eng-render";
++
++/// The bugs, in the pipeline's order, `render-bug-<n>` at `n - 1`.
++pub(crate) const BUGS: [Bug; 12] = [
++    Bug {
++        patch: "01-thing-skipped.patch",
++        what: "the room's extraction drops its first thing (the marker)",
++        checks: &[lib(
++            CLIENT,
++            "room::tests::each_thing_is_a_sprite_in_the_region_its_feet_stand_in",
++        )],
++        known_miss: Some(
++            "what a scene should hold is the scene's own fact: only the room's tests, \
++             its pinned counters and its goldens know the marker is there",
++        ),
++    },
++    Bug {
++        patch: "02-slab-sides-inward.patch",
++        what: "slab sides face into the slab: the pillar is see-through from outside",
++        checks: &[lib(
++            CLIENT,
++            "room::geometry::tests::no_two_faces_facing_the_same_way_overlap_in_one_plane",
++        )],
++        known_miss: None,
++    },
++    Bug {
++        patch: "03-texture-tag-linear.patch",
++        what: "the room's surface textures, sRGB codes, are tagged linear",
++        checks: &[lib(
++            CLIENT,
++            "room::tests::the_world_has_the_surfaces_then_each_things_frames_and_the_palette",
++        )],
++        known_miss: Some(
++            "a texture's encoding is its data's fact: the light model reads the albedo \
++             the GPU decoded, so only the room's pinned tags and its goldens see it",
++        ),
++    },
++    Bug {
++        patch: "04-offset-rounded-first.patch",
++        what: "a record's offset from the eye is rounded to f32 before the subtraction",
++        checks: &[
++            lib("eng-gpu", "scene::tests::the_offset_is_taken_in_f64"),
++            test(
++                RENDER,
++                "first_person",
++                "the_room_a_billion_meters_out_renders_as_it_does_at_the_origin",
++            ),
++        ],
++        known_miss: None,
++    },
++    Bug {
++        patch: "05-sprite-sector-off-by-one.patch",
++        what: "a sprite's rotation sectors start at its facing instead of centring on it",
++        checks: &[
++            test(
++                RENDER,
++                "sprite_rotation",
++                "a_boundary_goes_to_the_counter_clockwise_sector",
++            ),
++            test(RENDER, "sprite_rotation", "the_rule_matches_the_geometry"),
++        ],
++        known_miss: None,
++    },
++    Bug {
++        patch: "06-mirror-ignored.patch",
++        what: "a five-rotation sheet's frames 5 to 7 are drawn unmirrored",
++        checks: &[
++            lib(
++                RENDER,
++                "first_person::sprites::tests::each_sprite_takes_two_records_its_place_and_its_shape",
++            ),
++            test(
++                RENDER,
++                "sprites",
++                "a_five_rotation_sheet_shows_rotations_5_to_7_mirrored",
++            ),
++        ],
++        known_miss: None,
++    },
++    Bug {
++        patch: "07-sprites-no-depth-write.patch",
++        what: "sprites write no depth: light, fog and later sprites see what is behind them",
++        checks: &[
++            test(
++                RENDER,
++                "sprites",
++                "the_hall_renders_its_sprites_as_the_cpu_casts_them",
++            ),
++            test(
++                RENDER,
++                "sprites_look",
++                "light_and_fog_reach_a_sprite_by_its_region_without_contrast",
++            ),
++        ],
++        known_miss: None,
++    },
++    Bug {
++        patch: "08-sprite-info-swap.patch",
++        what: "a sprite's info word holds its class where its region goes, and back",
++        checks: &[
++            test(
++                RENDER,
++                "sprites",
++                "the_hall_renders_its_sprites_as_the_cpu_casts_them",
++            ),
++            test(
++                RENDER,
++                "sprites_look",
++                "light_and_fog_reach_a_sprite_by_its_region_without_contrast",
++            ),
++        ],
++        known_miss: None,
++    },
++    Bug {
++        patch: "09-region-light-transposed.patch",
++        what: "the light pass reads region r's light at r % 4, r / 4: regions 1 to 3 lit full",
++        checks: &[
++            test(
++                RENDER,
++                "light_model",
++                "the_light_model_is_the_cpus_on_every_unambiguous_pixel",
++            ),
++            test(
++                RENDER,
++                "first_person",
++                "a_known_room_renders_with_depth_info_and_sky_as_the_cpu_computes_them",
++            ),
++        ],
++        known_miss: None,
++    },
++    Bug {
++        patch: "10-fog-ahead-not-along-ray.patch",
++        what: "fog takes the distance ahead, not along the pixel's ray: too thin off centre",
++        checks: &[
++            test(
++                RENDER,
++                "light_model",
++                "fog_is_the_cpus_mix_toward_each_regions_colour",
++            ),
++            test(
++                RENDER,
++                "look_fog_tone",
++                "fog_moves_monotonically_toward_its_colour_with_depth_along_probe_rows",
++            ),
++        ],
++        known_miss: None,
++    },
++    Bug {
++        patch: "11-tone-start-compression.patch",
++        what: "the tone curve's compression starts at 0.8 + F90, not 0.8 - F90",
++        checks: &[
++            test(
++                RENDER,
++                "look_fog_tone",
++                "the_tone_curve_is_within_one_level_of_the_cpu_reference_on_sky_ramps",
++            ),
++            test(
++                RENDER,
++                "sprites",
++                "each_of_the_eight_rotations_shows_from_its_own_view",
++            ),
++        ],
++        known_miss: None,
++    },
++    Bug {
++        patch: "12-palette-cell-rounded.patch",
++        what: "the palette pass rounds each code to the nearest table cell",
++        checks: &[test(
++            RENDER,
++            "look_checks",
++            "with_the_palette_on_every_pixel_is_the_palette_colour_the_cpu_table_gives",
++        )],
++        known_miss: None,
++    },
++];
++
++/// The bug of case `render-bug-<n>`, if `case` is one.
++pub(crate) fn bug(case: &str) -> Option<(usize, &'static Bug)> {
++    let n: usize = case.strip_prefix("render-bug-")?.parse().ok()?;
++    let bug = BUGS.get(n.checked_sub(1)?)?;
++    Some((n, bug))
++}
++
++/// Runs case `render-bug-<n>` in `ws`, a fresh copy of the workspace.
++pub(crate) fn run(root: &Path, ws: &Path, case: &str) -> Result<String, String> {
++    let (n, bug) = bug(case).ok_or_else(|| format!("unknown case {case}"))?;
++    keep_times(root, ws)?;
++    mark_planted(root, ws)?;
++    apply(root, ws, bug.patch)?;
++    let mut passed = Vec::new();
++    for check in bug.checks {
++        let (succeeded, output) = run_check(root, ws, check)?;
++        match verdict(succeeded, &output, check) {
++            Verdict::Caught(why) => {
++                let check = name(check);
++                return Ok(match bug.known_miss {
++                    None => format!("caught by a general check: {check} ({why})"),
++                    Some(miss) => format!(
++                        "a known miss ({miss}), caught by the room's check: {check} ({why})"
++                    ),
++                });
++            }
++            Verdict::Passed => passed.push(name(check)),
++            Verdict::NoAdapter(why) => {
++                return Err(format!(
++                    "{NOT_RUN} {case} could not run here: {} needs a GPU adapter ({why})",
++                    name(check)
++                ));
++            }
++            Verdict::DidNotRun(why) => {
++                return Err(format!(
++                    "render bug {n} ({}): {} did not run: {why}",
++                    bug.patch,
++                    name(check)
++                ));
++            }
++        }
++    }
++    Err(format!(
++        "render bug {n} ({}: {}) passed {}",
++        bug.patch,
++        bug.what,
++        passed.join(", ")
++    ))
++}
++
++/// A check's name as the bug-by-check table gives it.
++fn name(check: &Check) -> String {
++    match check.target {
++        Target::Lib => format!("{} (lib) {}", check.package, check.test),
++        Target::Test(file) => format!("{} tests/{file}.rs {}", check.package, check.test),
++    }
++}
++
++/// The text of `xtask/selftest/render-bugs/<patch>`.
++fn read_patch(root: &Path, patch: &str) -> Result<String, String> {
++    let file = root.join("xtask/selftest/render-bugs").join(patch);
++    fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))
++}
++
++/// Gives each file of the copy `ws` the modification time of its original
++/// in `root`, as `fs::copy` does on macOS but not on Linux, so that on
++/// every OS a case rebuilds only the crates [`mark_planted`] marks, and
++/// what depends on them, not the whole workspace.
++fn keep_times(root: &Path, ws: &Path) -> Result<(), String> {
++    for copied in util::walk_all(ws) {
++        let rel = copied.strip_prefix(ws).map_err(|e| e.to_string())?;
++        let modified = fs::metadata(root.join(rel))
++            .and_then(|m| m.modified())
++            .map_err(|e| format!("{}: {e}", rel.display()))?;
++        fs::File::options()
++            .write(true)
++            .open(&copied)
++            .and_then(|f| f.set_modified(modified))
++            .map_err(|e| format!("{}: {e}", copied.display()))?;
++    }
++    Ok(())
++}
++
++/// Marks, in the copy `ws`, every file that any bug plants into as changed
++/// now. Cargo knows a workspace member by its path inside the workspace,
++/// not by where the copy is, so in the shared target directory an earlier
++/// case's build of a crate, its bug in it, would otherwise pass for fresh
++/// wherever the copy has the tree's older times ([`keep_times`]). Only
++/// these files are ever planted into, so their crates are the only ones an
++/// earlier case can have built differently.
++fn mark_planted(root: &Path, ws: &Path) -> Result<(), String> {
++    let now = SystemTime::now();
++    for bug in &BUGS {
++        let text = read_patch(root, bug.patch)?;
++        for file in patch_file::parse(&text).map_err(|e| format!("{}: {e}", bug.patch))? {
++            let path = ws.join(&file.path);
++            fs::File::options()
++                .write(true)
++                .open(&path)
++                .and_then(|f| f.set_modified(now))
++                .map_err(|e| format!("{}: {e}", path.display()))?;
++        }
++    }
++    Ok(())
++}
++
++/// Plants `xtask/selftest/render-bugs/<patch>` in the copy `ws`
++/// (`selftest_render_apply.rs`).
++fn apply(root: &Path, ws: &Path, patch: &str) -> Result<(), String> {
++    let text = read_patch(root, patch)?;
++    patch_file::apply(ws, &text).map(|_| ()).map_err(|e| {
++        format!("{patch} no longer applies (refresh it against the code it plants into): {e}")
++    })
++}
++
++/// Runs one check in `ws`; returns whether it passed and its output.
++fn run_check(root: &Path, ws: &Path, check: &Check) -> Result<(bool, String), String> {
++    let mut cmd = util::cargo(ws);
++    cmd.args(["test", "-p", check.package]);
++    match check.target {
++        Target::Lib => cmd.arg("--lib"),
++        Target::Test(file) => cmd.args(["--test", file]),
++    };
++    if util::on_ci() {
++        cmd.arg("--locked");
++    }
++    cmd.arg("--target-dir")
++        .arg(root.join("target/selftest/target"))
++        .args(["--", "--exact", check.test])
++        .env("ENG_REQUIRE_GPU", "1");
++    let out = cmd
++        .output()
++        .map_err(|e| format!("cannot run cargo test: {e}"))?;
++    Ok((
++        out.status.success(),
++        format!(
++            "{}{}",
++            String::from_utf8_lossy(&out.stdout),
++            String::from_utf8_lossy(&out.stderr)
++        ),
++    ))
++}
++
++/// What one check's run says about the bug.
++#[derive(Debug, PartialEq, Eq)]
++enum Verdict {
++    /// The check failed as a test: the bug is caught. Its first lines.
++    Caught(String),
++    /// The check ran and passed.
++    Passed,
++    /// The check needs an adapter this machine lacks.
++    NoAdapter(String),
++    /// It did not run as a test: no build, or the test is gone.
++    DidNotRun(String),
++}
++
++fn verdict(succeeded: bool, output: &str, check: &Check) -> Verdict {
++    let ran = format!("test {} ... ", check.test);
++    let line = output.lines().find(|l| l.starts_with(&ran));
++    match (succeeded, line) {
++        (true, Some(l)) if l.ends_with("ok") => Verdict::Passed,
++        (true, _) => Verdict::DidNotRun(format!("`{}` is not a test of its target", check.test)),
++        (false, Some(l)) if l.ends_with("FAILED") => {
++            if let Some(why) = output.lines().find(|l| l.contains("[E-NO-ADAPTER]")) {
++                return Verdict::NoAdapter(why.trim().to_string());
++            }
++            Verdict::Caught(panic_message(output, check.test))
++        }
++        (false, _) => Verdict::DidNotRun(util::tail(output, 15)),
++    }
++}
++
++/// The panic message of `test` in a libtest output, one line.
++fn panic_message(output: &str, test: &str) -> String {
++    let header = format!("---- {test} stdout ----");
++    let mut lines = output.lines().skip_while(|l| l.trim() != header).skip(1);
++    let message: Vec<&str> = lines
++        .by_ref()
++        .skip_while(|l| !l.contains("panicked at"))
++        .skip(1)
++        .take_while(|l| !l.trim().is_empty() && !l.starts_with("note:"))
++        .take(2)
++        .collect();
++    let text = message.join(" ");
++    let text = text.trim();
++    if text.chars().count() > 160 {
++        format!("{}...", text.chars().take(160).collect::<String>())
++    } else {
++        text.to_string()
++    }
++}
++
++#[cfg(test)]
++#[path = "selftest_render_tests.rs"]
++mod tests;
+diff --git a/xtask/src/selftest_render_apply.rs b/xtask/src/selftest_render_apply.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..d01e57bbdb7a88d8891e05a082be205f18773a97
+--- /dev/null
++++ b/xtask/src/selftest_render_apply.rs
+@@ -0,0 +1,218 @@
++//! How `selftest render-bug-<n>` plants its bug in the workspace copy: a
++//! unified diff applied in xtask, not by `git apply`, which run inside the
++//! copy would find the real tree's repository above it. Only what the bug
++//! patches need: changes to files that exist, each hunk found by its exact
++//! old lines (context and removed), wherever they now are in the file, and
++//! only if they are there once.
++
++use std::fs;
++use std::path::Path;
++
++/// One file's changes: its path from the workspace root, and its hunks as
++/// (old lines, new lines), each line with its newline.
++#[derive(Debug, PartialEq, Eq)]
++pub(super) struct FilePatch {
++    pub path: String,
++    pub hunks: Vec<(String, String)>,
++}
++
++/// The files and hunks of `patch`, a `git diff` of changes to existing
++/// files. Anything else (a new or deleted file, a line with no newline at
++/// the end of a file, a line that is not in a hunk's format) is refused.
++pub(super) fn parse(patch: &str) -> Result<Vec<FilePatch>, String> {
++    let mut files: Vec<FilePatch> = Vec::new();
++    let mut lines = patch.split_inclusive('\n').peekable();
++    while let Some(line) = lines.next() {
++        if let Some(path) = line.strip_prefix("+++ ") {
++            let path = path.trim_end();
++            let Some(path) = path.strip_prefix("b/") else {
++                return Err(format!("only changes to files that exist: +++ {path}"));
++            };
++            files.push(FilePatch {
++                path: path.to_string(),
++                hunks: Vec::new(),
++            });
++        } else if line.starts_with("--- ") && line.trim_end() == "--- /dev/null" {
++            return Err("only changes to files that exist: a new file".into());
++        } else if let Some(header) = line.strip_prefix("@@ -") {
++            let file = files
++                .last_mut()
++                .ok_or("a hunk before its file's +++ line")?;
++            let (old_lines, new_lines) = counts(header).ok_or_else(|| {
++                format!(
++                    "{}: a hunk header that does not parse: {}",
++                    file.path,
++                    line.trim_end()
++                )
++            })?;
++            let (mut old, mut new) = (String::new(), String::new());
++            let (mut o, mut n) = (0, 0);
++            while o < old_lines || n < new_lines {
++                let body = lines
++                    .next()
++                    .ok_or_else(|| format!("{}: a hunk cut short", file.path))?;
++                // An empty context line may come as a bare newline.
++                let context = body.strip_prefix(' ').or((body == "\n").then_some("\n"));
++                if let Some(text) = context {
++                    old.push_str(text);
++                    new.push_str(text);
++                    (o, n) = (o + 1, n + 1);
++                } else if let Some(text) = body.strip_prefix('-') {
++                    old.push_str(text);
++                    o += 1;
++                } else if let Some(text) = body.strip_prefix('+') {
++                    new.push_str(text);
++                    n += 1;
++                } else {
++                    return Err(format!("{}: not a hunk's line: {body:?}", file.path));
++                }
++            }
++            if (o, n) != (old_lines, new_lines) || lines.next_if(|l| l.starts_with('\\')).is_some()
++            {
++                return Err(format!(
++                    "{}: a hunk unlike its header, or a line with no newline at its end",
++                    file.path
++                ));
++            }
++            if old.is_empty() {
++                return Err(format!("{}: a hunk with no old lines", file.path));
++            }
++            file.hunks.push((old, new));
++        }
++    }
++    if files.is_empty() || files.iter().any(|f| f.hunks.is_empty()) {
++        return Err("the patch changes no file".into());
++    }
++    Ok(files)
++}
++
++/// The old and new line counts of a hunk header after its `@@ -`:
++/// `2,3 +2,4 @@ ...`, a count of 1 when it has no comma.
++fn counts(header: &str) -> Option<(usize, usize)> {
++    let mut parts = header.split(' ');
++    let count = |range: &str| match range.split_once(',') {
++        Some((_, n)) => n.parse().ok(),
++        None => range.parse::<usize>().ok().map(|_| 1),
++    };
++    let old = count(parts.next()?)?;
++    let new = count(parts.next()?.strip_prefix('+')?)?;
++    (parts.next() == Some("@@")).then_some((old, new))
++}
++
++/// `text` with `hunks` applied in turn: each one's old lines must appear in
++/// it exactly once, starting a line.
++pub(super) fn apply_hunks(
++    path: &str,
++    text: &str,
++    hunks: &[(String, String)],
++) -> Result<String, String> {
++    let mut text = text.to_string();
++    for (at, (old, new)) in hunks.iter().enumerate() {
++        let starts: Vec<usize> = text
++            .match_indices(old.as_str())
++            .map(|(i, _)| i)
++            .filter(|&i| i == 0 || text.as_bytes()[i - 1] == b'\n')
++            .collect();
++        match starts.as_slice() {
++            [start] => text.replace_range(*start..start + old.len(), new),
++            [] => return Err(format!("{path}: hunk {} no longer matches", at + 1)),
++            many => {
++                return Err(format!(
++                    "{path}: hunk {} matches {} places",
++                    at + 1,
++                    many.len()
++                ));
++            }
++        }
++    }
++    Ok(text)
++}
++
++/// Applies `patch` to the files under `ws`; returns the paths it changed.
++pub(super) fn apply(ws: &Path, patch: &str) -> Result<Vec<String>, String> {
++    let files = parse(patch)?;
++    let mut changed = Vec::new();
++    // Every file is patched in memory first, so that a refused hunk leaves
++    // the copy as it was.
++    let mut writes = Vec::new();
++    for file in &files {
++        if file
++            .path
++            .split('/')
++            .any(|part| part == ".." || part.is_empty())
++        {
++            return Err(format!("{}: not a path inside the workspace", file.path));
++        }
++        let at = ws.join(&file.path);
++        let text = fs::read_to_string(&at).map_err(|e| format!("{}: {e}", file.path))?;
++        let patched = apply_hunks(&file.path, &text, &file.hunks)?;
++        writes.push((at, patched));
++        changed.push(file.path.clone());
++    }
++    for (at, patched) in writes {
++        fs::write(&at, patched).map_err(|e| format!("{}: {e}", at.display()))?;
++    }
++    Ok(changed)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{apply_hunks, parse};
++
++    const PATCH: &str = "\
++diff --git a/crates/x/src/lib.rs b/crates/x/src/lib.rs
++index 1111111..2222222 100644
++--- a/crates/x/src/lib.rs
+++++ b/crates/x/src/lib.rs
++@@ -2,3 +2,3 @@ fn a() {
++     let b = 1;
++-    let c = b + 1;
+++    let c = b - 1;
++     c
++";
++
++    #[test]
++    fn a_hunk_is_its_old_and_new_lines() {
++        let files = parse(PATCH).unwrap();
++        assert_eq!(files.len(), 1);
++        assert_eq!(files[0].path, "crates/x/src/lib.rs");
++        assert_eq!(
++            files[0].hunks,
++            [(
++                "    let b = 1;\n    let c = b + 1;\n    c\n".to_string(),
++                "    let b = 1;\n    let c = b - 1;\n    c\n".to_string()
++            )]
++        );
++    }
++
++    #[test]
++    fn a_hunk_applies_where_its_old_lines_now_are() {
++        let hunks = &parse(PATCH).unwrap()[0].hunks;
++        // Two lines above it moved it from the line the header names.
++        let text = "// moved\n// down\nfn a() {\n    let b = 1;\n    let c = b + 1;\n    c\n}\n";
++        let done = apply_hunks("x", text, hunks).unwrap();
++        assert_eq!(done, text.replace("b + 1", "b - 1"));
++    }
++
++    #[test]
++    fn a_hunk_that_matches_nowhere_or_twice_is_refused() {
++        let hunks = &parse(PATCH).unwrap()[0].hunks;
++        let gone = apply_hunks("x", "fn a() {\n    let c = 2;\n}\n", hunks).unwrap_err();
++        assert_eq!(gone, "x: hunk 1 no longer matches");
++        let block = "    let b = 1;\n    let c = b + 1;\n    c\n";
++        let twice = apply_hunks("x", &format!("{block}{block}"), hunks).unwrap_err();
++        assert_eq!(twice, "x: hunk 1 matches 2 places");
++        // Inside a longer line is not a match.
++        let inside = format!("//{block}");
++        assert!(apply_hunks("x", &inside, hunks).is_err());
++    }
++
++    #[test]
++    fn only_changes_to_files_that_exist_are_taken() {
++        let new_file = "--- /dev/null\n+++ b/crates/x/src/new.rs\n@@ -0,0 +1 @@\n+fn n() {}\n";
++        assert!(parse(new_file).unwrap_err().contains("a new file"));
++        let no_newline = PATCH.replace("     c\n", "     c\n\\ No newline at end of file\n");
++        assert!(parse(&no_newline).unwrap_err().contains("no newline"));
++        assert!(parse("just text\n").is_err());
++    }
++}
+diff --git a/xtask/src/selftest_render_tests.rs b/xtask/src/selftest_render_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c77d3b32441217e809ef373530c1dbd4c3bda1a2
+--- /dev/null
++++ b/xtask/src/selftest_render_tests.rs
+@@ -0,0 +1,168 @@
++use std::collections::BTreeSet;
++use std::fs;
++use std::time::{Duration, SystemTime};
++
++use super::{BUGS, Check, Target, Verdict, bug, keep_times, patch_file, verdict};
++use crate::selftest::CASES;
++use crate::util;
++
++const CHECK: Check = Check {
++    package: "eng-render",
++    target: Target::Test("light_model"),
++    test: "the_light_model_is_the_cpus_on_every_unambiguous_pixel",
++};
++
++/// Every `render-bug-<n>` case has its bug, and every bug its case, its
++/// patch and at least one check; every patch in the directory is a bug's.
++#[test]
++fn each_case_has_its_bug_its_patch_and_its_checks() {
++    let cases: Vec<&str> = CASES
++        .iter()
++        .copied()
++        .filter(|c| c.starts_with("render-bug-"))
++        .collect();
++    assert_eq!(cases.len(), BUGS.len());
++    for (i, case) in cases.iter().enumerate() {
++        let (n, found) = bug(case).unwrap_or_else(|| panic!("{case} has no bug"));
++        assert_eq!((n, found), (i + 1, &BUGS[i]), "{case}");
++    }
++    assert_eq!(bug("render-bug-0"), None);
++    assert_eq!(bug("render-bug-13"), None);
++    let dir = util::root().unwrap().join("xtask/selftest/render-bugs");
++    let on_disk: BTreeSet<String> = fs::read_dir(&dir)
++        .unwrap()
++        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
++        .collect();
++    let named: BTreeSet<String> = BUGS.iter().map(|b| b.patch.to_string()).collect();
++    assert_eq!(on_disk, named, "the patches in {}", dir.display());
++    for (i, bug) in BUGS.iter().enumerate() {
++        assert!(
++            bug.patch.starts_with(&format!("{:02}-", i + 1)),
++            "{}",
++            bug.patch
++        );
++        assert!(!bug.checks.is_empty(), "{}", bug.patch);
++        let text = fs::read_to_string(dir.join(bug.patch)).unwrap();
++        let files = patch_file::parse(&text).unwrap_or_else(|e| panic!("{}: {e}", bug.patch));
++        assert!(
++            files.iter().all(|f| f.path.starts_with("crates/")),
++            "{}: a bug is planted in the crates only",
++            bug.patch
++        );
++    }
++}
++
++const CAUGHT: &str = "\
++running 1 test
++test the_light_model_is_the_cpus_on_every_unambiguous_pixel ... FAILED
++
++failures:
++
++---- the_light_model_is_the_cpus_on_every_unambiguous_pixel stdout ----
++
++thread 'the_light_model_is_the_cpus_on_every_unambiguous_pixel' panicked at crates/eng-render/tests/light_model.rs:180:9:
++(12, 40) region 1: lit 9.1 nits, the CPU's 4.6
++note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
++
++
++failures:
++    the_light_model_is_the_cpus_on_every_unambiguous_pixel
++
++test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out
++";
++
++#[test]
++fn a_check_that_fails_as_a_test_catches_the_bug() {
++    assert_eq!(
++        verdict(false, CAUGHT, &CHECK),
++        Verdict::Caught("(12, 40) region 1: lit 9.1 nits, the CPU's 4.6".into())
++    );
++    let passed = "test the_light_model_is_the_cpus_on_every_unambiguous_pixel ... ok\n\
++        test result: ok. 1 passed; 0 failed";
++    assert_eq!(verdict(true, passed, &CHECK), Verdict::Passed);
++}
++
++#[test]
++fn no_adapter_no_build_or_no_such_test_is_not_a_catch() {
++    let no_adapter = CAUGHT.replace(
++        "(12, 40) region 1: lit 9.1 nits, the CPU's 4.6",
++        "ENG_REQUIRE_GPU=1: [E-NO-ADAPTER] no GPU adapter matches ENG_GPU_ADAPTER=none",
++    );
++    assert!(matches!(
++        verdict(false, &no_adapter, &CHECK),
++        Verdict::NoAdapter(why) if why.contains("[E-NO-ADAPTER]")
++    ));
++    let no_build = "error[E0425]: cannot find value `width` in this scope\n\
++        error: could not compile `eng-render` (lib) due to 1 previous error";
++    assert!(matches!(
++        verdict(false, no_build, &CHECK),
++        Verdict::DidNotRun(why) if why.contains("could not compile")
++    ));
++    // `--exact` with a name that is no test runs nothing, and passes.
++    let none = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored";
++    assert!(matches!(verdict(true, none, &CHECK), Verdict::DidNotRun(_)));
++}
++
++/// A bug's patch applies to the copy and changes only what it names.
++#[test]
++fn a_bug_is_planted_in_the_copy_only() {
++    let ws = std::env::temp_dir().join(format!("xtask-render-bug-{}", std::process::id()));
++    let _ = fs::remove_dir_all(&ws);
++    let file = ws.join("crates/x/src/lib.rs");
++    fs::create_dir_all(file.parent().unwrap()).unwrap();
++    fs::write(
++        &file,
++        "fn a() {\n    let b = 1;\n    let c = b + 1;\n    c\n}\n",
++    )
++    .unwrap();
++    let patch = "\
++--- a/crates/x/src/lib.rs
+++++ b/crates/x/src/lib.rs
++@@ -2,3 +2,3 @@ fn a() {
++     let b = 1;
++-    let c = b + 1;
+++    let c = b - 1;
++     c
++";
++    assert_eq!(
++        patch_file::apply(&ws, patch).unwrap(),
++        ["crates/x/src/lib.rs"]
++    );
++    assert_eq!(
++        fs::read_to_string(&file).unwrap(),
++        "fn a() {\n    let b = 1;\n    let c = b - 1;\n    c\n}\n"
++    );
++    // Applied twice, its old lines are gone: refused, and nothing written.
++    let again = patch_file::apply(&ws, patch).unwrap_err();
++    assert_eq!(again, "crates/x/src/lib.rs: hunk 1 no longer matches");
++    let outside = patch.replace("crates/x/", "../x/");
++    assert!(
++        patch_file::apply(&ws, &outside)
++            .unwrap_err()
++            .contains("not a path inside")
++    );
++    let _ = fs::remove_dir_all(&ws);
++}
++
++/// The copy's files get their originals' times, which `fs::copy` keeps on
++/// macOS but not on Linux.
++#[test]
++fn the_copy_keeps_the_trees_times() {
++    let base = std::env::temp_dir().join(format!("xtask-render-times-{}", std::process::id()));
++    let _ = fs::remove_dir_all(&base);
++    let (root, ws) = (base.join("root"), base.join("ws"));
++    let then = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
++    for dir in [&root, &ws] {
++        fs::create_dir_all(dir.join("crates/x")).unwrap();
++        fs::write(dir.join("crates/x/lib.rs"), "fn a() {}\n").unwrap();
++    }
++    let original = fs::File::options()
++        .write(true)
++        .open(root.join("crates/x/lib.rs"))
++        .unwrap();
++    original.set_modified(then).unwrap();
++    keep_times(&root, &ws).unwrap();
++    let copied = fs::metadata(ws.join("crates/x/lib.rs")).unwrap();
++    assert_eq!(copied.modified().unwrap(), then);
++    let _ = fs::remove_dir_all(&base);
++}

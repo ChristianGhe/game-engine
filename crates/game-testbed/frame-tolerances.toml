@@ -1,0 +1,25 @@
+# How far a shot's frame record (rung 2, plan addition A1) may differ from
+# its reference off the pinned lavapipe, where it must be byte for byte the
+# same. Read by `tests/frame_record.rs`; eng-cli's `frame_record::Tolerances`
+# says what each bounds. A shot's own `[shot.<name>]` table sets only what
+# it raises over `[default]`.
+#
+# `[default]` is eng-cli's `Tolerances::DEFAULT` (a test holds them equal),
+# about three times what Metal (Apple M2 Pro) and the pinned lavapipe
+# differ by on the room's seven first-person shots (2026-11-09): every
+# object's pixels within 1 and its screen box the same, luminance within
+# 0.0035, at most 1.2% of the pixels in another histogram bin
+# (room-look-off, without the palette), probes within 3% of their depth
+# tolerance. The four top-down shots are the same bytes on both. CI's other
+# adapters may need a shot's own table.
+version = 1
+
+[default]
+pixels = 2
+edge_pixels = 0.1
+class_fraction = 0.01
+screen_box = 1
+min_pixels = 50
+luminance = 0.01
+contrast = 0.02
+histogram = 0.03

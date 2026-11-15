@@ -1332,3 +1332,64 @@ for the owner at G5)
 - **Cost:** about 6 h for the first run, 1 h for the redone follow-up,
   1.2M tokens in all with three reviews. It counts as one session (30.5
   of 52).
+
+**TA1: the frame record** (56ed72c, af05616, e27e4a9, 29bc9ab; A1)
+- **Built** by one builder in a worktree pinned to d56368d. Its first
+  attempt was lost to the scratchpad cleanup and rebuilt, this time
+  committed in parts.
+- **`shot` and `video` write `<out>.frame.json`,** version 1. A video's
+  file holds a `frames` list. The record gives:
+  - the camera;
+  - every object the extraction asked for, by (class, id) and name, with
+    its world box, visible pixels, screen box, mean linear luminance (Rec.
+    709 from the output's sRGB), and Michelson contrast against a 4 px ring
+    around its screen box;
+  - an 8×6 grid of depth probes;
+  - a 16-bin luminance histogram on the sRGB scale;
+  - per-class pixel counts by thirds, for A2's rule 3;
+  - `unlisted` keys.
+
+  Top-down shots get a reduced record.
+- **The reader and the comparison:**
+  - a strict reader, `FrameRecord::parse`, with its own JSON parser;
+  - `FrameRecord::compare` against `Tolerances`, with per-shot overrides
+    in `crates/game-testbed/frame-tolerances.toml`.
+- **The tests:**
+  - every shot rendered twice must give byte-identical records;
+  - references live in `golden/frames/` or `ENG_FRAME_DIR`. They are
+    exact on the pinned configuration and within tolerances elsewhere,
+    all or nothing, and the `golden = "pending"` marker is honoured as in
+    T16;
+  - three planted bugs, drawn through the real renderer: the marker not
+    drawn (its 1,326 px go to the floor and the pillar); a pillar face not
+    drawn (the hidden crate appears, 440 px); the marker drawn black
+    (luminance 0.040 to 0.002, contrast 0.08 to 0.91);
+  - a write-then-parse proptest.
+- **Metal against the pinned lavapipe:** within the default tolerances on
+  all 11 shots, with the worst use at 40% of a tolerance. Debian arm64
+  lavapipe is nearly identical.
+- **No reference records exist yet.** Every shot passes as "no reference
+  yet" until the owner commits `golden/frames/` at G6 (the G6 row now
+  says so).
+- **Mesa's shader cache:** two lavapipe processes side by side corrupted
+  it, and every later lavapipe process then died. That is a likely cause
+  of the lost shot processes T12 and T16 saw, and maybe CI's one on the
+  arm runner. TA1's harness turns the cache off for its own children; the
+  native job should turn it off job-wide at G5 (T21's row).
+- **Review:** a fresh reviewer approved it (16 min, 198k tokens). The
+  follow-up honours the pending marker, adds the proptest, and adds a
+  usage line.
+- **Known limits,** carried to TA4's table:
+  - a thing of 2 px or less, or 16 px spread over a large box, can vanish
+    within tolerance;
+  - a drawn-black object under 50 px is not compared;
+  - luminance tolerance is loose for dark objects;
+  - top-down records cannot see a missing 16 px dot.
+- **A decision for the owner, for TA2:** A2's rule 1 as drafted ("contrast
+  at least 0.1") fails the room's own marker at spawn (0.079), because
+  the 4 px ring takes in the dark pillar behind it. Weber contrast would
+  give 0.146, and at room-sprites the marker reaches 0.44. The rule needs
+  a different contrast, ring or threshold. TA2 will propose one for the
+  owner to approve with the rules.
+- **Cost:** about 2 h 15 min, then a 30 min rebuild and a follow-up, 680k
+  tokens. It counts as one session at 2 units (32.5 of 52).

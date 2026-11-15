@@ -1217,3 +1217,64 @@ for the owner at G5)
     `LP_NUM_THREADS=0`.
 - **Cost:** the builder took about 2 h in three runs, 647k tokens. It
   counts as one session, with TA3 as half of one: 28.5 of 52.
+
+**A pause, and a lesson about the scratchpad** (2026-11-09 to 11-15)
+- The owner paused the work. Three builders were stopped mid-task:
+  T20's follow-up, TA1, and the mutation-gap follow-up.
+- During the six days macOS cleaned `/private/tmp`, deleting files left
+  unaccessed for about three days.
+  - **Lost:** the three worktrees' `.git` links and `target/`, and every
+    uncommitted edit, including all of TA1's work.
+  - **Safe:** commits survived in the shared object store, among them
+    T20's e025e9a and T19b's ccc06fb.
+- **Recovery:** the worktrees were pruned and recreated at their last
+  commits, and each builder redid its uncommitted work from memory.
+  Builders now commit work in progress early.
+
+**T20: notices and dist** (fae8bfa, follow-up 7ad3aef; decision 17, O5;
+for the owner at G5)
+- **Three patches,** applied in one commit, against 88a3345:
+  - `t20-xtask-notices-dist.patch` (SHA-256 `a1e97f7f…`);
+  - `t20-about.patch` (`3fb1ccae…`): `about.toml` and `about.hbs`, to be
+    protected;
+  - `t20-workflow.patch` (`e1c0be69…`).
+- **`cargo xtask notices`:**
+  - checks `about.toml` against `deny.toml`'s licence list, refusing any
+    other key;
+  - runs cargo-about 0.9.3 offline;
+  - fails with `[E-NOTICES]` on a licence off the list;
+  - checks that every normal-dependency crate of the three playable
+    targets is listed.
+
+  It lists 164 crates under five licences: MIT, Apache-2.0, ISC,
+  Unicode-3.0 and Zlib.
+- **`cargo xtask dist`** makes a reproducible `.tar.gz`, written by xtask
+  itself. It holds the stripped binary, its debug info, `version.json`
+  and the notices. CI's `native: dist` step unpacks it and runs the
+  binary.
+- **Checked:**
+  - on this Mac and in arm64 Linux Docker: the archive builds and the
+    unpacked binary runs `--version --json` and
+    `run --headless --ticks 60`;
+  - the archive is byte-identical across runs.
+
+  Not run anywhere yet: Windows, and x86_64 Linux, which links with
+  rust-lld. The first CI run after G5 shows them.
+- **Departures from decision 17,** found and carried to T22:
+  - Linux strips with `objcopy`, since split DWARF leaves the line tables
+    in the binary;
+  - Windows keeps `strip="none"`, or no PDB is written;
+  - cargo-about needs `--features cli`.
+- **Review:** a fresh reviewer (29 min, 235k tokens) found no blockers.
+  The follow-up took its points: an honest header, a strict
+  `about.toml`, an error rather than a panic, and tests.
+- **Two proposals for the owner:**
+  - The notices now end with a section on the Rust standard library,
+    with its licence texts. Every binary contains std, and Cargo's tools
+    cannot see it. This is a default the owner may drop.
+  - About 24 crates ship no licence file, so their MIT text keeps the
+    template's unfilled `<year> <copyright holders>` line. The owner
+    accepts this or adds per-crate clarifications later.
+- **Carries** are in the plan's T21 and T22 rows.
+- **Cost:** the builder took about 2 h 25 min in three runs, 483k tokens.
+  It counts as one session (29.5 of 52).

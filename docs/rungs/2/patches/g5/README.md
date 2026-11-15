@@ -263,9 +263,29 @@ The rebases, in full:
    job: decide before the push.
 3. **Mutation exclusions** (T19b, `t19b-mutants-exclusions.md`):
    `.cargo/mutants.toml` is empty, so criterion 19 fails on the weekly
-   run until the 54 missed mutants are killed or excluded: (1) a grid
-   task now for breaks (A) and (B) (proposed), (2) exclude all 54 and fix
-   in rung 3, or (3) keep the criterion failing.
+   run until the 52 missed mutants are killed or excluded (22 equivalent,
+   30 open in the grid's step 4; T23 killed 2 of the 32 open): (1) a grid
+   task now for breaks (A) and (B) (proposed), (2) exclude all 52 and fix
+   in rung 3, or (3) keep the criterion failing. T23's review confirmed
+   (A) and (B) are real but stop free, hit, and let no hull through solid
+   (exact checks, 60,000 cases); the room has no off-axis geometry, so
+   rung 2's room is unaffected.
+3a. **Criterion 3's wording** (`collision-grid`, `acceptance.json`; not in
+   patch 24 yet, a proposal). T23 found that the brute-force oracle
+   repeats the sweep's rules, so matching its bits checks candidate cells
+   and the first hit, not the rules, and that the pass-through check
+   sampled 32 points; it is now exact (`tests/oracle/through.rs`). The
+   proposed text: "eng-collision-grid passes the collision conformance
+   suite with ADR-0024's contact rule (exact on axis faces, within
+   CONTACT_GAP off the axes) on proptest maps and sweeps, and no trace
+   passes through solid: the hull shrunk by 1e-6 m is free on the whole
+   way to each stop (its own trace, the path clipped against every
+   primitive, and samples). It also gives the brute-force oracle's Trace
+   bits there, which checks its candidate cells and its choice of first
+   hit; the oracle repeats the sweep's rules, so it does not check them."
+   With option (2) or (3) of item 3, append: "except the open off-axis
+   cases (A) and (B) of `t19b-mutants-exclusions.md`, which stop free,
+   hit, and pass through nothing."
 4. **ADR amendments** (T22, dated 2026-11-15, all Proposed): ADR-0020;
    ADR-0022 Amendment 1 (T13: the platform frees the cursor before
    `FocusLost`; a grab asked without focus waits for it) and Amendment 2

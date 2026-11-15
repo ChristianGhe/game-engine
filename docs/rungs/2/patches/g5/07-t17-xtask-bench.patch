@@ -1,9 +1,9 @@
 diff --git a/xtask/src/bench.rs b/xtask/src/bench.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..e90fb639004709e14d9d4b143271db6f9e3ad657
+index 0000000000000000000000000000000000000000..405119fe0af241234a0bac9d2010750f618bea5a
 --- /dev/null
 +++ b/xtask/src/bench.rs
-@@ -0,0 +1,488 @@
+@@ -0,0 +1,496 @@
 +//! `cargo xtask bench [--base REV]` and `cargo xtask ci --job bench` (rung 2,
 +//! decision 14 and criterion 15): gungraun's instruction counts for the
 +//! pushed head and for the push's base, built and run on one runner, and
@@ -291,7 +291,9 @@ index 0000000000000000000000000000000000000000..e90fb639004709e14d9d4b143271db6f
 +
 +/// The `bench` step's verdict over `rows`, the excuses last: failed if any
 +/// flagged benchmark has no excuse, pending if one waits for the owner's
-+/// acceptance on `main`, else passed.
++/// acceptance on `main`, pending too if no benchmark has a base count (a
++/// base without `crates/eng-bench/benches/`, which compares nothing),
++/// else passed.
 +pub fn verdict(rows: &[Row]) -> Result<Done, String> {
 +    let mut lines: Vec<String> = rows.iter().map(Row::line).collect();
 +    lines.extend(warnings(rows));
@@ -316,6 +318,12 @@ index 0000000000000000000000000000000000000000..e90fb639004709e14d9d4b143271db6f
 +        return Ok(Done::Pending(format!(
 +            "{n} benchmarks; {} excused once the owner accepts their ADR on main\n{lines}",
 +            waiting.join(", ")
++        )));
++    }
++    if rows.iter().all(|r| r.base.is_none()) {
++        return Ok(Done::Pending(format!(
++            "{n} benchmarks, none with a base count: the base has no {BENCHES}, so nothing \
++             was compared (pending, not a pass)\n{lines}"
 +        )));
 +    }
 +    Ok(Done::Pass(format!(
@@ -1064,10 +1072,10 @@ index 0000000000000000000000000000000000000000..45cb8115eb150bf5b686afceb3566ea1
 +{"baselines":[],"benchmark_file":"crates/eng-bench/benches/sim/main.rs","function_name":"room_build","group":"build","kind":"LibraryBenchmark","module_path":"sim::build::room_build","version":"7","profiles":[{"tool":"Callgrind","data":{"total":{"metrics":{"Ir":{"values":{"new":229056}},"EstimatedCycles":{"values":{"new":373128}}},"regressions":[]}}}]}
 diff --git a/xtask/src/bench_tests.rs b/xtask/src/bench_tests.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..4a94b308039c796ca94de44bed1fcc89dfaeb29e
+index 0000000000000000000000000000000000000000..3f203adfe5aaaf8bdf1f3534b06023415f511d2f
 --- /dev/null
 +++ b/xtask/src/bench_tests.rs
-@@ -0,0 +1,374 @@
+@@ -0,0 +1,390 @@
 +//! The bench job's rules (`bench.rs`, `bench_adr.rs`): reading gungraun's
 +//! summaries, the 5% limit, the owner-accepted ADR exception, when the job
 +//! is pending, and the workflow that runs it. The git side, from temporary
@@ -1298,14 +1306,30 @@ index 0000000000000000000000000000000000000000..4a94b308039c796ca94de44bed1fcc89
 +    );
 +}
 +
++/// A base without benchmarks (as GitHub's main before rung 2) makes every
++/// one new, and compares nothing: pending, never a pass (T23's review).
 +#[test]
-+fn a_base_without_benchmarks_makes_every_one_new() {
-+    let rows = compare(&[count("a::b", 5)], &[], &[]);
-+    let detail = passed(&rows);
++fn a_base_without_benchmarks_makes_every_one_new_and_is_pending() {
++    let rows = compare(&[count("a::b", 5), count("a::c", 7)], &[], &[]);
++    let Ok(Done::Pending(detail)) = verdict(&rows) else {
++        panic!("nothing compared is no pass: {:?}", verdict(&rows));
++    };
 +    assert!(
-+        detail.starts_with("1 benchmarks, none more than 5% over"),
++        detail.starts_with("2 benchmarks, none with a base count"),
 +        "{detail}"
 +    );
++    assert!(detail.contains("a::b: - -> 5, new"), "{detail}");
++    assert!(
++        matches!(verdict(&[]), Ok(Done::Pending(_))),
++        "no rows either"
++    );
++    // One base count is enough to compare, and the new ones pass with it.
++    let rows = compare(
++        &[count("a::b", 5), count("a::c", 7)],
++        &[count("a::c", 7)],
++        &[],
++    );
++    let detail = passed(&rows);
 +    assert!(detail.contains("a::b: - -> 5, new"), "{detail}");
 +}
 +
@@ -1476,7 +1500,7 @@ index 27de6902583dab2676c3af16e89dce78535b9ea3..032dfcfdca43a4fc1109c0d4fe8c0e05
          "all" => {
              lint(&root, &mut steps);
 diff --git a/xtask/src/main.rs b/xtask/src/main.rs
-index 0dc409da5819a062d86d8e76aea06b2e41f0ee2b..9edf82ebc49d60cff67cbe684ee0bc84ab1e218b 100644
+index 48a7ee6f4b3e8e1128ff5ba56261fd46a2097589..c822cda4199d7cad675eefc6b8eb5d0e4ada4d58 100644
 --- a/xtask/src/main.rs
 +++ b/xtask/src/main.rs
 @@ -8,6 +8,9 @@
@@ -1489,7 +1513,7 @@ index 0dc409da5819a062d86d8e76aea06b2e41f0ee2b..9edf82ebc49d60cff67cbe684ee0bc84
  mod ci;
  mod ci_durations;
  mod ci_native;
-@@ -40,7 +43,7 @@ use std::process::ExitCode;
+@@ -42,7 +45,7 @@ use std::process::ExitCode;
  
  const USAGE: &str = "\
  cargo xtask quick                      fmt, clippy, arch, size, docs, tests, replays
@@ -1498,7 +1522,7 @@ index 0dc409da5819a062d86d8e76aea06b2e41f0ee2b..9edf82ebc49d60cff67cbe684ee0bc84
  cargo xtask arch-check                 layering, core-set purity, crate-root attributes
  cargo xtask size-check                 warn over 500 lines, fail over 1000
  cargo xtask docs-check                 AGENTS.md at most 150 lines, no CLAUDE.md
-@@ -48,6 +51,7 @@ cargo xtask replay [--regen] [--target T] [--out DIR]
+@@ -50,6 +53,7 @@ cargo xtask replay [--regen] [--target T] [--out DIR]
                                         run the testbed scenarios, compare hash streams
  cargo xtask compare-hashes DIR DIR...  cross-architecture equality of hash streams
  cargo xtask selftest [CASE]            deliberate violations must fail
@@ -1506,7 +1530,7 @@ index 0dc409da5819a062d86d8e76aea06b2e41f0ee2b..9edf82ebc49d60cff67cbe684ee0bc84
  cargo xtask acceptance DIR             compute acceptance `passes` from CI job reports
  cargo xtask oracle-check --base REV --head REV
                                         CI: protected changes need the owner
-@@ -83,6 +87,8 @@ fn main() -> ExitCode {
+@@ -86,6 +90,8 @@ fn main() -> ExitCode {
          ["selftest", rest @ ..] => {
              selftest::cases(rest).and_then(|cases| run_lock::run(|| selftest::main(&cases)))
          }

@@ -93,10 +93,10 @@ index e3ef0a154296ea4c7b52a8c250da0f2388b9f7af..ea1d93d0c1a82cf4f46ed6c0255a980f
 +/about.hbs @ChristianGhe
 +/crates/game-testbed/tests/gpu_report.rs @ChristianGhe
 diff --git a/budgets.toml b/budgets.toml
-index 892b23e7666a2de20b72ff4c7632d6d564f57aab..db48a0313d58ff1a9f99f07f70559be20e18d601 100644
+index 892b23e7666a2de20b72ff4c7632d6d564f57aab..4b0e14aeda9ae0881a30dfe4464b82ecca4c4865 100644
 --- a/budgets.toml
 +++ b/budgets.toml
-@@ -19,8 +19,30 @@ max_pipeline_switches_per_frame = 12
+@@ -19,8 +19,32 @@ max_pipeline_switches_per_frame = 12
  max_bind_group_switches_per_frame = 8
  max_upload_bytes_per_frame = 2048
  
@@ -104,9 +104,10 @@ index 892b23e7666a2de20b72ff4c7632d6d564f57aab..db48a0313d58ff1a9f99f07f70559be2
 +# [gpu]'s. About four times the room's shot, as [gpu] is for the top-down
 +# view: one chunk and three things through the look's graph, 7 draws, 7
 +# pipeline switches, 15 bind-group switches and 736 bytes offscreen (T11,
-+# T12); `play`'s presented frame adds the present pass, 8/7/16. Each sprite
-+# adds 1 draw, 1 pipeline switch, 2 bind-group switches and 32 bytes; each
-+# chunk 16 bytes.
++# T12); `play`'s presented frame adds the present pass: 8 draws, 8
++# pipeline switches, 16 bind-group switches and 736 bytes (measured on
++# Metal by the native window-room step). Each sprite adds 1 draw, 1
++# pipeline switch, 2 bind-group switches and 32 bytes; each chunk 16 bytes.
 +[gpu.first_person]
 +max_draws_per_frame = 28
 +max_pipeline_switches_per_frame = 28
@@ -119,9 +120,10 @@ index 892b23e7666a2de20b72ff4c7632d6d564f57aab..db48a0313d58ff1a9f99f07f70559be2
 +# `mutants_job_minutes` against the bench job and the slowest mutants shard
 +# (rung 2, the summary's bench-duration and mutants-duration); going over
 +# is reported, not failed. `bench_job_minutes` and `mutants_job_minutes`
-+# are placeholders, measured on no CI run yet: T24 sets them from the first
-+# runs after G5. `mutants_shard_minutes` is each mutants shard's time box: a
-+# shard that reaches it stops and fails (rung 2, decision 15).
++# are placeholders, measured on no CI run yet: T24 proposes figures from
++# the first runs after G5, and the owner sets them. `mutants_shard_minutes`
++# is each mutants shard's time box: a shard that reaches it stops and fails
++# (rung 2, decision 15).
  [ci]
  pr_tier_minutes = 15
  native_job_minutes = 25

@@ -3,13 +3,17 @@
 Gate G5 is sitting 2's one set of protected-path changes: every reviewed
 patch in `docs/rungs/2/patches/`, stacked, with small rebases where two of
 them meet, T21's own additions and T23's fix, as 25 patches that apply
-in order. The owner applies them in their own terminal (the guard refuses an agent's
-`git apply` of protected paths), checks, commits once (O1: `current.txt`
-becomes `2` in G5's commit), and pushes.
+in order. The owner applies them in the main checkout, in their own
+terminal: agents never apply them there (the guard refuses an agent's
+edits to protected paths in the project; agents built and checked them
+in scratch clones outside it). The owner checks, commits once (O1:
+`current.txt` becomes `2` in G5's commit), and pushes, in the order
+"Apply and verify" gives.
 
-Built and checked in a scratch clone of b433f85 on the M2 Pro, macOS 26,
-Metal (2026-11-15). Linux, Windows and the pinned lavapipe were not run:
-the first CI run after the push (T24) is their first.
+Built in a scratch clone of b433f85, and checked again on main at
+bca104a, on the M2 Pro, macOS 26, Metal (2026-11-15). Linux, Windows
+and the pinned lavapipe were not run: the first CI run after the push
+(T24) is their first.
 
 ## Before applying
 
@@ -48,7 +52,7 @@ earlier one, as listed; nothing else changed.
 | 04 | `04-t13-conformance.patch` | `797639f9e26dd11d87edb5281fbfdb4d72b663ba0867c869deb8d40b8e3c016e` | reviewed | the platform's cursor and fullscreen requests suite, `conformance/requests.rs`, and three test files (T13) |
 | 05 | `05-t16-shots.patch` | `f053ac5a3daed2e40bf271cadfdb91ec7871b7257cf8097e447437e60bd90ec6` | reviewed | the shots harness reads `shots.toml`, the `golden = "pending"` marker, `[flip.<shot>]`, `tests/look.rs` (T16, TA3) |
 | 06 | `06-t18-docs-lint.patch` | `7138e5de2811121cb444678fbac3a65c363b6b6ff41e169100d663b12cef5115` | reviewed | docs-lint in `docs-check`, selftest `docs-stale-path` (T18) |
-| 07 | `07-t17-xtask-bench.patch` | `9f6bca4b39f6f80b23ea797e6a4cc6ffaa79c0019a082ada65ddcbddeadbe619` | reviewed | `cargo xtask bench`, `ci --job bench` (T17; with 08 in one commit) |
+| 07 | `07-t17-xtask-bench.patch` | `a34b3a998154c4be94944abf891345e34182917a1b1f7ea2ffe0e748f957596c` | changed in T23 | `cargo xtask bench`, `ci --job bench` (T17; with 08 in one commit); T23's review: pending, never a pass, when no benchmark has a base count (below) |
 | 08 | `08-t17-workflow-bench.patch` | `bb5201a2283853195b508978b9ef8b2a5d1ac22977b3c79ec5e4fa4af4cb4973` | reviewed | the `bench` job (valgrind, gungraun-runner 0.20.0) (T17) |
 | 09 | `09-t19-xtask-mutants.patch` | `1df06ba805ac80c1377c5821a1a4394e44b46fc63fd327cd1b8a3471468f876b` | rebased | `cargo xtask mutants`, `ci --job mutants`, the summary's `mutants-shards`, selftest `mutant-missed` (T19) |
 | 10 | `10-t19-workflow-mutants.patch` | `367ddb3aec1e28777b8bcdef6b97d0caba35ba9459e58c1e89fb1a4214e4bb4f` | rebased | the four-shard `mutants` job, the weekly schedule and dispatch, cargo-mutants in `selftest` (T19) |
@@ -64,7 +68,7 @@ earlier one, as listed; nothing else changed.
 | 20 | `20-t21-unsafe-scan.patch` | `1e9b6439785d23a1b764f85c6c7794bd22d5dd0d66dba8ad6290f11cb54d57c0` | T21 | `arch-check`'s `[E-ARCH-UNSAFE]` scan, `architecture.toml`'s `unsafe_file`, selftest `unsafe-outside-shim` and `gcmouse-outside-shim` |
 | 21 | `21-t21-ci-steps.patch` | `98c0442473890da883ccd7eabfb3d6e9cbc1fc04f1f8df510a04064113139f47` | T21 | the test, native, lint and summary steps, their verdicts and tests; two file splits |
 | 22 | `22-t21-workflow.patch` | `6bb4e0da82c301dcd77247aad8e4a19f8999f43ba34921e2bb9805f8df1274f6` | T21 | the shader cache off job-wide, three new artifacts, the summary's download patterns; the skill names an artifact |
-| 23 | `23-t21-budgets-protection.patch` | `de76320efd0c5dff294323ca5614f5f5b264e4b1f31c645625d61cf32bd3ddf1` | T21 | `[gpu.first_person]`, `[ci]` minutes, `protected.toml` and `CODEOWNERS` |
+| 23 | `23-t21-budgets-protection.patch` | `368ff8bb2e60cae3d4867948ce141a4604f4dcd437486ffa3337d39bc5bd9bf4` | T21 | `[gpu.first_person]`, `[ci]` minutes, `protected.toml` and `CODEOWNERS` |
 | 24 | `24-t21-rung-2.patch` | `b38ed92901dbcb28a3caa26497eea049504229f04090372cd02daf2d82335792` | T21 | `current.txt` to `2`; `acceptance.json`: criterion 19's check, `scene-rules`' wording |
 | 25 | `25-run-lock-flake.patch` | `d364bbdfc0bed2b255186cae697d334dd2439d444ee8e4b84d203ad0dddfaa77` | T23 | `run_lock_tests.rs`: the killed-holder test keeps the child's stdin open until it has reaped the child (the lock-test flake; below) |
 
@@ -79,6 +83,16 @@ child never outlives the test. Measured with 16 copies at once: the old
 test failed 258 of 1,200 runs, all at line 217 with `None`; the new one
 failed 0 of 1,200. No other patch touches the file, so 25 applies
 anywhere in the series, or on `main` alone.
+
+**07, a vacuous bench pass.** When the push's base has no
+`crates/eng-bench/benches/` (GitHub's main d106e7f, before rung 2),
+every benchmark reads "new", none is flagged, and the reviewed patch's
+verdict was a pass that compared nothing. Now the `bench` step is
+pending, never a pass, when no benchmark has a base count. The test
+`a_base_without_benchmarks_makes_every_one_new_and_is_pending` replaces
+the one that pinned the pass, and also holds that one base count is
+enough to compare. Only `bench.rs`'s verdict and that test changed; the
+rest of 07 is as reviewed.
 
 The rebases, in full:
 - **09** (T19 xtask) after T17's and T18's: `ci.rs` `JOBS` holds both new
@@ -217,19 +231,21 @@ The rebases, in full:
   `golden-update` skill names `frame-candidates-<runner>`.
 - **23, budgets and protection**: `[gpu.first_person]` 28/28/60/2,944
   (four times the room shot's 7/7/15/736, as `[gpu]` is for the
-  top-down view; play's presented 8/7/16 fits); `[ci]`
+  top-down view; play's presented frame, measured on Metal by
+  `window-room`, is 8/8/16/736); `[ci]`
   `bench_job_minutes = 15` and `mutants_job_minutes = 35`, placeholders
-  that no CI run has measured (T24 sets them; budgets.toml says so), and
+  that no CI run has measured (T24 proposes figures and the owner sets
+  them, since budgets.toml is protected; it says so), and
   `mutants_shard_minutes = 20`. `protected.toml` gains 85 paths: the 82
   that G5's protection row names (`about.toml` and `about.hbs` among
   them; T12's client tests as `src/**/tests.rs`, which takes
   `src/room/geometry/tests.rs` too), and three beyond it (item 6
   below). `.github/CODEOWNERS` gains the same 85, in the same order.
-- **24, rung 2**: `docs/rungs/current.txt` is `2`; `acceptance.json`
-  gains criterion 19's `{"job": "summary", "step": "mutants-shards"}`,
-  and the `scene-rules` description says what TA2 built (proposed
-  wording, below). No other job or step name drifted: every check names
-  a step that exists.
+- **24, rung 2**: `docs/rungs/current.txt` is `2`; in `acceptance.json`,
+  criterion 19 (`mutants`) gains the check `{"job": "summary", "step":
+  "mutants-shards"}` and a rewritten description and command (item 1b),
+  and the `scene-rules` description says what TA2 built (item 1). No
+  other job or step name drifted: every check names a step that exists.
 
 ## What the owner decides at G5
 
@@ -256,6 +272,18 @@ The rebases, in full:
    > the upper third, a shot excused only within a bound and with a
    > reason. Every first-person shot passes, and each rule has a
    > self-test that breaks it.
+1b. **Criterion 19's wording** (`mutants`, patch 24). The approved
+   description ends "no missed mutant outside .cargo/mutants.toml's
+   exclusions. Pending on push runs; …"; patch 24 makes it "no missed
+   mutant outside .cargo/mutants.toml's exclusions, in every one of the
+   four shards (the summary's mutants-shards step fails unless a report
+   from each is present). Pending on push runs; the weekly schedule and a
+   manual dispatch run it." Its command, "cargo xtask ci --job mutants
+   (step rung-diff)", becomes "cargo xtask ci --job mutants (step
+   rung-diff, in each shard) && cargo xtask ci --job summary (step
+   mutants-shards)", and its checks gain `{"job": "summary", "step":
+   "mutants-shards"}`, so a dead shard can no longer leave the criterion
+   passing on three of four.
 2. **Render bug 3's known miss** (TA4): add it to
    `xtask/selftest/render-bugs/known-misses.toml` with the reason, the
    date and your name, or reclassify it as caught by TA2's rule 1. Until
@@ -269,7 +297,27 @@ The rebases, in full:
    in rung 3, or (3) keep the criterion failing. T23's review confirmed
    (A) and (B) are real but stop free, hit, and let no hull through solid
    (exact checks, 60,000 cases); the room has no off-axis geometry, so
-   rung 2's room is unaffected.
+   rung 2's room is unaffected. What each option does:
+   - **The G5 push, pushed in two steps as "Apply and verify" says:**
+     its `in-diff` base is the main just pushed, and the package touches
+     no core crate (its `crates/` changes are eng-platform-api's
+     conformance suite and tests, eng-platform-headless's and
+     eng-platform-winit's tests, and game-testbed's scenarios, hashes,
+     rules, shots harness and tests), so every shard's `in-diff` is
+     pending ("no core crate changed") whatever the option, and the
+     push's `mutants` and `ci` are not red on its account.
+   - **The G5 push in one step** (main and the package together): its
+     base is GitHub's main, d106e7f, so `in-diff` mutates all of rung 2's
+     core changes, about 713 mutants (179/179/179/176 by shard). With (1)
+     unfinished or (3), the 52 misses fail the shards with
+     `[E-MUTANT-MISSED]`, and `mutants` and `ci` are red; with (2) they
+     pass if each shard ends within its 20-minute box, which is unproven
+     on CI's 4 vCPU (`[E-MUTANTS-TIME]` fails the shard otherwise).
+   - **The weekly run and a dispatch** (`rung-diff`, from 314383d): the
+     same 713 mutants every time. (1) passes once every miss is killed or
+     the remaining equivalent ones excluded; (2) passes from the first
+     weekly run, the time box allowing; (3) fails every week until rung
+     3.
 3a. **Criterion 3's wording** (`collision-grid`, `acceptance.json`; not in
    patch 24 yet, a proposal). T23 found that the brute-force oracle
    repeats the sweep's rules, so matching its bits checks candidate cells
@@ -292,11 +340,19 @@ The rebases, in full:
    (T15: scripted runs never grab, departing from decision 10's
    wording); ADR-0023; ADR-0024 Amendment 2 (T19b's still-axis rule, and
    the open breaks); ADR-0012's rung 2 note (decision 17's findings).
+   From T23 (2026-11-15, both Proposed): ADR-0021 Amendment 2 (winit's
+   macOS motion is dropped only while the shim runs, so mouse look still
+   gets motion where `Shim::start` answers `None`), and ADR-0022
+   Amendment 3 (the report's `window.fullscreen` and `fullscreen_at_end`
+   come from the new `Window::fullscreen` in eng-platform-api, what the
+   window is, not whether the platform took the request).
 5. **Notices** (T20): keep or drop the Rust standard library section;
    accept the 24 crates whose MIT text keeps the template's unfilled
    copyright line, or add clarifications later.
 6. **T21's own choices**: the `unsafe_file` key in `architecture.toml`
-   (ADR-0021 asked for it there); the videos in their own `proof-video`
+   (ADR-0021 asked for it there); `[gpu.first_person]`'s headroom, four
+   times the room shot's counts (28/28/60/2,944 against 7/7/15/736), as
+   1b took for `[gpu]`; the videos in their own `proof-video`
    artifact; the shader cache off in the selftest job too; and three
    protected paths beyond the plan's row:
    `crates/game-testbed/tests/gpu_report.rs` (criterion 21's keys),
@@ -314,12 +370,24 @@ The rebases, in full:
    edit to both passes; protecting them is the owner's call. On the
    weekly schedule criterion 15 shows "no report from job bench", since
    bench is skipped there (T19's carry). The selftest job's time on CI's
-   4-vCPU runner (5 min here) and the mutants shards' 20-minute box are
-   T24's to measure.
+   4-vCPU runner (5.9 min on this Mac, against the job's 30-minute
+   timeout) and the mutants shards' 20-minute box are T24's to measure.
+   The first run after G5 also installs from source, uncached until
+   main's cache has them: cargo-about 0.9.3 in lint and on the three
+   dist runners (ubuntu-24.04, windows-2025, macos-26), and
+   cargo-mutants 27.1.0 in selftest and in each of the four mutants
+   shards; Windows may near `native_job_minutes = 25`.
 
 ## Apply and verify
 
-From the repo root, on main with T21's three ordinary commits:
+In two pushes, so the G5 push's base is a main that already has rung 2's
+code and eng-bench's benchmarks:
+
+1. **Push main as it is first**, before applying anything:
+   `git push origin main`, and wait for that CI run to be green. It runs
+   1b's workflow (no bench or mutants job yet) over rung 2's code.
+2. **Then apply, check, commit and push again**, from the repo root, on
+   that main (which has T21's three ordinary commits):
 
 ```sh
 for p in docs/rungs/2/patches/g5/[0-9][0-9]-*.patch; do
@@ -334,51 +402,63 @@ cargo xtask selftest unsafe-outside-shim
 cargo xtask selftest gcmouse-outside-shim
 cargo xtask ci --job selftest    # about 5 min here; render-bug-3 fails until item 2
 git commit -m "Rung 2: G5, the package (docs/rungs/2/patches/g5/)"
+git push origin main
 ```
 
-Then push `main` (`git push origin main`), and T24 reads the first run.
+On that second push, `bench` compares the head with the first push's
+main, which has the benchmarks, and each mutants shard's `in-diff` is
+pending, since the package changes no core crate (item 3). T24 reads
+that run. Pushed in one step instead, the base is d106e7f: `bench` is
+pending (nothing to compare), and the mutants shards and `ci` are red
+unless option (2) of item 3 is taken and the time box holds.
 
-## What was run, in the scratch clone (Metal)
+## What was run, and where (Metal)
 
-After the two review rounds (2026-11-15):
+On the M2 Pro, macOS 26, 2026-11-15, after the reviews.
 
-- **The series**: all 24 apply in order with plain `git apply --index` on
-  a clean checkout of b433f85, and on T21's three ordinary commits; with
-  those commits, the tree is byte for byte the scratch clone's that the
-  checks below ran on.
+**On main at bca104a, with all 25 applied** (a clean branch of a scratch
+clone, the main checkout untouched):
+
+- **The series**: all 25 apply in order with plain `git apply --index`.
 - **`cargo xtask quick`**, `current.txt` at `2`: 7 of 7, its tests
   including `ci_native_tests.rs`'s check that each of rung 2's 102 native
   checks names a step the native job runs on its runner, and
-  `ci_harness.rs`'s that every `test` and `selftest` check does too.
+  `ci_harness.rs`'s that every `test` and `selftest` check does too;
+  replay holds the five dot streams and the room's four byte for byte
+  after T23's fixes (no stream was regenerated).
 - **`CI=1 cargo xtask ci --job lint`** (`--locked`, `-D warnings`): 9 of
   9, `notices` and `palette` included; docs-lint finds every name T22
-  left as plain words (the test, native and selftest steps, the room shot
-  under `[gpu.first_person]`, `room.apng`, the `unsafe_code` scan,
-  `frame-candidates-<runner>`, and `shots.toml`, `about.toml` and the
-  benches protected).
-- **`cargo test -p xtask`**: 227 passed, 1 ignored (the run-lock test did
-  not flake this time). `arch-check` on the tree: no violations.
+  left as plain words.
+- **`cargo test -p xtask`**: 227 passed, 1 ignored, patch 25's lock test
+  among them; `a_base_without_benchmarks_makes_every_one_new_and_is_pending`
+  (patch 07) passes.
 - **`cargo xtask selftest unsafe-outside-shim`** (thirteen plants, each
   matched to its own finding, nothing unplanted) and
-  **`gcmouse-outside-shim`**: ok.
-- **`cargo xtask ci --job test`** (first round): 15 of 15, the six new
-  steps 2.6 to 21.2 s each.
-- **`ENG_CI_STEPS=… cargo xtask ci --job native`** on Metal, the screen
-  unlocked: `poses`, `look`, `scene-rules` (seven shots), `window`,
-  `window-room` (600 ticks, the committed `room-walk.seed1.txt`, 600
-  frames of 800x600 presented, refresh rate 60,000 mHz, no grab asked),
-  `gpu-budgets` (the room shot 7/7/15/736 and the room window's
-  8/8/16/736 within `[gpu.first_person]`, seven passes timed, five pooled
-  textures) and `clippy-shim` ok; `shot-flip` and `frame-record` pending
-  (no goldens or references yet). Earlier, `check-intel-mac` and `dist`
-  ok. `proof-video` runs on Linux x64 only; its room command, run by
-  hand, wrote 601 frames, 38 MB, in 9 s.
-- **`cargo xtask ci --job selftest`** on Metal, about 5 min: 39 of 41
-  ok; `golden-edit` pending (it needs the pinned lavapipe);
-  `render-bug-3` fails by design, "awaiting the owner's acceptance of a
-  known miss" (decision 2 above).
-- **`cargo xtask replay`**: 9 runs, the five dot streams and the room's
-  four byte for byte; no stream was regenerated.
-- **Not run here**: Linux, Windows, the pinned lavapipe (exact shots and
-  records, `esc`, `proof-video`), and the bench and mutants jobs, which
-  their own patches' builders ran (T17 in Docker, T19 on this Mac).
+  **`gcmouse-outside-shim`**: ok; `arch-check` finds no violation on
+  main's files.
+- **`ENG_CI_STEPS=window-room,gpu-budgets cargo xtask ci --job native`**:
+  both ok; the room window's 600 frames gave the committed
+  `room-walk.seed1.txt` and peaked at 8 draws, 8 pipeline switches, 16
+  bind-group switches and 736 bytes, within `[gpu.first_person]`.
+
+**On the package built on b433f85** (the scratch clone, before T23's
+fixes reached main; those touch no file the checks below depend on):
+
+- **`cargo xtask ci --job test`**: 15 of 15, the six new steps 2.6 to
+  21.2 s each.
+- **`ENG_CI_STEPS=… cargo xtask ci --job native`**: `poses`, `look`,
+  `scene-rules` (seven shots), `window`, `window-room` (600 frames of
+  800x600 presented, refresh rate 60,000 mHz, no grab asked),
+  `gpu-budgets` (the room shot 7/7/15/736, seven passes timed, five
+  pooled textures), `clippy-shim`, `check-intel-mac` and `dist` ok;
+  `shot-flip` and `frame-record` pending (no goldens or references yet).
+  `proof-video` runs on Linux x64 only; its room command, run by hand,
+  wrote 601 frames, 38 MB, in 9 s.
+- **`cargo xtask ci --job selftest`**: 39 of 41 ok in 5 to 6 min;
+  `golden-edit` pending (it needs the pinned lavapipe); `render-bug-3`
+  fails by design, "awaiting the owner's acceptance of a known miss"
+  (decision 2 above).
+
+**Not run here**: Linux, Windows, the pinned lavapipe (exact shots and
+records, `esc`, `proof-video`), and the bench and mutants jobs, which
+their own patches' builders ran (T17 in Docker, T19 on this Mac).

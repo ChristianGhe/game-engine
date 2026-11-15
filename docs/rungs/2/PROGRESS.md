@@ -1483,3 +1483,63 @@ for the owner at G5)
   7 of 7. The strict form passes on the pinned lavapipe in Docker.
 - **Cost:** about 2 h 20 min, 544k tokens. It counts as one session
   (34.5 of 52).
+
+**TA4: what each check misses** (f57669d, follow-up 3774324; A4; for
+the owner at G5)
+- **Built** by a builder that did not build the renderer, then
+  reworked after review.
+- **The patch:** `docs/rungs/2/patches/ta4-render-bugs.patch` (SHA-256
+  `f7cc2170…`, against b7419a9). It holds:
+  - 12 planted render bugs in `xtask/selftest/render-bugs/`;
+  - selftest cases `render-bug-1`…`-12` that apply each to a workspace
+    copy in their own target directory;
+  - an empty `known-misses.toml`;
+  - a quick-tier test that every bug still applies to the tree.
+- **A catch counts only when** the expected check fails with its own
+  message, and a control run with the planted file restored passes.
+  `[E-GPU]`, `[E-SHADER]`, `[E-GRAPH]`, a build error or a non-matching
+  message count as "did not run".
+- **The bugs,** in pipeline order: 1 a thing skipped in extraction; 2
+  slab sides facing inward; 3 room textures tagged linear; 4 the
+  camera-relative offset rounded to f32 first; 5 sprite sectors off by
+  half; 6 the mirror ignored; 7 no depth write for sprites; 8 a sprite's
+  info swapped; 9 region light transposed; 10 fog along the view axis, not
+  the ray; 11 the tone curve's start-compression sign; 12 the palette cell
+  rounded, not floored.
+- **The table,** re-run on b7419a9 on Metal:
+  - **Caught by a general seeing check:** 4, 6, 7, 8, 9, 10, 11, 12
+    (eng-render's CPU oracles; TA1's `unlisted` rule for 8).
+  - **Caught only by general unit tests:** 5 (`sprite_rotation`), and 4
+    and 6 also.
+  - **Bug 2** is caught by a general geometry rule only because the
+    room's ledge lies in the south wall's plane. In another scene only
+    the room's own tests would catch it.
+  - **Bug 1** is caught by TA2's rule 1 in any scene, so its case needs
+    `ta2-scene-rules.patch`. On `main` today only the room's own tests
+    catch it.
+  - **Bug 3 is the one known miss:** only the room's pinned texture tag
+    and the goldens catch it. TA2's rule 1 catches it only indirectly.
+- **Off `main`:** the shots harness with the room shots pending catches 0
+  of 12. In a simulated G6, FLIP catches 8, exact comparison 11, and the
+  frame records most. Bug 4 can only be caught by the far-world tests.
+- **The deletion run,** from the full matrix:
+  - bug 12 depends on one check (`look_checks`' palette against the CPU
+    table);
+  - bug 5 on `sprite_rotation.rs`;
+  - with eng-render's integration tests off, 5, 7, 10, 11 and 12 go
+    uncaught.
+- **Review:** a fresh reviewer (21 min, 206k tokens) found two blockers:
+  any failure counted as a catch, and accepting a known miss was silent.
+  The follow-up fixed both. A re-check reproduced each blocker against
+  the fix (a wrong-fault patch, a shader that does not compile, a
+  control failure, an empty and a filled known-misses list), and both
+  are fixed.
+- **For the owner at G5:**
+  - apply TA2's patch with this one, or case 1 stays red;
+  - accept bug 3 in `known-misses.toml` (with the reason, date and your
+    name), or reclassify it as caught by TA2.
+
+  Under `ci --job selftest` an accepted miss prints a plain `ok`; only
+  `cargo xtask selftest` and the JSON say "known miss".
+- **Cost:** about 2 h 20 min in two runs, 560k tokens; the two reviews
+  took 452k. It counts as one session at 2 units (36.5 of 52).

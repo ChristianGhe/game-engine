@@ -1393,3 +1393,48 @@ for the owner at G5)
   owner to approve with the rules.
 - **Cost:** about 2 h 15 min, then a 30 min rebuild and a follow-up, 680k
   tokens. It counts as one session at 2 units (32.5 of 52).
+
+**T22: the docs** (0efe090, 9020f6a, 3a0c5b7)
+- **Written** by one builder in a worktree pinned to b7419a9.
+  - **AGENTS.md** is still exactly 150 lines, with rung 2's commands: `--map room`, `play --windowed --look`, `shot --pose/--view`, the frame record, and the G5 commands marked "G5" (`bench`, `mutants`, `notices`, `dist`). It also has the new tags and `ENG_FRAME_DIR`, and three new rules: constant resources, `unsafe` only in the shim's file, and extending beside APIs that protected tests pin.
+  - **ARCHITECTURE.md** grew from 837 to 1,265 lines, with sections on the first-person view, the first-person loop, the frame record, the report's new keys, the four new crates and what G5 adds. D1 should trim it.
+- **ADR amendments** dated 2026-11-15, with no `Status: Accepted` line
+  changed. These need the owner:
+  - **0020 (Proposed):** material per vertex; two records per sprite; the
+    caller makes the upscaled targets; the 39-row uniform, so at most 16
+    regions.
+  - **0022, Amendment 2 (Proposed):** scripted runs never grab;
+    `focus_lost` counts winit's early FocusLost; pacing and the report's
+    `window` keys.
+  - **0023 (Proposed):** the room's four constants, the tuning as sim data,
+    and `MapView`.
+  - **0024, Amendment 2 (Proposed):** T19b's still-axis rule, and the open
+    breaks (A) and (B).
+  - **0012, a rung 2 note (Proposed):** decision 17's dist and notices
+    findings.
+
+  Recorded as built: 0019 and 0021. Noted: 0003 and 0017.
+- **For the owner at G5:** `docs/rungs/2/patches/t22-skills.patch` (SHA-256
+  `3a4fcf95…`): the `golden-update` skill rewritten for `shots.toml`, the
+  marker, `[flip.<shot>]` and frame records, and a new `perf-investigate`
+  skill.
+- **Checked:**
+  - `quick` and the lint job green.
+  - docs-lint passes on these docs in a scratch clone with t18, t6, t16,
+    t17, t19, t20 and t22-skills stacked (323 references). t17 and t19 were
+    merged by hand, in `JOBS`, `CASES` and `ci.yml`'s `needs`.
+- **For T21:** names only T21's package will create, which docs-lint does
+  not check (plain words):
+  - selftest cases (shim, scene rules, render bugs);
+  - the test steps (collision, movement, sim-data, render-graph, sprites,
+    mouse-look);
+  - the native steps (window-room, look, frame-record, scene-rules,
+    poses);
+  - gpu-budgets' room shot, and `room.apng`;
+  - arch-check's `unsafe_code` scan;
+  - `[gpu.first_person]` in `budgets.toml`;
+  - the frame-record artifact's name;
+  - protection of `shots.toml`, `about.toml` and the benches.
+
+  TA2's and TA4's docs come with them.
+- **Cost:** about 3 h, 526k tokens. It counts as one session (33.5 of 52).

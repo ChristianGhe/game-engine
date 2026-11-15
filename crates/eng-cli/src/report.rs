@@ -259,6 +259,25 @@ impl RunSummary<'_> {
         if let Some(format) = frames.surface_format {
             gpu.push(("surface_format", JsonValue::str(format)));
         }
+        // Criterion 21: the last frame's GPU time per pass, in running
+        // order, and the targets' pool size. The list is `null` without
+        // timestamp queries, and when a budget stopped the run before the
+        // last frame; a pass the GPU left untimed has `nanoseconds: null`.
+        if let Some(stats) = &frames.stats {
+            let time = |t: &eng_gpu::PassTime| {
+                let nanoseconds = t.nanoseconds.map_or(JsonValue::Null, JsonValue::U64);
+                JsonValue::object([
+                    ("pass", JsonValue::str(t.pass)),
+                    ("nanoseconds", nanoseconds),
+                ])
+            };
+            let pass_times = stats.pass_times.as_ref().map_or(JsonValue::Null, |times| {
+                JsonValue::Array(times.iter().map(time).collect())
+            });
+            gpu.push(("pass_times", pass_times));
+            let pool = u64::try_from(stats.transient_textures).unwrap_or(u64::MAX);
+            gpu.push(("transient_textures", JsonValue::U64(pool)));
+        }
         JsonValue::object(gpu)
     }
 

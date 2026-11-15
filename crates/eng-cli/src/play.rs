@@ -383,6 +383,7 @@ impl<'g> PlayRun<'g> {
             frames: gpu.frames,
             out: None,
             surface_format: Some(gpu.surface_format),
+            stats: None,
         });
         let summary = report::RunSummary {
             game,

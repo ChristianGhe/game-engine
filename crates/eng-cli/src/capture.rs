@@ -23,10 +23,17 @@
 //!   it is: for a first-person view, read back from the frame's `info`,
 //!   depth and output with the objects the extraction asked for; for a
 //!   top-down one, reduced to the output's luminance.
+//! - The last frame is timed (`Targets::time_passes`): a shot's one frame,
+//!   or a video's last, at the last multiple of `--every`. The report's
+//!   `gpu` gains its GPU time per pass (`pass_times`) and the targets' pool
+//!   size (`transient_textures`), criterion 21. `pass_times` is `null`
+//!   without timestamp queries, and when a budget stopped the run before
+//!   that frame. Earlier frames are encoded without timestamps, as in rung
+//!   1b, and timing changes no pixel.
 
 use std::path::PathBuf;
 
-use eng_gpu::{FrameCounters, Gpu, GpuOptions, GpuReport, Targets};
+use eng_gpu::{FrameCounters, FrameStats, Gpu, GpuOptions, GpuReport, Targets};
 use eng_render::{
     FirstPersonCamera, FirstPersonRenderer, FirstPersonScene, GpuWorld, Look, Renderer,
     TopDownScene,
@@ -52,6 +59,9 @@ pub(crate) struct CaptureSummary {
     pub out: Option<PathBuf>,
     /// The window surface's format (`play`); `None` offscreen.
     pub surface_format: Option<&'static str>,
+    /// The last frame's pass times and pool size (`shot` and `video`);
+    /// `None` for `play`, whose report leaves both keys out.
+    pub stats: Option<FrameStats>,
 }
 
 enum Sink {
@@ -102,6 +112,8 @@ pub(crate) struct Capture {
     camera: Option<(FirstPersonCamera, Look)>,
     /// Every frame so far, for `<out>.frame.json`.
     record: FrameRecord,
+    /// What the last frame measured beyond its counters, once rendered.
+    stats: Option<FrameStats>,
 }
 
 impl Capture {
@@ -182,6 +194,7 @@ impl Capture {
             look: None,
             camera: None,
             record: FrameRecord::new(record_view, args.width, args.height),
+            stats: None,
         })
     }
 
@@ -216,6 +229,17 @@ impl Capture {
         }
     }
 
+    /// The tick of the run's last frame, the one the report times: the
+    /// last tick for a shot; for a video, the last multiple of `--every`
+    /// up to it, which is the last tick only when `--every` divides
+    /// `--ticks`.
+    fn last_frame_tick(&self) -> u64 {
+        match self.args.frames {
+            Frames::Last => self.last_tick,
+            Frames::Every(every) => self.last_tick - self.last_tick % every,
+        }
+    }
+
     /// Renders `sim`'s state, keeps the frame and returns its counters.
     ///
     /// # Panics
@@ -233,6 +257,11 @@ impl Capture {
         };
         let mut camera = None;
         let mut asked = Vec::new();
+        // The last frame is the report's: only it writes timestamps.
+        let last = tick.0 == self.last_frame_tick();
+        if last {
+            self.targets.time_passes(true);
+        }
         let counters = match &self.drawer {
             Drawer::TopDown { scene, renderer } => {
                 renderer.render(&self.gpu, &self.targets, &scene(&frame))
@@ -262,6 +291,10 @@ impl Capture {
             .targets
             .read_output(&self.gpu)
             .unwrap_or_else(|e| panic!("{e} (reading back the frame at {tick})"));
+        if last {
+            let stats = self.targets.frame_stats(&self.gpu);
+            self.stats = Some(stats.unwrap_or_else(|e| panic!("{e} (the pass times at {tick})")));
+        }
         let entry = match (&self.drawer, camera) {
             (Drawer::FirstPerson { renderer, .. }, Some((camera, _))) => {
                 let read = |texels: Result<_, _>, what: &str| {
@@ -292,6 +325,11 @@ impl Capture {
             frames: self.frames,
             out: Some(self.args.out.clone()),
             surface_format: None,
+            // A budget stopped the run before its last frame: no times.
+            stats: Some(self.stats.clone().unwrap_or_else(|| FrameStats {
+                pass_times: None,
+                transient_textures: self.targets.transient_textures(),
+            })),
         }
     }
 

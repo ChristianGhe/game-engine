@@ -2,8 +2,8 @@
 
 Gate G5 is sitting 2's one set of protected-path changes: every reviewed
 patch in `docs/rungs/2/patches/`, stacked, with small rebases where two of
-them meet, and T21's own additions, as 24 patches that apply in order. The
-owner applies them in their own terminal (the guard refuses an agent's
+them meet, T21's own additions and T23's fix, as 25 patches that apply
+in order. The owner applies them in their own terminal (the guard refuses an agent's
 `git apply` of protected paths), checks, commits once (O1: `current.txt`
 becomes `2` in G5's commit), and pushes.
 
@@ -66,6 +66,19 @@ earlier one, as listed; nothing else changed.
 | 22 | `22-t21-workflow.patch` | `6bb4e0da82c301dcd77247aad8e4a19f8999f43ba34921e2bb9805f8df1274f6` | T21 | the shader cache off job-wide, three new artifacts, the summary's download patterns; the skill names an artifact |
 | 23 | `23-t21-budgets-protection.patch` | `de76320efd0c5dff294323ca5614f5f5b264e4b1f31c645625d61cf32bd3ddf1` | T21 | `[gpu.first_person]`, `[ci]` minutes, `protected.toml` and `CODEOWNERS` |
 | 24 | `24-t21-rung-2.patch` | `b38ed92901dbcb28a3caa26497eea049504229f04090372cd02daf2d82335792` | T21 | `current.txt` to `2`; `acceptance.json`: criterion 19's check, `scene-rules`' wording |
+| 25 | `25-run-lock-flake.patch` | `d364bbdfc0bed2b255186cae697d334dd2439d444ee8e4b84d203ad0dddfaa77` | T23 | `run_lock_tests.rs`: the killed-holder test keeps the child's stdin open until it has reaped the child (the lock-test flake; below) |
+
+**25, the lock-test flake.** `run_lock::tests::a_killed_holder_leaves_no_stale_lock`
+failed now and then under load on this Mac (`run_lock_tests.rs:217`, "its
+PID stays behind", left `None`), most recently in the Stop hook's `quick`
+on 2350d7b. The cause: `Child::wait` closes the stdin it holds before
+waiting, so a child that the kill has not stopped yet reads end of input,
+drops its lock and clears its PID. The test now takes the stdin out and
+drops it after `wait`; a panic before the kill still drops it, so the
+child never outlives the test. Measured with 16 copies at once: the old
+test failed 258 of 1,200 runs, all at line 217 with `None`; the new one
+failed 0 of 1,200. No other patch touches the file, so 25 applies
+anywhere in the series, or on `main` alone.
 
 The rebases, in full:
 - **09** (T19 xtask) after T17's and T18's: `ci.rs` `JOBS` holds both new

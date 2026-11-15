@@ -1,0 +1,34 @@
+diff --git a/xtask/src/run_lock_tests.rs b/xtask/src/run_lock_tests.rs
+index f5b46d94c9eaea0798474b37abf64c0e8ad498da..7e25aa1e6cc7572dd2a4ff5c7a334686dd1f3184 100644
+--- a/xtask/src/run_lock_tests.rs
++++ b/xtask/src/run_lock_tests.rs
+@@ -204,6 +204,12 @@ fn a_killed_holder_leaves_no_stale_lock() {
+         .spawn()
+         .expect("the test binary starts");
+     let mut lines = BufReader::new(child.stdout.take().expect("piped")).lines();
++    // Kept open until the child is reaped: `Child::wait` closes the stdin it
++    // holds before waiting, and a child the kill has not stopped yet would
++    // read end of input there and drop its lock, clearing the PID (the
++    // flake seen under load, "its PID stays behind" with `None`). A panic
++    // before the kill still drops it, so the child never outlives the test.
++    let stdin = child.stdin.take().expect("piped");
+     let held = lines
+         .by_ref()
+         .map_while(Result::ok)
+@@ -213,6 +219,7 @@ fn a_killed_holder_leaves_no_stale_lock() {
+     assert_eq!(holder(&path), Some(child.id()));
+     child.kill().expect("kill the child");
+     child.wait().expect("reap the child");
++    drop(stdin);
+     assert!(is_free(&path), "the lock went with the killed process");
+     assert_eq!(holder(&path), Some(child.id()), "its PID stays behind");
+     drop(lines);
+@@ -233,6 +240,7 @@ fn child_holds_the_lock() {
+     let _held = acquire(Path::new(&path), |line| panic!("{line}"));
+     println!("\n{CHILD_HELD}");
+     let _ = std::io::stdout().flush();
+-    // Held until killed, or until the parent's end of stdin closes.
++    // Held until killed, or until the parent's end of stdin closes (the
++    // parent keeps it open until it has reaped this process).
+     let _ = std::io::stdin().read_to_end(&mut Vec::new());
+ }

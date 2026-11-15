@@ -284,3 +284,27 @@ does not wait for the display (Xvfb). A rate under 1 Hz counts as unknown.
 
 **Still open:** X11's doubled raw motion under `Confined` (Amendment 1).
 No CI step can show it, since scripted runs never grab.
+
+## Amendment 3 (Proposed, for the owner; T23 found, 2026-11-15)
+
+- **Status:** Proposed (for the owner; written in T23's fixes). The
+  decision and Amendments 1 and 2 stay as they are until the owner takes
+  or refuses this.
+- **What T23's review found:** `set_fullscreen` answers whether the
+  platform took the request, as the decision says, and winit takes every
+  one made with a window (T13's fullscreen check holds `true` in
+  `App::window`). So the report's `window.fullscreen` was `true` even when
+  macOS dropped the request, and `play`'s "fullscreen refused" could never
+  print on winit.
+- **The change:** `Window` gains `fn fullscreen(&self) -> Option<bool>`,
+  with a default body answering `None`, so `FakeWindow` and every other
+  implementer compile unchanged. winit's is its own account of the window
+  (`Window::fullscreen().is_some()`): on macOS it stays `false` for a
+  request winit drops (`Borderless(None)` on a window with no screen yet);
+  on X11 it is the state winit asked the window manager for. eng-app reads
+  it in `stop`, before the window closes, into a new `window` key,
+  `fullscreen_at_end` (`null` without a window), and the console names
+  "fullscreen dropped" when it was taken but is not in force at the end.
+  `Control::set_fullscreen`, its answer and `window.fullscreen` do not
+  change, so T13's G5 conformance patch and T21's `window-room` verdict
+  hold as they are.

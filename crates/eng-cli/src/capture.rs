@@ -18,6 +18,11 @@
 //!   camera eye and angles and its look on every frame, after the game's
 //!   scene picks them; the report's `view` names them and the last frame's
 //!   camera.
+//! - Every first-person frame's near plane is brought in for the image's
+//!   aspect where eng-render's 0.1 m would cut walls open
+//!   ([`FirstPersonCamera::fit_near`]), as `play`'s are: at 1280x240 an eye
+//!   beside a wall otherwise sees through it. At 4:3, and so in every
+//!   committed shot, it stays 0.1 m. The frame record names it.
 //! - Each frame also goes into the frame record ([`frame_record`], plan
 //!   addition A1), written beside the picture as `<out>.frame.json` when
 //!   it is: for a first-person view, read back from the frame's `info`,
@@ -280,6 +285,9 @@ impl Capture {
                 if let Some(switches) = &self.look {
                     scene.look = switches.apply(scene.look);
                 }
+                // `play`'s rule: no wall cut open at a wide size.
+                let aspect = f64::from(self.args.width) / f64::from(self.args.height);
+                scene.camera.fit_near(aspect);
                 camera = Some((scene.camera, scene.look));
                 asked = frame_record::asked_objects(objects, &scene.sprites, &names(&frame));
                 renderer.render(&self.gpu, &self.targets, world, &scene)

@@ -25,7 +25,7 @@
 //!   libm), rounded to f32 once, so the matrices do not depend on the
 //!   target's own maths library.
 
-use eng_math::{BAngle, Real, Vec3, WorldPos, sin_cos_f64};
+use eng_math::{BAngle, Real, Vec3, WorldPos, min_f64, sin_cos_f64, sqrt_f64};
 
 use crate::RenderError;
 
@@ -46,7 +46,34 @@ use crate::RenderError;
 ///   the precision is nearly the same at every distance, so a smaller near
 ///   plane costs no depth precision worth having; it only clips what comes
 ///   closer than it, and rung 2 draws nothing that close (no view model).
+///
+/// A wider image or field of view would cut walls open at 0.1 m, so every
+/// first-person frame of `play`, `shot` and `video` brings the plane in
+/// where it must ([`near_for`], [`FirstPersonCamera::fit_near`]).
 pub const NEAR_PLANE: Real = 0.1;
+
+/// The farthest the near rectangle's corners may be from the eye, in
+/// meters: inside the hull's 0.25 m half width, with a centimetre to
+/// spare ([`near_for`]).
+pub const NEAR_REACH: f64 = 0.24;
+
+/// The near plane for a vertical field of view at an aspect (width over
+/// height): [`NEAR_PLANE`], or nearer where that one's rectangle would
+/// reach past [`NEAR_REACH`] and so cut open a wall the hull touches:
+/// `min(0.1, 0.24 / sqrt(1 + tan²(fov_y/2)·(1 + aspect²)))`.
+///
+/// 0.1 m holds up to an aspect of about 2.73 at the room's field of view,
+/// and 1.9 at 90°; past that, such as fullscreen on a 21:9 monitor or a
+/// 1280x240 shot, the plane comes in. The field of view is never clamped:
+/// reversed Z loses nothing worth having at a nearer plane. At most 0.1,
+/// and above 0 for any field of view below a half turn and any finite
+/// aspect.
+pub fn near_for(fov_y: BAngle, aspect: f64) -> Real {
+    let (sin, cos) = sin_cos_f64(fov_y.radians_f64() * 0.5);
+    let tan = sin / cos;
+    let corner = sqrt_f64(1.0 + tan * tan * (1.0 + aspect * aspect));
+    min_f64(f64::from(NEAR_PLANE), NEAR_REACH / corner) as Real
+}
 
 /// A first-person camera: an eye in the world, its heading and elevation,
 /// and its lens.
@@ -183,6 +210,18 @@ impl FirstPersonCamera {
             )));
         }
         Ok(())
+    }
+
+    /// Brings the near plane in to [`near_for`] the field of view at
+    /// `aspect`, the image's width over its height, where that is nearer;
+    /// a plane already nearer stays. Every first-person frame `play`,
+    /// `shot` and `video` draw goes through it, after its field of view is
+    /// set.
+    pub fn fit_near(&mut self, aspect: f64) {
+        let near = near_for(self.fov_y, aspect);
+        if near < self.near {
+            self.near = near;
+        }
     }
 
     /// The camera's axes in world coordinates, computed in f64 and rounded

@@ -14,8 +14,10 @@
 //!   which winit sends only while the window has focus; the platform also
 //!   drops any that comes without focus. On macOS winit's deltas are
 //!   accelerated and coalesced, not the raw counts the contract promises,
-//!   so the platform leaves them out there ([`RAW_MOTION`]): macOS motion
-//!   comes from the GCMouse shim (`eng-platform-gcmouse`, `motion.rs`).
+//!   so while the GCMouse shim runs (`eng-platform-gcmouse`, `motion.rs`)
+//!   its motion replaces winit's ([`device_event`]). Where the shim did not
+//!   start (off the main thread, or before macOS 11), winit's passes, so
+//!   mouse look still turns, though not by raw counts.
 //!   Under X11's `Confined` grab (an X pointer grab) the X server sends
 //!   winit each raw motion twice, from the same device (seen under Xvfb
 //!   with XTEST input; once each without the grab). SDL drops a raw motion
@@ -25,10 +27,6 @@
 use eng_platform_api::{Key, MouseButton, PhysicalSize, PlatformEvent, WheelDelta};
 use winit::event::{DeviceEvent, ElementState, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{KeyCode, PhysicalKey};
-
-/// Whether winit's device motion is the contract's raw motion here: not on
-/// macOS, where winit reports NSEvent's accelerated deltas, coalesced.
-pub(crate) const RAW_MOTION: bool = !cfg!(target_os = "macos");
 
 /// winit's code for each of the contract's keys, in [`Key::ALL`] order.
 /// Both name keys by W3C `code`, except that winit calls `MetaLeft` and
@@ -220,17 +218,23 @@ pub(crate) fn wheel(delta: MouseScrollDelta, natural: bool) -> PlatformEvent {
 }
 
 /// Raw device motion: winit's `DeviceEvent::MouseMotion`, `dx` right and
-/// `dy` down, as the contract has it. Only where [`RAW_MOTION`].
+/// `dy` down, as the contract has it. Not while the GCMouse shim runs.
 pub(crate) const fn motion((dx, dy): (f64, f64)) -> PlatformEvent {
     PlatformEvent::MouseMotion { dx, dy }
 }
 
 /// The contract's event for one of winit's device events, given whether
-/// the window has focus as the app was last told: raw motion, only with
-/// focus and only where [`RAW_MOTION`]. The rest are left out.
-pub(crate) const fn device_event(event: &DeviceEvent, focused: bool) -> Option<PlatformEvent> {
+/// the window has focus as the app was last told, and whether the GCMouse
+/// shim runs: raw motion, only with focus and only while the shim does not
+/// replace it (ADR-0021: "while the shim runs it drops winit's own macOS
+/// motion"). The rest are left out.
+pub(crate) const fn device_event(
+    event: &DeviceEvent,
+    focused: bool,
+    shim: bool,
+) -> Option<PlatformEvent> {
     match event {
-        DeviceEvent::MouseMotion { delta } if focused && RAW_MOTION => Some(motion(*delta)),
+        DeviceEvent::MouseMotion { delta } if focused && !shim => Some(motion(*delta)),
         _ => None,
     }
 }
@@ -427,18 +431,21 @@ mod tests {
     }
 
     #[test]
-    fn raw_motion_comes_only_with_focus_and_not_on_macos() {
+    fn raw_motion_comes_only_with_focus_and_not_while_the_shim_runs() {
         let moved = DeviceEvent::MouseMotion { delta: (3.0, -1.5) };
-        assert_eq!(device_event(&moved, false), None, "without focus");
-        let with_focus = device_event(&moved, true);
-        if cfg!(target_os = "macos") {
-            assert_eq!(with_focus, None, "macOS's comes from the GCMouse shim");
-        } else {
-            assert_eq!(
-                with_focus,
-                Some(PlatformEvent::MouseMotion { dx: 3.0, dy: -1.5 })
-            );
+        for shim in [false, true] {
+            assert_eq!(device_event(&moved, false, shim), None, "without focus");
         }
+        // The GCMouse shim's motion replaces winit's while it runs (macOS),
+        // so nothing counts twice.
+        assert_eq!(device_event(&moved, true, true), None, "the shim's");
+        // Without it, winit's is the only motion there is: everywhere but
+        // macOS, and on macOS where the shim did not start (off the main
+        // thread, or before macOS 11), accelerated but not lost.
+        assert_eq!(
+            device_event(&moved, true, false),
+            Some(PlatformEvent::MouseMotion { dx: 3.0, dy: -1.5 })
+        );
         let others = [
             DeviceEvent::Added,
             DeviceEvent::Removed,
@@ -455,8 +462,8 @@ mod tests {
             },
         ];
         for event in &others {
-            for focused in [false, true] {
-                assert_eq!(device_event(event, focused), None, "{event:?}");
+            for (focused, shim) in [(false, false), (true, false), (true, true)] {
+                assert_eq!(device_event(event, focused, shim), None, "{event:?}");
             }
         }
     }

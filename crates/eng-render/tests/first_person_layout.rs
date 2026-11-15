@@ -1,12 +1,13 @@
 //! The first-person view's CPU side (rung 2, tasks T9 and T10), no GPU
 //! needed: `info`'s packing, the world vertex and chunk layouts, the
 //! per-frame uniform's declaration in every shader, the constants the
-//! shaders repeat, the camera's rays, and the near plane's bounds.
+//! shaders repeat, the camera's rays, and the near plane's bounds and
+//! `near_for`.
 
 use eng_math::{BAngle, WorldPos, sin_cos_f64, sqrt_f64};
 use eng_render::{
-    BAYER_4X4, Chunk, FirstPersonCamera, Info, LIGHT_STEPS, MAX_REGIONS, NEAR_PLANE, SurfaceClass,
-    WorldVertex,
+    BAYER_4X4, Chunk, FirstPersonCamera, Info, LIGHT_STEPS, MAX_REGIONS, NEAR_PLANE, NEAR_REACH,
+    SurfaceClass, WorldVertex, near_for,
 };
 use proptest::prelude::*;
 
@@ -287,4 +288,67 @@ fn the_near_plane_keeps_inside_the_hull_as_its_documentation_says() {
     // A ceiling at the hull's top, 0.15 m above the eye: up to 88°.
     assert!(near_corner(88.0) < 0.15);
     assert!(near_corner(89.0) > 0.15);
+}
+
+/// The room's field of view, 2 atan(3/4).
+const ROOM_FOV: BAngle = BAngle(879_750_026);
+
+/// The near rectangle's farthest corner from the eye for `near`.
+fn reach(near: f32, fov_y: BAngle, aspect: f64) -> f64 {
+    let (s, c) = sin_cos_f64(fov_y.radians_f64() * 0.5);
+    let tan = s / c;
+    f64::from(near) * sqrt_f64(1.0 + tan * tan * (1.0 + aspect * aspect))
+}
+
+#[test]
+fn near_for_keeps_0_1_m_while_its_rectangle_fits() {
+    // The room's field of view: safe at 1:1, 4:3 (every shot's 320x240),
+    // 16:9, and up to an aspect of about 2.73 at 0.24 m (T12's 2.9 is at
+    // 0.25 m).
+    for aspect in [1.0, 4.0 / 3.0, 16.0 / 9.0, 2.5, 2.7] {
+        assert_eq!(near_for(ROOM_FOV, aspect), NEAR_PLANE, "{aspect}");
+    }
+    // 90° up to 1.9 (0.24 m, a centimetre inside T9's 2.06 at 0.25 m).
+    assert_eq!(near_for(BAngle::QUARTER, 16.0 / 9.0), NEAR_PLANE);
+    assert_eq!(near_for(BAngle::QUARTER, 1.9), NEAR_PLANE);
+}
+
+#[test]
+fn past_it_near_for_comes_in_and_the_corner_stays_inside() {
+    // 21:9 at 90°, 32:9 and 1280x240 at the room's, and 170° at 16:9.
+    let wide = BAngle((170u64 * (1 << 32) / 360) as u32);
+    for (fov_y, aspect) in [
+        (BAngle::QUARTER, 21.0 / 9.0),
+        (ROOM_FOV, 32.0 / 9.0),
+        (ROOM_FOV, 1280.0 / 240.0),
+        (wide, 16.0 / 9.0),
+    ] {
+        let near = near_for(fov_y, aspect);
+        assert!(near < NEAR_PLANE && near > 0.0, "{near}");
+        let corner = reach(near, fov_y, aspect);
+        assert!(
+            (corner - NEAR_REACH).abs() < 1e-6,
+            "{fov_y:?} {aspect}: {corner}"
+        );
+    }
+    // eng-render's plane alone reaches past the hull's 0.25 m there.
+    assert!(reach(NEAR_PLANE, ROOM_FOV, 1280.0 / 240.0) > 0.25);
+}
+
+#[test]
+fn fit_near_only_brings_the_plane_in() {
+    let mut kept = camera(0, 0, ROOM_FOV.0);
+    kept.fit_near(4.0 / 3.0);
+    assert_eq!(kept, camera(0, 0, ROOM_FOV.0), "4:3 changes nothing");
+    let mut wide = camera(0, 0, ROOM_FOV.0);
+    wide.fit_near(1280.0 / 240.0);
+    assert_eq!(wide.near, near_for(ROOM_FOV, 1280.0 / 240.0));
+    assert_eq!((wide.eye, wide.fov_y), (kept.eye, kept.fov_y));
+    // A plane already nearer stays.
+    let mut nearer = FirstPersonCamera {
+        near: 0.01,
+        ..camera(0, 0, ROOM_FOV.0)
+    };
+    nearer.fit_near(1280.0 / 240.0);
+    assert_eq!(nearer.near, 0.01);
 }

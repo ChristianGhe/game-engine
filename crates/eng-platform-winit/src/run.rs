@@ -5,7 +5,7 @@
 //! |---|---|
 //! | `resumed` | the window is made (hidden); `start`; `window`; then it is shown |
 //! | `window_event` | `event`, for the ones the contract has |
-//! | `device_event` | `event`: raw mouse motion, while the window has focus (not on macOS) |
+//! | `device_event` | `event`: raw mouse motion, while the window has focus (not while the GCMouse shim runs) |
 //! | `about_to_wait` | `event`: on macOS, the GCMouse shim's motion since the last one; then `frame`, when it is due; the app's answer becomes `ControlFlow` |
 //! | `exiting` | `stop` |
 
@@ -243,8 +243,10 @@ impl ApplicationHandler for Run<'_> {
         if !self.live() {
             return;
         }
-        // Raw motion only with focus, as the app was last told of it.
-        if let Some(event) = map::device_event(&event, self.requests.focused()) {
+        // Raw motion only with focus, as the app was last told of it, and
+        // winit's only while the GCMouse shim's does not replace it.
+        let (focused, shim) = (self.requests.focused(), self.motion.runs());
+        if let Some(event) = map::device_event(&event, focused, shim) {
             self.deliver(event_loop, event);
         }
     }

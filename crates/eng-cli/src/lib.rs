@@ -128,7 +128,7 @@ pub use maps::{BuildFn, DEFAULT_MAP, GameMap, GameMaps};
 pub use play::{
     FirstPersonPlay, FrameLens, MouseRate, PlayGpu, PlayRun, PlayStats, PlayWindow, Step,
 };
-pub use shot_view::{Pose, degrees_to_bangle};
+pub use shot_view::{POSE_LIMIT, Pose, degrees_to_bangle};
 pub use version::{ENGINE_SHA, ENGINE_VERSION, PROFILE, RUSTC_VERSION, TARGET, UNKNOWN};
 pub use view::{FirstPersonFrame, FirstPersonView, FirstPersonWorld, MapView, WorldTexture};
 

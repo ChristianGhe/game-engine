@@ -191,3 +191,21 @@ methods safe; another crate needs `unsafe`; or Miri joins CI.
 - **The scan.** Until G5's xtask patch makes `arch-check` refuse
   `allow(unsafe_code)` outside this file (T21), confinement rests on
   review. AGENTS.md now says so ("in any crate but the shim's one file").
+
+## Amendment 2 (Proposed, for the owner; T23 found, 2026-11-15)
+
+- **Status:** Proposed (for the owner; written in T23's fixes). The
+  decision and Amendment 1 stay as they are until the owner takes or
+  refuses this.
+- **While the shim runs.** The decision drops winit's macOS motion "while
+  the shim runs"; as T14 built it, eng-platform-winit dropped it on macOS
+  always (Amendment 1: "from the shim only"). Where `Shim::start` answers
+  `None` (off the main thread, or before macOS 11), mouse look then got no
+  motion at all. T23 makes the code match the decision: winit's device
+  motion is dropped only while the shim runs (`map::device_event`,
+  `RawMotion::runs`), so without the shim macOS mouse look turns by
+  winit's accelerated, coalesced deltas rather than not at all.
+- **`GCMouse::current`.** The decision lists it among the calls the
+  `unsafe` makes; `macos.rs` never calls it (Amendment 1 notes it). The
+  shim lists mice with `GCMouse::mice` only, so the list in the decision
+  names one call more than the code makes.

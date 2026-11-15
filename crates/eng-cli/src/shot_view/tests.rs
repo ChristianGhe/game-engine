@@ -5,7 +5,7 @@ use eng_math::{BAngle, WorldPos};
 use eng_render::{FirstPersonCamera, Look, NEAR_PLANE};
 use eng_sim::{ScheduleError, Sim, SimBuilder, SimConfig};
 
-use super::{Pose, degrees_to_bangle, parse_view, refusal, view_json};
+use super::{POSE_LIMIT, Pose, degrees_to_bangle, parse_view, refusal, view_json};
 use crate::args::RunArgs;
 use crate::maps::{GameMap, MapChoice};
 use crate::view::MapView;
@@ -77,6 +77,11 @@ fn a_pose_is_five_finite_numbers_with_the_pitch_within_a_quarter_turn() {
         "1,2,3,0,-91",
         "1;2;3;0;0",
         "1,,3,0,0",
+        // Past f32's range the renderer's offsets were infinite; past
+        // POSE_LIMIT they are refused.
+        "1e308,0,0,0,0",
+        "0,-1e39,1.6,0,0",
+        "0,0,1000000001,0,0",
     ] {
         let err = Pose::parse(bad).unwrap_err();
         assert!(
@@ -84,7 +89,11 @@ fn a_pose_is_five_finite_numbers_with_the_pitch_within_a_quarter_turn() {
             "{bad}: {err}"
         );
         assert!(err.contains(&format!("{bad:?}")), "{err}");
+        assert!(err.contains("each from -1e9 to 1e9"), "{err}");
     }
+    // At the limit, a pose is taken.
+    let far = Pose::parse("1e9,-1e9,1000000000,0,0").unwrap();
+    assert_eq!(far.eye, WorldPos::new(POSE_LIMIT, -POSE_LIMIT, POSE_LIMIT));
 }
 
 #[test]

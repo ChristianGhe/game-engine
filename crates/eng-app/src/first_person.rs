@@ -23,9 +23,11 @@
 //!   grab each raw motion arrives twice (T13, seen under Xvfb with XTEST),
 //!   so mouse look there turns twice as far until a real X11 desktop is
 //!   checked and the copies are paired or the core grab dropped.
-//! - **The report** gets a `window` object: fullscreen, the grab, focus
-//!   losses, the refresh rate, the frames' period, the last frame's lens,
-//!   and the GCMouse shim's callback rate where it runs (`rate.rs`).
+//! - **The report** gets a `window` object: fullscreen asked for, taken,
+//!   and in force at the end (read from the window in `stop`, before it
+//!   closes), the grab, focus losses, the refresh rate, the frames' period,
+//!   the last frame's lens, and the GCMouse shim's callback rate where it
+//!   runs (`rate.rs`).
 
 mod cursor;
 mod lens;
@@ -149,11 +151,17 @@ impl<'a> FirstPersonFrames<'a> {
         }
     }
 
-    /// The report's `window` object, as things stand.
-    fn window_report(&self, frame: Option<eng_cli::FrameLens>) -> PlayWindow {
+    /// The report's `window` object, as things stand, with the window's
+    /// fullscreen read before it closed.
+    fn window_report(
+        &self,
+        frame: Option<eng_cli::FrameLens>,
+        fullscreen_at_end: Option<bool>,
+    ) -> PlayWindow {
         PlayWindow {
             fullscreen_asked: self.cursor.fullscreen_asked,
             fullscreen: self.cursor.fullscreen,
+            fullscreen_at_end,
             grab_asked: self.cursor.grab_asked,
             grab: self.cursor.granted,
             grab_at_end: self.cursor.now,
@@ -246,12 +254,14 @@ impl App for FirstPersonFrames<'_> {
 
     fn stop(&mut self, ctx: &dyn Control) {
         let _ = ctx;
+        // Whether the window is still fullscreen, while it is there.
+        let fullscreen_at_end = self.screen.as_ref().and_then(|s| s.window().fullscreen());
         // The surface goes before the window it was made from.
         let (gpu, frame) = match self.screen.take().map(Screen::close) {
             Some((gpu, frame)) => (Some(gpu), frame),
             None => (None, None),
         };
-        let window = self.window_report(frame);
+        let window = self.window_report(frame, fullscreen_at_end);
         let mut run = self.run.take().expect("stop comes once");
         self.exit = Some(match self.refused.take() {
             Some(message) => run.refuse(&message),

@@ -198,7 +198,9 @@ Platform::run(&mut app):  start ─▶ window (windowed only)
 - `Control::grab_cursor(bool)` answers the grab in force (`CursorGrab`)
   and `Control::set_fullscreen(bool)` whether it was taken; they act on
   the window from `App::window` on. `Window::refresh_rate()` is its
-  monitor's, in millihertz. Default bodies answer `None` and `false`;
+  monitor's, in millihertz, and `Window::fullscreen()` whether it is
+  fullscreen now (ADR-0022's Amendment 3, proposed). Default bodies answer
+  `None` and `false`;
   headless records the requests (ADR-0022 and its proposed Amendment 1).
 - The window seam (ADR-0016) is `window::Window`, the one part that names
   `raw-window-handle`'s traits. A windowed platform hands an
@@ -229,8 +231,9 @@ Platform::run(&mut app):  start ─▶ window (windowed only)
   turned, up and right positive: `y` keeps winit's sign and `x` is
   negated, and macOS's natural scrolling is turned back) and raw motion,
   only while the window has focus. On macOS raw
-  motion comes from the GCMouse shim instead (winit's own is coalesced,
-  one per refresh): `about_to_wait` drains the shim's sum into one
+  motion comes from the GCMouse shim instead while it runs (winit's own is
+  coalesced, one per refresh, and passes only where the shim did not
+  start): `about_to_wait` drains the shim's sum into one
   `MouseMotion` before the frame, and `raw_motion_callbacks()` counts the
   shim's callbacks, focused or not, across runs. A grab tries `Locked`,
   then `Confined`, and hides the cursor; fullscreen is borderless; the
@@ -619,9 +622,11 @@ FirstPersonRenderer::render (Graph::sorted_without the look's switched-off passe
   reversed Z and an infinite far plane: depth is `near / distance ahead`,
   0 where nothing was drawn. 0.1 m keeps the near rectangle inside the
   hull's 0.25 m half-width while `tan²(fov_y/2)·(1 + aspect²)` is at most
-  5.25 (90° vertical up to an aspect of 2.06); a wider window or `--fov`
-  brings the near plane in (eng-app's `lens.rs`), and the field of view is
-  never clamped.
+  5.25 (90° vertical up to an aspect of 2.06); a wider image or `--fov`
+  brings the near plane in (`near_for`, through
+  `FirstPersonCamera::fit_near`: `play`'s lens and `shot`'s and `video`'s
+  capture apply it to every frame), and the field of view is never
+  clamped.
 - **Chunks** (`Chunk::quad`): vertices relative to the chunk's `WorldPos`
   origin, subtracted in f64, each carrying its material, region, class and
   id; corners counter-clockwise seen from the front, back faces culled. A
@@ -816,8 +821,11 @@ or for a first-person map player 0's camera at the tick.
     map has one, so the flag only confirms it, and a view the map lacks is
     refused with `[E-MAP]`;
   - `--pose X,Y,Z,YAW,PITCH`, for a first-person map: the eye in absolute
-    meters and the angles in degrees, a camera independent of movement. It
-    keeps the scene's field of view and near plane;
+    meters, each within 1e9 of the origin (`POSE_LIMIT`, so the
+    renderer's f32 offsets stay finite), and the angles in degrees, a
+    camera independent of movement. It keeps the scene's field of view and
+    near plane, which then comes in at a wide `--size`, as every
+    first-person frame's does;
   - `--look` with a look file (`crates/game-testbed/looks/off.look.toml`
     is one, version 1): each key given sets its look feature over the
     scene's, for a first-person map. Shots ignore `low_resolution`.
@@ -1181,8 +1189,11 @@ and `gpu`. `ticks_requested` is `null` for a `play` without `--ticks`.
   - for `shot` and `video`, `view`: the `kind` drawn (`top-down` or
     `first-person`), `camera_from` (`game` or `pose`), the `pose` and
     `look` asked for, and the last frame's `camera`;
-  - for a first-person `play`, `window` (ADR-0022's Amendment 2):
-    `fullscreen_asked`, `fullscreen`, `grab_asked`, `grab`, `grab_at_end`
+  - for a first-person `play`, `window` (ADR-0022's Amendments 2 and 3,
+    proposed): `fullscreen_asked`, `fullscreen` (the platform took the
+    request), `fullscreen_at_end` (the window's state as the platform
+    tracks it, read before it closes; `null` without a window),
+    `grab_asked`, `grab`, `grab_at_end`
     (`none`, `confined` or `locked`), `focus_lost`, `refresh_rate_mhz`
     (`null` when unknown), `frame_period_ns`, the last frame's lens
     (`fov_y_deg`, `near_m`, `upscale`) and, on macOS, the GCMouse shim's

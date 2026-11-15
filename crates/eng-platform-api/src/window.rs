@@ -28,4 +28,14 @@ pub trait Window: HasWindowHandle + HasDisplayHandle + Send + Sync {
     fn refresh_rate(&self) -> Option<u32> {
         None
     }
+
+    /// Whether the window is borderless fullscreen now, as the platform
+    /// tracks it, or `None` when it cannot tell. Not
+    /// [`Control::set_fullscreen`](crate::Control::set_fullscreen)'s
+    /// answer, which says only that the platform took the request (the
+    /// change may land later, or not at all): a request the system dropped
+    /// reads `false` here where the platform learns of it.
+    fn fullscreen(&self) -> Option<bool> {
+        None
+    }
 }

@@ -38,4 +38,13 @@ impl eng_platform_api::window::Window for WinitWindow {
     fn refresh_rate(&self) -> Option<u32> {
         self.0.current_monitor()?.refresh_rate_millihertz()
     }
+
+    /// winit's account of the window (winit 0.30.13). On macOS it is set
+    /// when the change starts, and a request winit drops (`Borderless`
+    /// for a window with no screen yet) leaves it `false`; on X11 it is the
+    /// state winit asked the window manager for, so a manager that ignores
+    /// the request still reads `true`.
+    fn fullscreen(&self) -> Option<bool> {
+        Some(self.0.fullscreen().is_some())
+    }
 }

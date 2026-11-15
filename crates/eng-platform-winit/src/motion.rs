@@ -1,7 +1,9 @@
 //! Raw mouse motion on macOS, from the GCMouse shim (`eng-platform-gcmouse`,
-//! ADR-0021), where winit's own is accelerated and coalesced
-//! (`map::RAW_MOTION`). Elsewhere the shim does not start and this does
-//! nothing: raw motion there is winit's device motion.
+//! ADR-0021), where winit's own is accelerated and coalesced: while the
+//! shim runs ([`RawMotion::runs`]), `map::device_event` drops winit's.
+//! Elsewhere, and on macOS where the shim does not start (off the main
+//! thread, or before macOS 11), this does nothing: raw motion there is
+//! winit's device motion.
 //!
 //! - **One shim per platform.** It starts with [`WinitPlatform::new`]
 //!   (on the main thread, as winit's event loop is) and installs its
@@ -55,6 +57,11 @@ impl RawMotion {
     /// when it moved nothing, or without the shim.
     pub(crate) fn drain(&mut self) -> Option<PlatformEvent> {
         event(self.shim.as_mut()?.drain())
+    }
+
+    /// Whether the shim runs: its motion then replaces winit's.
+    pub(crate) const fn runs(&self) -> bool {
+        self.shim.is_some()
     }
 
     /// The shim's callback count, where it runs.
@@ -134,9 +141,11 @@ mod tests {
     #[test]
     fn without_the_shim_there_is_nothing() {
         let mut raw = RawMotion::default();
+        assert!(!raw.runs(), "so winit's motion passes");
         raw.focus(true);
         assert_eq!(raw.drain(), None);
         assert!(raw.callbacks().is_none());
+        assert!(fake().0.runs(), "so winit's motion is dropped");
     }
 
     #[test]
@@ -144,7 +153,8 @@ mod tests {
         // On macOS it starts on the main thread only, which the test
         // harness's threads are not (unless `--test-threads=1`).
         if !cfg!(target_os = "macos") {
-            assert!(RawMotion::start().callbacks().is_none());
+            let raw = RawMotion::start();
+            assert!(raw.callbacks().is_none() && !raw.runs());
         }
     }
 }

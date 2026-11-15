@@ -126,6 +126,13 @@ fn views_a_map_lacks_and_first_person_flags_on_the_dots_are_refused_first() {
             &["--pose", "1,1,1.6,0"][..],
             "--pose needs X,Y,Z,YAW,PITCH",
         ),
+        // Finite, but past f32's range the renderer's offsets were
+        // infinite (exit 0 before T23).
+        (
+            &room[..],
+            &["--pose", "1e308,0,0,0,0"][..],
+            "[E-USAGE] --pose needs X,Y,Z,YAW,PITCH: the eye in meters, each from -1e9 to 1e9",
+        ),
         (
             &room[..],
             &["--view", "sideways"][..],
@@ -221,6 +228,73 @@ fn a_pose_draws_the_room_from_a_camera_independent_of_movement() {
         json!({"kind": "top-down", "camera_from": "game", "pose": null, "look": null,
             "camera": null})
     );
+}
+
+/// A frame record's first-person frames: each one's `void` (pixels of
+/// nothing below the horizon), its pixels of nothing in all, and the
+/// camera's near plane.
+fn holes(dir: &Path, record: &str) -> Vec<(u64, u64, f64)> {
+    let record = read_json(&dir.join(record));
+    let frames = record["frames"].as_array().expect("frames").clone();
+    frames
+        .iter()
+        .map(|frame| {
+            let none = frame["classes"]["none"].as_array().expect("classes.none");
+            (
+                frame["void"].as_u64().expect("void"),
+                none.iter().map(|n| n.as_u64().unwrap()).sum(),
+                frame["camera"]["near"].as_f64().expect("camera.near"),
+            )
+        })
+        .collect()
+}
+
+/// `shot` and `video` keep the near rectangle inside the hull as `play`
+/// does (T9's limit, eng-render's `near_for`): an eye 0.25 m from the
+/// south wall, as near as the hull stands, looking along it, sees no hole
+/// in the wall at 1280x240. eng-render's 0.1 m plane alone reaches 0.27 m
+/// there and cut 28,800 pixels of void and 57,600 of sky into it. At 4:3
+/// the plane stays 0.1 m.
+#[test]
+fn a_wide_frame_beside_a_wall_opens_no_hole_in_it() {
+    let dir = scratch("wide");
+    let pose = [
+        "--map",
+        "room",
+        "--at-tick",
+        "0",
+        "--pose",
+        "3,0.25,1.6,0,0",
+    ];
+    let wide = ["--size", "1280x240", "--out", "wide.png"];
+    let Some(out) = render(&dir, &[&["shot"][..], &pose[..], &wide[..]].concat()) else {
+        return;
+    };
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let [(void, none, near)] = holes(&dir, "wide.png.frame.json")[..] else {
+        panic!("one frame");
+    };
+    assert_eq!((void, none), (0, 0), "holes in the wall at 1280x240");
+    assert!(near < 0.1 && near > 0.0, "near {near}");
+
+    let narrow = ["--size", "320x240", "--out", "narrow.png"];
+    let out = render(&dir, &[&["shot"][..], &pose[..], &narrow[..]].concat()).unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let near = holes(&dir, "narrow.png.frame.json")[0].2;
+    assert_eq!(near as f32, 0.1, "4:3 keeps eng-render's plane");
+
+    let video = [
+        "video", "--map", "room", "--ticks", "2", "--size", "1280x240",
+    ];
+    let at = ["--pose", "3,0.25,1.6,0,0", "--out", "wide.apng"];
+    let out = render(&dir, &[&video[..], &at[..]].concat()).unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let frames = holes(&dir, "wide.apng.frame.json");
+    assert_eq!(frames.len(), 3);
+    for (void, none, near) in frames {
+        assert_eq!((void, none), (0, 0), "a video frame with holes");
+        assert!(near < 0.1, "near {near}");
+    }
 }
 
 /// `budgets.toml`'s tables today, and a `[gpu.first_person]` table as G5

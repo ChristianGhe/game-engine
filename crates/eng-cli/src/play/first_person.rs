@@ -10,9 +10,10 @@
 //!   `--pitch-limit` and `--invert-pitch` over [`LookSettings::DEFAULT`].
 //!   A look file that does not load is a usage error too.
 //! - **The report** gains a `window` object ([`PlayWindow`]): fullscreen
-//!   asked for and taken, the grab the platform granted, focus losses, the
-//!   refresh rate and the frames' period, the last frame's lens, and on
-//!   macOS the GCMouse shim's callback rate (criteria 10 and 25).
+//!   asked for, taken and in force at the end, the grab the platform
+//!   granted, focus losses, the refresh rate and the frames' period, the
+//!   last frame's lens, and on macOS the GCMouse shim's callback rate
+//!   (criteria 10 and 25).
 
 use eng_input::LookSettings;
 use eng_math::BAngle;
@@ -49,9 +50,15 @@ pub struct FirstPersonPlay {
 pub struct PlayWindow {
     /// Borderless fullscreen was asked for (no `--windowed`).
     pub fullscreen_asked: bool,
-    /// The platform took the request (`Control::set_fullscreen`'s answer);
-    /// the change itself may land later.
+    /// The platform took the request (`Control::set_fullscreen`'s answer,
+    /// ADR-0022); the change itself may land later, or not at all.
     pub fullscreen: bool,
+    /// Whether the window was fullscreen at the end of the run, read from
+    /// the window (`Window::fullscreen`) before it closed, as the platform
+    /// tracks it; `None` with no window, or one that cannot tell. A request
+    /// the platform took and the system then dropped is
+    /// [`PlayWindow::fullscreen`] `true` with this `Some(false)`.
+    pub fullscreen_at_end: Option<bool>,
     /// The cursor grab was asked for, at least once: a live run whose
     /// window opened or gained focus. A scripted run never asks. With
     /// [`PlayWindow::grab`] it tells apart a grab never asked for, one
@@ -84,8 +91,8 @@ pub struct PlayWindow {
 pub struct FrameLens {
     /// The vertical field of view.
     pub fov_y: BAngle,
-    /// The near plane, in meters (eng-app keeps the near rectangle inside
-    /// the hull).
+    /// The near plane, in meters (eng-render's `near_for` keeps the near
+    /// rectangle inside the hull).
     pub near: f32,
     /// Window pixels across and down per texel (low resolution).
     pub upscale: u32,
@@ -176,6 +183,11 @@ impl PlayWindow {
             ("view", JsonValue::str("first-person")),
             ("fullscreen_asked", JsonValue::Bool(self.fullscreen_asked)),
             ("fullscreen", JsonValue::Bool(self.fullscreen)),
+            (
+                "fullscreen_at_end",
+                self.fullscreen_at_end
+                    .map_or(JsonValue::Null, JsonValue::Bool),
+            ),
             ("grab_asked", JsonValue::Bool(self.grab_asked)),
             ("grab", JsonValue::str(self.grab.name())),
             ("grab_at_end", JsonValue::str(self.grab_at_end.name())),
@@ -193,10 +205,16 @@ impl PlayWindow {
     /// The console's line, such as `window: fullscreen, grab locked,
     /// 120 Hz; GCMouse peak 1000/s`.
     pub(crate) fn console_line(self) -> String {
-        let mode = match (self.fullscreen_asked, self.fullscreen) {
-            (false, _) => "windowed",
-            (true, true) => "fullscreen",
-            (true, false) => "fullscreen refused",
+        let mode = match (
+            self.fullscreen_asked,
+            self.fullscreen,
+            self.fullscreen_at_end,
+        ) {
+            (false, ..) => "windowed",
+            (true, false, _) => "fullscreen refused",
+            (true, true, Some(false)) => "fullscreen dropped",
+            (true, true, Some(true)) => "fullscreen",
+            (true, true, None) => "fullscreen asked",
         };
         let rate = match self.refresh_rate_mhz {
             Some(mhz) => format!("{}.{:03} Hz", mhz / 1000, mhz % 1000),
@@ -357,6 +375,7 @@ mod tests {
         let window = PlayWindow {
             fullscreen_asked: true,
             fullscreen: true,
+            fullscreen_at_end: Some(true),
             grab_asked: true,
             grab: CursorGrab::Locked,
             grab_at_end: CursorGrab::None,
@@ -380,6 +399,7 @@ mod tests {
             "\"grab\": \"locked\"",
             "\"grab_at_end\": \"none\"",
             "\"fullscreen\": true",
+            "\"fullscreen_at_end\": true",
             "\"refresh_rate_mhz\": 119880",
             "\"fov_y_deg\": 90",
             "\"upscale\": 4",
@@ -395,6 +415,7 @@ mod tests {
         let plain = PlayWindow {
             fullscreen_asked: false,
             fullscreen: false,
+            fullscreen_at_end: Some(false),
             grab_asked: false,
             grab: CursorGrab::None,
             grab_at_end: CursorGrab::None,
@@ -420,5 +441,28 @@ mod tests {
             waiting.console_line(),
             "window: windowed, grab none, refresh rate unknown, focus lost 0"
         );
+        // Fullscreen: refused, taken then dropped by the system, or taken
+        // by a window that cannot tell.
+        let modes = [
+            (false, None, "fullscreen refused"),
+            (true, Some(false), "fullscreen dropped"),
+            (true, None, "fullscreen asked"),
+        ];
+        for (fullscreen, fullscreen_at_end, mode) in modes {
+            let asked = PlayWindow {
+                fullscreen_asked: true,
+                fullscreen,
+                fullscreen_at_end,
+                ..plain
+            };
+            let line = asked.console_line();
+            assert!(line.starts_with(&format!("window: {mode}, grab")), "{line}");
+        }
+        let unknown = PlayWindow {
+            fullscreen_at_end: None,
+            ..plain
+        };
+        let json = unknown.to_json().to_pretty();
+        assert!(json.contains("\"fullscreen_at_end\": null"), "{json}");
     }
 }

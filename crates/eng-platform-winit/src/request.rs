@@ -105,7 +105,10 @@ impl Requests {
         self.focused
     }
 
-    /// `Control::set_fullscreen`: taken whenever there is a window.
+    /// `Control::set_fullscreen`: taken whenever there is a window. The
+    /// answer is the request's (ADR-0022: the change may land later, and
+    /// T13's conformance check holds `true` in `App::window`); the
+    /// window's state is `Window::fullscreen`'s.
     pub(crate) fn fullscreen(&mut self, window: &impl Target, on: bool) -> bool {
         self.fullscreen = Some(on);
         window.go_fullscreen(on);

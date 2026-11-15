@@ -188,6 +188,7 @@ fn a_scripted_twin_gives_run_headless_stream() {
     assert_eq!(window["view"], "first-person");
     assert_eq!(window["grab"], "none");
     assert_eq!(window["fullscreen_asked"], false);
+    assert_eq!(window["fullscreen_at_end"], Value::Null, "no window");
     assert_eq!(window["grab_asked"], false);
     assert_eq!(window["refresh_rate_mhz"], Value::Null);
     assert_eq!(window["frame_period_ns"], TICK);
@@ -397,6 +398,8 @@ fn the_windowed_room_gives_run_headless_stream() {
     let window = &report["window"];
     assert_eq!(window["view"], "first-person");
     assert_eq!(window["fullscreen_asked"], false, "{window:#}");
+    // Read from winit's window at the end: `--windowed` stays a window.
+    assert_eq!(window["fullscreen_at_end"], false, "{window:#}");
     assert_eq!(window["grab_asked"], false, "a scripted run never grabs");
     assert_eq!(window["grab"], "none");
     let period = window["frame_period_ns"].as_u64().unwrap();

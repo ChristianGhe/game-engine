@@ -8,11 +8,13 @@
 //!   the dot room's resources, so drawing the room top-down would panic.
 //! - `--pose X,Y,Z,YAW,PITCH` sets a first-person camera independent of
 //!   movement ([`Pose`]): the eye at (X, Y, Z) in meters, absolute world
-//!   coordinates, heading YAW and elevation PITCH in degrees (yaw 0 looks
-//!   along +X, positive yaw turns towards +Y, positive pitch looks up, at
-//!   most 90 either way). It replaces the eye and angles of the camera the
-//!   game's scene picks, and keeps its field of view and near plane, as
-//!   `play`'s live view angles do. A top-down view refuses it.
+//!   coordinates, each within [`POSE_LIMIT`] (1e9) of the origin, heading
+//!   YAW and elevation PITCH in degrees (yaw 0 looks along +X, positive yaw
+//!   turns towards +Y, positive pitch looks up, at most 90 either way). It
+//!   replaces the eye and angles of the camera the game's scene picks, and
+//!   keeps its field of view and near plane, as `play`'s live view angles
+//!   do; the capture then brings the plane in at a wide size, as for every
+//!   first-person frame (`capture.rs`). A top-down view refuses it.
 //! - `--look look.toml` switches look features with the file `play --look`
 //!   reads (`look_file.rs`, [`crate::LookSwitches`], version 1): each key
 //!   given sets its feature over the scene's look, the rest stay as the
@@ -77,14 +79,37 @@ pub struct Pose {
     pub pitch_deg: f64,
 }
 
+/// How far `--pose` may put the eye from the world's origin along each
+/// axis, in meters: a million kilometres.
+///
+/// - **Finite.** The renderer takes each chunk's and sprite's origin minus
+///   the eye in f64 and rounds it to f32 once (eng-gpu's
+///   `InstanceRecord::relative`). An eye past f32's 3.4e38 m made those
+///   offsets infinite, and the frame drew with them (exit 0). Within 1e9 m
+///   on each axis, an offset to a map near the origin, as every map of
+///   rung 2's is (tens of meters), stays under 2e9 m. So do the
+///   projection's products with it: cot(fov_y/2) / aspect is at most about
+///   1e13 for any field of view and any `--size` (sides up to 8,192), so
+///   they stay under 1e23, far inside f32's range.
+/// - **Precise enough.** Rounding to f32 moves a point by at most 2^-24
+///   of its distance, under 6e-8 rad as the eye sees it at any distance:
+///   less than a ten-thousandth of a pixel at 320 across. So the precision
+///   an image needs does not shrink with distance; only the range does.
+///   Depth, near / distance, stays a normal f32 (5e-11 at 2e9 m with a
+///   0.1 m near plane), so what is drawn still passes the depth test
+///   against the sky's 0 instead of vanishing.
+pub const POSE_LIMIT: f64 = 1e9;
+
 impl Pose {
-    /// `X,Y,Z,YAW,PITCH`: five finite decimal numbers, the pitch from -90
-    /// to 90.
+    /// `X,Y,Z,YAW,PITCH`: five finite decimal numbers, the eye's within
+    /// [`POSE_LIMIT`] of the origin on each axis and the pitch from -90 to
+    /// 90.
     pub fn parse(raw: &str) -> Result<Self, String> {
         let fail = || {
             format!(
-                "--pose needs X,Y,Z,YAW,PITCH: the eye in meters, then yaw and pitch in \
-                 degrees (pitch -90 to 90), all finite; got {raw:?}"
+                "--pose needs X,Y,Z,YAW,PITCH: the eye in meters, each from -{POSE_LIMIT:e} to \
+                 {POSE_LIMIT:e}, then yaw and pitch in degrees (pitch -90 to 90), all finite; \
+                 got {raw:?}"
             )
         };
         let numbers: Vec<f64> = raw
@@ -93,7 +118,8 @@ impl Pose {
             .collect::<Option<_>>()
             .ok_or_else(fail)?;
         let [x, y, z, yaw_deg, pitch_deg] = <[f64; 5]>::try_from(numbers).map_err(|_| fail())?;
-        if !(-90.0..=90.0).contains(&pitch_deg) {
+        let within = |v: f64| (-POSE_LIMIT..=POSE_LIMIT).contains(&v);
+        if !(-90.0..=90.0).contains(&pitch_deg) || ![x, y, z].into_iter().all(within) {
             return Err(fail());
         }
         Ok(Self {

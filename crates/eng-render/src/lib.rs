@@ -73,7 +73,8 @@
 //!   and [`FirstPersonRenderer::read_fogged`] read those targets back.
 //! - **[`FirstPersonCamera`]**: an f64 eye, [`BAngle`](eng_math::BAngle)
 //!   yaw and pitch, a vertical field of view and a near plane
-//!   ([`NEAR_PLANE`], 0.1 m), made ready for an aspect ratio as a
+//!   ([`NEAR_PLANE`], 0.1 m, brought in by [`near_for`] where a wide image
+//!   would cut walls open), made ready for an aspect ratio as a
 //!   [`ViewProj`]: positions subtracted from the eye in f64, then a
 //!   reversed-Z perspective with an infinite far plane.
 //! - **[`sprite_rotation`]**: which of a thing's 8 rotations the viewer
@@ -98,7 +99,9 @@ mod renderer;
 mod scene;
 mod sprite_rot;
 
-pub use camera::{Clip, FirstPersonCamera, Mat4, NEAR_PLANE, ViewBasis, ViewProj};
+pub use camera::{
+    Clip, FirstPersonCamera, Mat4, NEAR_PLANE, NEAR_REACH, ViewBasis, ViewProj, near_for,
+};
 pub use eng_gpu::{ColourTag, FrameCounters, Material, SceneTexture, Texels, TextureSlot};
 pub use error::RenderError;
 pub use first_person::{

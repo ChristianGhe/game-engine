@@ -48,11 +48,12 @@
 //!   turned to the contract's signs (winit's say where content moves; on
 //!   macOS the platform reads natural scrolling once, when it is made, and
 //!   turns it back). Raw mouse motion comes only while the window has
-//!   focus: winit's device motion, except on macOS, where winit's deltas
-//!   are accelerated and coalesced and it comes from the GCMouse shim
-//!   (`eng-platform-gcmouse`, ADR-0021) instead, summed into one event each
-//!   `about_to_wait`; [`WinitPlatform::raw_motion_callbacks`] counts the
-//!   shim's callbacks. No gamepad events until gilrs (rung 6). `map.rs`
+//!   focus: winit's device motion, except while the GCMouse shim runs
+//!   (`eng-platform-gcmouse`, ADR-0021; macOS, where winit's deltas are
+//!   accelerated and coalesced), whose motion replaces it, summed into one
+//!   event each `about_to_wait`; [`WinitPlatform::raw_motion_callbacks`]
+//!   counts the shim's callbacks. Where the shim did not start, winit's
+//!   passes on macOS too. No gamepad events until gilrs (rung 6). `map.rs`
 //!   and `motion.rs` have the details.
 //! - **Requests** (ADR-0022, with its proposed Amendment 1). Borderless
 //!   fullscreen on the window's monitor, at once. A cursor grab hides the

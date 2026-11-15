@@ -25,4 +25,5 @@ pub mod top_down;
 pub const ROOM: eng_cli::FirstPersonView = eng_cli::FirstPersonView {
     world: room::world,
     scene: room::scene,
+    names: room::names,
 };

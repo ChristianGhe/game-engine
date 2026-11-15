@@ -50,7 +50,12 @@
 //! as a PNG; `video` writes tick 0 and every K-th tick after it (the
 //! last multiple of K not past N) as an animated PNG (the proof video,
 //! spec 7.1), each frame shown for K ticks. The files hold 8-bit sRGB RGBA
-//! and nothing else: the same pixels give the same bytes. Their reports
+//! and nothing else: the same pixels give the same bytes. Beside each goes
+//! `<out>.frame.json`, its frame record ([`frame_record`], plan addition
+//! A1): per frame the camera, every object the extraction asked for with
+//! its pixels, screen box, luminance and contrast from `info` and the
+//! output, depth probes and a luminance histogram (reduced for a top-down
+//! view), which [`frame_record::FrameRecord::parse`] reads back. Their reports
 //! carry a `gpu` object (the adapter, its capabilities and the per-frame
 //! counters), and the budgets file's `[gpu]` table, when it has one, holds
 //! every frame (exit 13, `[E-BUDGET]`), or its `[gpu.first_person]` table
@@ -94,6 +99,7 @@ mod assertions;
 mod budgets;
 mod capture;
 mod exit;
+pub mod frame_record;
 mod image_file;
 mod log;
 mod look_file;

@@ -18,20 +18,23 @@
 //!   drawn; the exposure is [`EV100`].
 //! - **Sprites** ([`sprites()`]): one per `testbed.Thing`, numbered in entity
 //!   order from 0, in the region its feet stand in.
+//! - **Names** ([`names`]): the frame record (plan addition A1) names each
+//!   thing's sprite by its kind, `marker`, `crate` or `barrel`.
 
 pub mod geometry;
 
+use eng_cli::frame_record::ObjectKey;
 use eng_cli::{FirstPersonFrame, FirstPersonWorld, WorldTexture};
 use eng_collision_grid::Grid;
 use eng_core::PlayerSlot;
 use eng_math::{BAngle, Ev100, WorldPos};
 use eng_render::{
     ColourTag, FirstPersonCamera, FirstPersonScene, LinearRgb, Look, MAX_REGIONS, Material,
-    NEAR_PLANE, RegionLook, Sky, Sprite,
+    NEAR_PLANE, RegionLook, Sky, Sprite, SurfaceClass,
 };
 use eng_sim::Sim;
 use game_testbed_sim::room::layout::EYE_HEIGHT;
-use game_testbed_sim::room::{RoomMap, Thing, View};
+use game_testbed_sim::room::{RoomMap, Thing, ThingKind, View};
 use kit_fps::{MoveConfig, MoveState};
 
 use crate::sprites::{self, KINDS};
@@ -247,6 +250,29 @@ pub fn sprites(frame: &FirstPersonFrame<'_>) -> Vec<Sprite> {
                     first + sheet_frame(k as u32, u32::from(frames))
                 }),
             }
+        })
+        .collect()
+}
+
+/// The name the frame record gives each thing's sprite, numbered as
+/// [`sprites()`] numbers them: its kind.
+pub fn names(frame: &FirstPersonFrame<'_>) -> Vec<(ObjectKey, String)> {
+    let world = frame.current.world();
+    world
+        .storage::<Thing>()
+        .iter()
+        .enumerate()
+        .map(|(number, (_, thing))| {
+            let key = ObjectKey {
+                class: SurfaceClass::Sprite,
+                id: number as u32,
+            };
+            let kind = match thing.kind {
+                ThingKind::Marker => "marker",
+                ThingKind::Crate => "crate",
+                ThingKind::Barrel => "barrel",
+            };
+            (key, kind.to_owned())
         })
         .collect()
 }

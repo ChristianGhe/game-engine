@@ -402,14 +402,15 @@ pub(crate) fn write_outputs(
     Ok(())
 }
 
-/// Writes `shot`'s or `video`'s file if the run reached its last tick, so
-/// every frame is in; a run stopped early by a budget writes none.
+/// Writes `shot`'s or `video`'s file and its frame record if the run
+/// reached its last tick, so every frame is in; a run stopped early by a
+/// budget writes neither.
 fn write_frames(a: &RunArgs, sim: &Sim, capture: Option<Capture>) -> Result<(), String> {
     match capture {
-        Some(capture) if sim.tick().0 == a.ticks => {
-            let (path, bytes) = capture.finish();
-            write_file(&path, &bytes)
-        }
+        Some(capture) if sim.tick().0 == a.ticks => capture
+            .finish()
+            .iter()
+            .try_for_each(|(path, bytes)| write_file(path, bytes)),
         _ => Ok(()),
     }
 }

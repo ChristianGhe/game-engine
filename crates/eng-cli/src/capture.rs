@@ -18,6 +18,11 @@
 //!   camera eye and angles and its look on every frame, after the game's
 //!   scene picks them; the report's `view` names them and the last frame's
 //!   camera.
+//! - Each frame also goes into the frame record ([`frame_record`], plan
+//!   addition A1), written beside the picture as `<out>.frame.json` when
+//!   it is: for a first-person view, read back from the frame's `info`,
+//!   depth and output with the objects the extraction asked for; for a
+//!   top-down one, reduced to the output's luminance.
 
 use std::path::PathBuf;
 
@@ -31,6 +36,7 @@ use eng_sim::Sim;
 
 use crate::LookSwitches;
 use crate::args::{CaptureArgs, Frames};
+use crate::frame_record::{self, AskedObject, FrameRecord, ObjectKey, RecordView};
 use crate::image_file::{Apng, encode_png, frame_delay};
 use crate::shot_view::{self, Pose};
 use crate::view::{FirstPersonFrame, MapView};
@@ -55,7 +61,8 @@ enum Sink {
 }
 
 /// What draws the frames: the view's renderer, and for a first-person view
-/// its world on the GPU (boxed, as they differ much in size).
+/// its world on the GPU (boxed, as they differ much in size), the world's
+/// objects as the frame record lists them, and the game's names.
 enum Drawer {
     TopDown {
         scene: fn(&TopDownFrame<'_>) -> TopDownScene,
@@ -65,6 +72,8 @@ enum Drawer {
         scene: fn(&FirstPersonFrame<'_>) -> FirstPersonScene,
         renderer: Box<FirstPersonRenderer>,
         world: Box<GpuWorld>,
+        objects: Vec<AskedObject>,
+        names: fn(&FirstPersonFrame<'_>) -> Vec<(ObjectKey, String)>,
     },
 }
 
@@ -91,6 +100,8 @@ pub(crate) struct Capture {
     look: Option<LookSwitches>,
     /// The camera and look of the last first-person frame.
     camera: Option<(FirstPersonCamera, Look)>,
+    /// Every frame so far, for `<out>.frame.json`.
+    record: FrameRecord,
 }
 
 impl Capture {
@@ -148,8 +159,14 @@ impl Capture {
                     scene: view.scene,
                     renderer,
                     world: Box::new(world),
+                    objects: frame_record::world_objects(&built),
+                    names: view.names,
                 }
             }
+        };
+        let record_view = match drawer {
+            Drawer::TopDown { .. } => RecordView::TopDown,
+            Drawer::FirstPerson { .. } => RecordView::FirstPerson,
         };
         let targets = Targets::new(&gpu, args.width, args.height).map_err(|e| e.to_string())?;
         Ok(Self {
@@ -164,6 +181,7 @@ impl Capture {
             pose: None,
             look: None,
             camera: None,
+            record: FrameRecord::new(record_view, args.width, args.height),
         })
     }
 
@@ -214,6 +232,7 @@ impl Capture {
             height: self.args.height,
         };
         let mut camera = None;
+        let mut asked = Vec::new();
         let counters = match &self.drawer {
             Drawer::TopDown { scene, renderer } => {
                 renderer.render(&self.gpu, &self.targets, &scene(&frame))
@@ -222,6 +241,8 @@ impl Capture {
                 scene,
                 renderer,
                 world,
+                objects,
+                names,
             } => {
                 let mut scene = scene(&frame);
                 if let Some(pose) = &self.pose {
@@ -231,6 +252,7 @@ impl Capture {
                     scene.look = switches.apply(scene.look);
                 }
                 camera = Some((scene.camera, scene.look));
+                asked = frame_record::asked_objects(objects, &scene.sprites, &names(&frame));
                 renderer.render(&self.gpu, &self.targets, world, &scene)
             }
         }
@@ -240,6 +262,19 @@ impl Capture {
             .targets
             .read_output(&self.gpu)
             .unwrap_or_else(|e| panic!("{e} (reading back the frame at {tick})"));
+        let entry = match (&self.drawer, camera) {
+            (Drawer::FirstPerson { renderer, .. }, Some((camera, _))) => {
+                let read = |texels: Result<_, _>, what: &str| {
+                    texels.unwrap_or_else(|e| panic!("{e} (reading back {what} at {tick})"))
+                };
+                let info = read(renderer.read_info(&self.gpu, &self.targets), "info");
+                let depth = read(renderer.read_depth(&self.gpu, &self.targets), "depth");
+                frame_record::first_person_entry(tick.0, &camera, &asked, &info, &depth, &image)
+                    .unwrap_or_else(|e| panic!("{e} (the frame record at {tick})"))
+            }
+            _ => frame_record::top_down_entry(tick.0, &image),
+        };
+        self.record.frames.push(entry);
         let kept = match &mut self.sink {
             Sink::Shot(png) => encode_png(&image).map(|bytes| *png = Some(bytes)),
             Sink::Video(apng) => apng.push(&image),
@@ -260,17 +295,22 @@ impl Capture {
         }
     }
 
-    /// The file's path and bytes, once every frame is in.
+    /// The files' paths and bytes, once every frame is in: the picture,
+    /// then its frame record, `<out>.frame.json`.
     ///
     /// # Panics
     ///
     /// If the run reached its last tick without every frame: a bug.
-    pub fn finish(self) -> (PathBuf, Vec<u8>) {
+    pub fn finish(self) -> [(PathBuf, Vec<u8>); 2] {
         let bytes = match self.sink {
             Sink::Shot(png) => png.expect("the shot's tick was rendered"),
             Sink::Video(apng) => apng.finish().unwrap_or_else(|e| panic!("{e}")),
         };
-        (self.args.out, bytes)
+        let record = frame_record::record_path(&self.args.out);
+        [
+            (self.args.out, bytes),
+            (record, self.record.to_text().into_bytes()),
+        ]
     }
 }
 

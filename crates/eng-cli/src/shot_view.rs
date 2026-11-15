@@ -56,7 +56,7 @@ pub fn degrees_to_bangle(deg: f64) -> BAngle {
 
 /// An angle in degrees, `signed` from -180 to 180 (as a pitch reads), else
 /// from 0 to 360.
-fn bangle_degrees(angle: BAngle, signed: bool) -> f64 {
+pub(crate) fn bangle_degrees(angle: BAngle, signed: bool) -> f64 {
     let units = if signed {
         f64::from(angle.0 as i32)
     } else {

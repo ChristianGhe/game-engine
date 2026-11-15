@@ -8,7 +8,7 @@ use eng_render::{ColourTag, LinearRgb, Look, NEAR_PLANE, RotationSheet};
 use eng_sim::{Sim, SimConfig};
 use game_testbed_sim::room::ThingKind;
 
-use super::{EV100, FOV_Y, SKY, camera, regions, scene, sprites, world};
+use super::{EV100, FOV_Y, SKY, camera, names, regions, scene, sprites, world};
 
 fn room(players: u8) -> Sim {
     let config = SimConfig {
@@ -164,4 +164,23 @@ fn a_frame_shows_player_0s_view_with_every_look_feature_on() {
     assert_eq!(s.regions.len(), 4);
     assert_eq!(s.sprites.len(), 3);
     assert_eq!(s.camera.eye, WorldPos::new(1.5, 4.5, 1.6));
+}
+
+/// The frame record's names: each thing's sprite, by the id `sprites`
+/// gives it, named by its kind.
+#[test]
+fn each_things_sprite_is_named_by_its_kind() {
+    let sim = room(1);
+    let at = frame(&sim, &sim, 1.0);
+    let named: Vec<(u32, String)> = names(&at)
+        .into_iter()
+        .map(|(key, name)| {
+            assert_eq!(key.class, eng_render::SurfaceClass::Sprite);
+            (key.id, name)
+        })
+        .collect();
+    let ids: Vec<u32> = sprites(&at).iter().map(|s| s.id).collect();
+    assert_eq!(ids, [0, 1, 2]);
+    let want = [(0, "marker"), (1, "crate"), (2, "barrel")];
+    assert_eq!(named, want.map(|(id, name)| (id, name.to_owned())));
 }

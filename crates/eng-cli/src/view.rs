@@ -34,6 +34,7 @@ use eng_render::{
 };
 use eng_sim::Sim;
 
+use crate::frame_record::ObjectKey;
 use crate::{GameDef, TopDownFrame};
 
 /// What a first-person view's scene is built from: the two states, the
@@ -75,6 +76,12 @@ pub struct FirstPersonView {
     pub world: fn(&Sim) -> FirstPersonWorld,
     /// One frame's camera, sky, regions, look and sprites.
     pub scene: fn(&FirstPersonFrame<'_>) -> FirstPersonScene,
+    /// The game's names for some of the objects a frame draws, by the
+    /// (class, id) their pixels carry in `info`, which the frame record
+    /// writes beside them (`<out>.frame.json`, [`crate::frame_record`]):
+    /// a thing's kind, say. Read-only, as `scene` is; an object it does
+    /// not name is written without one.
+    pub names: fn(&FirstPersonFrame<'_>) -> Vec<(ObjectKey, String)>,
 }
 
 /// A first-person world as a game builds it, owning what eng-render's
@@ -168,8 +175,17 @@ pub(crate) mod tests {
         unreachable!("never drawn here")
     }
 
+    fn names(frame: &FirstPersonFrame<'_>) -> Vec<(crate::frame_record::ObjectKey, String)> {
+        let _ = frame;
+        unreachable!("never named here")
+    }
+
     /// A first-person view that is never drawn, for maps in tests.
-    pub(crate) const FIRST_PERSON: MapView = MapView::FirstPerson(FirstPersonView { world, scene });
+    pub(crate) const FIRST_PERSON: MapView = MapView::FirstPerson(FirstPersonView {
+        world,
+        scene,
+        names,
+    });
 
     fn build(config: eng_sim::SimConfig) -> Result<Sim, ScheduleError> {
         SimBuilder::new(config).build()

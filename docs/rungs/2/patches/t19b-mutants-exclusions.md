@@ -164,8 +164,11 @@ of solid ahead (both of the check's ulp probes free):
   sliver(..)` replaced with `true`, and `267:42` its `&&` to `||`. Before the
   grid's fix these were caught, but only by cases that broke the contact
   rule (the guard was false on the way to a kept hit short of contact); with
-  the fix those cases are held by the edge instead, and no other case has
-  been seen to reach the guard false.
+  the fix those cases are held by the edge instead. **Correction (the
+  second follow-up's review):** other cases do reach the guard false. Every
+  open break (A) below does, on its way to a kept hit short of contact
+  (snap on Z, both probes free, `edge_at_entry` finds no edge), so these two
+  are not "never observed": the searches here missed (A).
 
 The search for them (all on this Mac, none of it committed): cargo-mutants
 with the grid's proptests at 128 times their cases (`PROPTEST_CASES=131072`,
@@ -184,9 +187,11 @@ the end outside the solid and returned true every time (never false, so
 answer; 2 (now `403:22` `-` to `/`, `403:30` `*` to `+`) did, 8 times in the
 contract proptest, but changed no trace.
 
-So, by every search, `sliver` only ever answers true, which makes the depth
-test and its guard dead in practice; and no case has yet been seen where
-`near` or `touching` are at the margin the mutants move. Two choices:
+So, by these searches, `sliver` only ever answers true; but the guard is
+reached false by the open breaks (A) below, so step 4's rule is not dead,
+only untested at the margins these mutants move. Don't exclude these 32
+until (A) and (B) are fixed: their tests are likely to catch some of them.
+Two choices, after that fix:
 
 - exclude them as never observed, with these patterns (each checked to
   match only these 32; three keep the line, since lines 402 to 404 share
@@ -209,8 +214,45 @@ test and its guard dead in practice; and no case has yet been seen where
     "sweep\\.rs:[0-9]+:70: replace \\+ with \\* in edge_at_entry$",
   ```
 
-- or have step 4's thin-solid rule simplified (T5's): with no edge found,
-  the depth test has never been seen to say "solid".
+- or have step 4's thin-solid rule reworked (T5's), with the fix of (A) and
+  (B) below.
+
+## Open breaks of the contact rule (ADR-0024), still in step 4
+
+Found by the second follow-up's review with an aimed search (a hull beside a
+random convex slab's off-axis edge, 1-4 ulps inside its grown face, sliding
+along it and dropping past the top; about 345,000 cases over 4 seeds, at
+coordinates up to ±1000). About 0.14% of these cases still break the
+contact rule. Both kinds predate the still-axis fix below; the fix added
+none (every remaining failure has the same bits before and after it). They
+need off-axis geometry, so rung 2's axis-aligned room cannot reach them;
+the proposal is to fix them with rung 3's angled walls, beside O12.
+
+- **(A) "one ulp further on is still free"**, the hull held on the top
+  (normal +Z): the edge's projection moves by rounding (v of 1e-17 to
+  1e-16) towards the near face, so the moving branch's direction-based flag
+  names the far face, the still-axis bug's mechanism with v ≠ 0. Reproducer:
+  slab [(0.8342246031076089, 0.22523066479828902), (-0.5587184072985766,
+  0.5130715888515152), (-1.1209500218753434, -1.661382543707628),
+  (0.2649472301686788, -0.6111264719388632)], z 0 to 0.7545323315703691;
+  hull (0.26983458, 0.14706548, 0.72871894); trace (-1.1284023191669874,
+  -0.49954267624878423, 1.684434015645078) to (-1.2618060870558636,
+  -1.0154872840786453, 1.007474930349261). A generalisation, tested on a
+  scratch copy of `brute.rs` only, removes about 90% of (A) with no new
+  failures: an axis inside throughout (enter −∞, leave +∞) enters through
+  its nearer face whatever v is.
+- **(B) "the rest of the motion does not hit"**, at any v, plus a few "more
+  than CONTACT_GAP": a different flaw. Reproducer: slab
+  [(1.8083400316838976, 2.7251160814529642), (-0.35575512839208945,
+  2.2516321346073775), (-0.11336571303549503, 1.0940975268012743),
+  (1.710195340442799, 1.3599845674512399)], z 0 to 1.4747776309330871; hull
+  (0.9827255, 0.48495227, 0.99043757); trace (-1.2732884835113105,
+  1.4553536667774594, 2.750962695091877) to (-1.0899426147761797,
+  0.5797825208421452, 2.4121203546379055).
+- The "cannot arise" argument for the rest of the motion's `cross` (under
+  `125:27`/`140:27` above) assumes projection rounding is small next to the
+  rest's motion along the axis; that fails for (A)'s near-still axes. It is
+  unlikely to matter, but re-check it with (A)'s fix.
 
 ## The contact-rule break found on the way, and its fix (T5's rule)
 
@@ -239,8 +281,10 @@ owner, who may revert it.
 - The fix: a still axis, inside throughout, counts as entered through the
   face nearer its projection (`lo` on a tie), in `src/sweep.rs`'s
   `crossing` and in the oracle's (`tests/oracle/brute.rs`), and in the crate
-  docs' steps 1 and 4. The trace is now held by the edge, in contact (its
+  docs' steps 1 and 4. This trace is now held by the edge, in contact (its
   normal the edge's, off the axes; the rest of the motion hits at once).
+  That does not make step 4 meet the contact rule in general: see the open
+  breaks (A) and (B) above.
   The flag is read only by `edge_at_entry`, so nothing else changes.
 - Tests: `corners.rs`
   `a_hull_sliding_along_an_edge_onto_a_slabs_top_is_held_by_the_edge` (the

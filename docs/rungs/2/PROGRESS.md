@@ -1278,3 +1278,57 @@ for the owner at G5)
 - **Carries** are in the plan's T21 and T22 rows.
 - **Cost:** the builder took about 2 h 25 min in three runs, 483k tokens.
   It counts as one session (29.5 of 52).
+
+**T19b: the rung's mutation gaps, and a grid fix** (e86a4ef, follow-up
+54ab1be; criterion 19)
+- **Built** by one builder (the first follow-up was redone after the
+  scratchpad cleanup).
+- **Tests only, apart from one grid fix:**
+  - before: 148 of the rung's 776 core mutants were missed;
+  - after: 54 of 781, with 93 new tests in kit-fps (`steps.rs`), eng-ecs,
+    eng-sim (the protocol's first absolute pin), game-testbed-sim,
+    eng-collision-api (bad worlds the check must reject) and
+    eng-collision-grid (`limits.rs`, `corners.rs`, `found.rs`: 22 traces
+    found against the sweep's mutants, each checked against the oracle,
+    the contract and pass-through, and mirrored).
+- **The grid fix,** a T5 rule recorded for the owner, who may revert it:
+  - **The bug:** a hull sliding exactly along an off-axis slab edge
+    (`v == 0` on that edge's axis) was held short of contact on the top,
+    breaking ADR-0024.
+  - **The fix:** a still axis enters through its nearer face, in
+    `sweep.rs`, mirrored in the oracle, with the crate docs' steps 1 and 4.
+  - **Checked:** contract, oracle and vertex proptests pass at 16,384
+    cases for six seeds. The room's hash streams in `room-scenarios.patch`
+    are byte-identical, and so are the dot streams.
+- **Reviews:**
+  - The first fresh review (17 min, 194k tokens) found that `found.rs`
+    already pinned this break as expected, and that two "equivalent"
+    mutants were catchable. Both were fixed.
+  - The re-check (11 min, 82k tokens) found the fix right, and no new
+    break in about 345k aimed cases. It found two older breaks of the
+    contact rule in step 4 that remain open: (A) about 0.14% of aimed
+    off-axis cases, which the still-axis bug's mechanism reaches with a
+    rounding-sized v, and (B), a separate flaw.
+  - Both have reproducers in `docs/rungs/2/patches/t19b-mutants-exclusions.md`
+    (corrected on `main` with this entry). They need off-axis geometry, so
+    rung 2's room cannot reach them.
+- **For the owner: criterion 19.** The md lists the 54 missed mutants:
+  - 22 equivalent, with reasons and 20 `exclude_re` patterns;
+  - 32 open in step 4's thin-solid rule (`sliver`, its guard and
+    `edge_at_entry`'s margins), with 14 patterns.
+
+  Criterion 19 passes only if `.cargo/mutants.toml` (the owner's) excludes
+  all 54. The reviewer advises against excluding the 32 before (A) and (B)
+  are fixed, since tests for those fixes are likely to catch some. The
+  choices:
+  1. a grid task now that fixes (A) and (B) and reworks step 4. The
+     reviewer has a generalisation that removes about 90% of (A);
+  2. exclude all 54, and fix (A) and (B) in rung 3 with angled walls,
+     beside O12;
+  3. keep criterion 19 failing until then.
+
+  **The proposal is (1)**, if the budget allows, since the rule is
+  T5's and the reproducers exist; otherwise (2).
+- **Cost:** about 6 h for the first run, 1 h for the redone follow-up,
+  1.2M tokens in all with three reviews. It counts as one session (30.5
+  of 52).

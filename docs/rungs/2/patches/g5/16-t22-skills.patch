@@ -1,0 +1,266 @@
+diff --git a/.claude/skills/golden-update/SKILL.md b/.claude/skills/golden-update/SKILL.md
+index e0efcebb79eedae93a23468725bac6691439714e..70b17debd4eb9a9533714696893223edf8c4b81d 100644
+--- a/.claude/skills/golden-update/SKILL.md
++++ b/.claude/skills/golden-update/SKILL.md
+@@ -1,14 +1,38 @@
+ ---
+ name: golden-update
+-description: Bring golden-image candidates from CI to the owner, who alone commits goldens. Use for gate G6 (the first goldens), when shot-exact or shot-flip fails with [E-GOLDEN] after an intended rendering change, or when a shot is added, renamed or dropped.
++description: Bring golden-image and frame-record candidates from CI to the owner, who alone commits them. Use for a golden gate (rung 2's G6: the first-person goldens, per-shot FLIP tables, frame records and clearing the pending markers), when shot-exact, shot-flip or frame-record fails with [E-GOLDEN] after an intended rendering change, or when a shot is added, renamed or dropped.
+ ---
+ 
+-# Golden images: from CI's candidates to the owner
++# Goldens and frame records: from CI's candidates to the owner
+ 
+-The goldens in `crates/game-testbed/golden/` and `thresholds.toml` are
+-protected (`**/golden/**`). Agents never write there; the guard puts a
+-changed file back. The owner copies the chosen candidates in and commits
+-them. Your job is to hand the owner everything needed to decide.
++`crates/game-testbed/golden/` is protected (`**/golden/**`): the goldens,
++`thresholds.toml` and, from rung 2's G6, the reference frame records in
++`golden/frames/`. So is `crates/game-testbed/shots.toml`, the shot list,
++from G5. Agents never write there; the guard puts a changed file back. The
++owner copies the chosen candidates in and commits them. Your job is to hand
++the owner everything needed to decide.
++
++## What the shots are
++
++- `crates/game-testbed/shots.toml` names every shot: its map, tick, input
++  script, players, and a pose from its `[pose]` table or a look file for
++  first-person shots. The harness, `tests/shots.rs`, renders each with the
++  binary's `shot` at 320x240 and seed 1.
++- A shot marked `golden = "pending"` has no golden yet by the owner's
++  choice: it saves its candidate and fails nothing, and a golden for it in
++  `golden/` fails until the marker is cleared. Rung 2's seven room shots are
++  marked; rung 1b's four top-down ones are not, and keep their goldens.
++- `golden/thresholds.toml` holds the FLIP limits: `[flip]` for every shot,
++  and a `[flip.<shot>]` table for a shot that needs its own (a table that
++  names no shot fails). The room's shots differ between Metal and lavapipe
++  by palette-neighbour flips (FLIP mean 0.012-0.015, over `[flip]`'s 0.01),
++  so they need tables of their own, from measured numbers.
++- Every shot also writes a frame record, `<shot>.png.frame.json`;
++  `tests/frame_record.rs` renders every shot twice and compares each record
++  with `golden/frames/<shot>.frame.json` (or `ENG_FRAME_DIR`): exactly on the
++  pinned lavapipe, within `crates/game-testbed/frame-tolerances.toml`
++  elsewhere. References are all or nothing, as goldens are, and the marker
++  holds for them too.
+ 
+ ## Fetch
+ 
+@@ -28,10 +52,16 @@ windows-11-arm, macos-26.
+ 
+ - `golden-candidates-<runner>`: `target/golden-candidates/`. It holds the
+   candidates (`<shot>.png`, the probe's own files, byte for byte), the
+-  FLIP error maps (`flip/<shot>.png`) and `shots.json`.
++  FLIP error maps (`flip/<shot>.png`) and `shots.json`: the configuration,
++  the machine, each shot's result and `views`, what each shot drew (kind,
++  pose, camera).
++- The frame-record step's artifact: `target/frame-candidates/`, every
++  shot's `<shot>.frame.json` and `frames.json`, which says where they were
++  rendered and how each compared. Only CI's pinned runner can make the
++  references.
+ - `report-native-<runner>`: the job's report and step outputs. The
+-  `shot-exact` or `shot-flip` step says pass, fail or pending ("no golden
+-  yet").
++  `shot-exact`, `shot-flip` and `frame-record` steps say pass, fail or
++  pending ("no golden yet", "no reference yet", or a marked shot).
+ - `crash-native-<runner>`: the job's `crash-*.json`. A crash inside the
+   shots harness is not among them: the harness logs to
+   `target/tmp/shots/render/logs/`.
+@@ -41,44 +71,62 @@ windows-11-arm, macos-26.
+ 1. **The reference is ubuntu-24.04.** Its `shots.json` must say
+    `"mode": "exact"`, `configuration.pinned: true`, adapter
+    `llvmpipe (LLVM 18.1.3, 256 bits)` and driver info
+-   `Mesa 25.2.7 (LLVM 18.1.3)`. If any differs, stop: candidates from
+-   another configuration cannot become goldens.
+-2. **The other runners, before G6.** With no golden, their shot steps
+-   compare nothing, so each runner gives only its candidates. `cmp` each
+-   against the reference. Every runner uses the same PNG encoder, so
+-   different bytes mean different pixels. A pair that differs has no FLIP
+-   number yet: look at both images, and ask the `visual-qa` subagent to
+-   describe them. It is advisory; it never decides.
+-3. **After G6, or for a later change,** each runner's `shot-flip` step
+-   compares against the goldens. Its `shots.json` has FLIP `mean`, `p99`
+-   and `p999` for each shot, and `flip/` has the error maps. A local run,
+-   `ENG_REQUIRE_GPU=1 ENG_GOLDEN_DIR=<a copy outside target/golden-candidates/> cargo test -p game-testbed --test shots`,
+-   measures only the local adapter. Without `ENG_REQUIRE_GPU=1`, a
++   `Mesa 25.2.7 (LLVM 18.1.3)`; its `frames.json` names the same
++   configuration. If any differs, stop: candidates from another
++   configuration cannot become goldens or references.
++2. **Each shot shows what it names.** Check `shots.json`'s `views` against
++   `shots.toml`: the kind, and for a posed shot `camera_from` is `pose`.
++   The frame record says what the picture holds without looking at it:
++   each object's visible pixels, screen box and contrast, the depth probes,
++   and `unlisted` (normally empty). An object the shot should show with
++   0 pixels, or a non-empty `unlisted`, is a bug, not a golden.
++3. **Shots without a golden** (marked, or new) compare nothing on any
++   runner, so each runner gives only its candidates. `cmp` each against the
++   reference: every runner uses the same PNG encoder, so different bytes
++   mean different pixels. To measure FLIP, run the harness locally against
++   a copy of the reference's candidates outside `target/golden-candidates/`:
++   `ENG_REQUIRE_GPU=1 ENG_GOLDEN_DIR=<that copy> cargo test -p game-testbed --test shots`.
++   A marked shot is measured there and never fails. That measures only the
++   local adapter; for the others, look at both images and ask the
++   `visual-qa` subagent to describe them. It is advisory; it never decides.
++4. **Frame records** from other runners: run
++   `ENG_REQUIRE_GPU=1 ENG_FRAME_DIR=<a copy of the reference's records> cargo test -p game-testbed --test frame_record`
++   locally; each record must be within its shot's tolerances. Report the
++   worst use of a tolerance per shot.
++5. **Shots with a golden**: each runner's `shot-flip` step compares against
++   the goldens. Its `shots.json` has FLIP `mean`, `p99` and `p999` for each
++   shot, and `flip/` has the error maps. Without `ENG_REQUIRE_GPU=1`, a
+    machine with no adapter skips the shots and passes.
+ 
+ ## Hand to the owner
+ 
+ A short table: shot, reference file, and for each runner either "same
+-bytes" or "differs" (before G6), or its FLIP numbers against
+-`thresholds.toml` (after G6). Add the candidates and maps themselves as
+-local files. The owner checks:
+-
+-- each image shows what its shot names: 320x240, opaque, the dot or dots
+-  where the scenario puts them at that tick;
+-- every difference between runners is scattered edge pixels, never a
+-  shape such as a missing or moved dot; after G6, every runner is within
+-  the limits;
+-- the set is complete: one golden per shot in `SHOTS` (`tests/shots.rs`)
+-  and nothing else. The set is all or nothing, and a golden that no shot
+-  names fails.
++bytes" or its FLIP numbers (mean, p99, p999) against the reference, with
++the limits that would hold them; then each shot's frame record, its worst
++tolerance use per runner. Add the candidates, maps and records themselves
++as local files. The owner checks:
++
++- each image shows what its shot names: 320x240, opaque, the dots where
++  the scenario puts them, or the room from the camera or pose named;
++- every difference between runners is scattered edge pixels or palette
++  neighbours, never a shape such as a missing or moved object;
++- the set is complete: one golden and one frame record per shot in
++  `shots.toml`, and nothing else. Both sets are all or nothing, and a
++  golden or record that no shot names fails.
++
++At a golden gate the owner's one commit adds the goldens, any
++`[flip.<shot>]` tables, every shot's `golden/frames/<shot>.frame.json`
++from the pinned runner, and clears the `golden = "pending"` markers of the
++shots it adds goldens for. Propose the tables' numbers; never write them.
+ 
+ ## A shot that changes on purpose
+ 
+ A rendering change can move a shot. `shot-exact` then fails with
+-`[E-GOLDEN] N of 76800 pixels differ`. Treat it like a regenerated hash
+-stream: say which change moved which shots and why, in the commit and
+-`PROGRESS.md`. The failing run already saved each failing shot as a
+-candidate, so fetch that run's artifacts and hand them over as above.
+-Never widen `thresholds.toml` and never drop a shot to make a run pass.
+-Adding, renaming or dropping a shot is the owner's commit, with its
+-goldens.
++`[E-GOLDEN] N of 76800 pixels differ`, and the frame-record step fails on
++the fields that moved. Treat it like a regenerated hash stream: say which
++change moved which shots and why, in the commit and `PROGRESS.md`. The
++failing run already saved each failing shot and record as a candidate, so
++fetch that run's artifacts and hand them over as above. Never widen
++`thresholds.toml` or `frame-tolerances.toml`, never mark a shot pending
++and never drop a shot to make a run pass. Adding, renaming, marking or
++dropping a shot is the owner's commit, with its goldens and records.
+diff --git a/.claude/skills/perf-investigate/SKILL.md b/.claude/skills/perf-investigate/SKILL.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..ade8e33b50d5abf1e539d7fb4265e6e76381a84e
+--- /dev/null
++++ b/.claude/skills/perf-investigate/SKILL.md
+@@ -0,0 +1,96 @@
++---
++name: perf-investigate
++description: Read the bench job's instruction counts, find what made a benchmark slower, and choose between a fix and a performance ADR for the owner. Use when the bench step fails with [E-BENCH], is pending, prints [W-BENCH-EXCUSED], or before a change meant to cost instructions.
++---
++
++# Benchmarks: reading a regression
++
++The bench job (spec 6.13; rung 2 plan, decision 14) counts instructions
++with gungraun under valgrind's callgrind (its `Ir`) for the benchmarks in
++`crates/eng-bench/benches/`: the dot and room ticks, the room's build,
++grid traces and `ground_move`. It builds and runs the pushed head and the
++push's base on one Linux x64 runner. There is no stored baseline. Counts
++are not times: the same code gives the same count on any Linux x64
++machine, so a change in a count is the code's, not the runner's.
++
++- **Fails** (`[E-BENCH]`): a head count more than 5% above the base's
++  (`head * 100 > base * 105`, in integers), or a benchmark the base has
++  and the head lacks, unless the push adds an accepted performance ADR
++  that names it.
++- **Pending** (not a pass, fails no job): off Linux, without valgrind or
++  `gungraun-runner` 0.20.0 (it must equal eng-bench's gungraun), or a base
++  equal to the head. On CI a missing tool fails instead.
++- **Passes:** every count within 5%, and any benchmark new in the head.
++
++## Read the result
++
++- **The base**, in the step's output: on `main`, the push's `before`
++  (`ENG_BENCH_BASE`) if it is an ancestor; off `main`, the merge base with
++  `origin/main`; or `--base REV`. On an agent branch that is the merge
++  base, not your previous push, so an earlier push's regression still
++  shows.
++- **The report**: CI's `report-bench` artifact holds
++  `target/ci/reports/bench-<host>.json`; fetch it as the `golden-update`
++  skill fetches artifacts. Its `bench` key has both commits, every
++  benchmark's `name`, `head`, `base`, `change_percent` and `verdict`, and
++  the ADRs the push added, with whether each excuses. `logs-bench` has
++  each step's log, `cargo bench` for both trees among them.
++- **Names** are gungraun ids, `<bench>::<group>::<function>::<id>`, as
++  `sim::tick::room::walk`. The bench is `crates/eng-bench/benches/sim/` or
++  `crates/eng-bench/benches/collision/`; its `cases.rs` builds each input
++  and makes the one call a benchmark measures.
++
++## Reproduce
++
++gungraun runs only on Linux (elsewhere each bench is an empty `main`).
++On another OS use a Linux x64 container with valgrind and the runner:
++`cargo install --locked gungraun-runner@0.20.0`, then
++`cargo xtask bench --base <rev>` in the checkout. It measures the working
++tree as the head, in `target/bench/head`, and the base in a detached
++worktree at `target/bench/tree`, built into `target/bench/base`, then
++removes the worktree. One bench alone: `cargo bench -p eng-bench --bench sim`.
++`crates/eng-bench/tests/cases.rs` runs every case natively on any target,
++which checks the inputs but measures nothing.
++
++## Find the cause
++
++1. **Which benchmarks moved, and together?** One alone points at the call
++   it measures. Several together point at code they share: every room
++   tick runs `ground_move`, whose ground probe and moves are grid traces.
++2. **What changed under them:**
++   `git diff <base> HEAD -- crates/eng-collision-grid crates/kit-fps crates/game-testbed-sim crates/eng-sim crates/eng-ecs`.
++3. **Usual causes:** an extra trace per tick (a planted second ground probe
++   cost 12% to 18% on three benchmarks when the gate was built); a `Vec`
++   built inside a hot loop; more candidates per trace (a larger swept box,
++   a cell visit that grew); work moved before an early exit; a check that
++   runs every tick but could run once at build (sim data is built once).
++   Release overflow checks are on for the core set, in head and base alike.
++4. **Where the instructions went:** gungraun keeps callgrind's output files
++   under each tree's target directory; `callgrind_annotate` on the head's
++   and the base's files for one benchmark shows the functions that grew.
++5. **Did the case change?** A benchmark compares like with like only if its
++   input in `cases.rs` is the same in both trees. `tests/cases.rs` checks
++   each input still does what its name says. A push that slows the code
++   and shrinks a case together hides a regression, which is why the
++   benches are protected from G5.
++
++## Decide
++
++- **Fix it** when the cost buys nothing: bring the count back within 5%,
++  push again, and the step passes.
++- **Propose a performance ADR** when the cost is worth paying (correctness,
++  or a feature the benchmark now exercises). Add a new
++  `docs/adr/<NNNN>-<title>.md` in the same push, with its status
++  `Proposed`, naming each benchmark it excuses in backticks
++  (`` `sim::tick::room::walk` ``), the base and head counts, why the cost is
++  needed and what would win it back; add its row to the ADR index. Only
++  the owner marks it Accepted. Off `main` the excuse is read from
++  `origin/main`'s copy of the file, so until the owner accepts it there
++  the step stays pending (`[W-BENCH-EXCUSED] … once the owner accepts`),
++  never passing. An ADR must be new in the push to excuse anything;
++  editing an accepted one to add a name excuses nothing.
++- **Never** shrink a case, drop or rename a benchmark (a benchmark gone
++  fails as a regression does), change gungraun's settings, or mark an ADR
++  Accepted yourself.
++- Put the numbers (base, head, percent) and the cause in the commit
++  message and the rung's `PROGRESS.md` entry.

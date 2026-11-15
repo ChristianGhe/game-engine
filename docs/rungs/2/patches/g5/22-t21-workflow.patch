@@ -1,0 +1,120 @@
+diff --git a/.claude/skills/golden-update/SKILL.md b/.claude/skills/golden-update/SKILL.md
+index 70b17debd4eb9a9533714696893223edf8c4b81d..e041aedf040a4eda4bb2e26e9ec3f1c7c9cd0ecb 100644
+--- a/.claude/skills/golden-update/SKILL.md
++++ b/.claude/skills/golden-update/SKILL.md
+@@ -55,10 +55,10 @@ windows-11-arm, macos-26.
+   FLIP error maps (`flip/<shot>.png`) and `shots.json`: the configuration,
+   the machine, each shot's result and `views`, what each shot drew (kind,
+   pose, camera).
+-- The frame-record step's artifact: `target/frame-candidates/`, every
+-  shot's `<shot>.frame.json` and `frames.json`, which says where they were
+-  rendered and how each compared. Only CI's pinned runner can make the
+-  references.
++- `frame-candidates-<runner>`: the frame-record step's
++  `target/frame-candidates/`, every shot's `<shot>.frame.json` and
++  `frames.json`, which says where they were rendered and how each
++  compared. Only CI's pinned runner can make the references.
+ - `report-native-<runner>`: the job's report and step outputs. The
+   `shot-exact`, `shot-flip` and `frame-record` steps say pass, fail or
+   pending ("no golden yet", "no reference yet", or a marked shot).
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 5149b0d680d3ab7eacedcdbd2ea03ad3fbc55fd9..1206bac899e9b430e5e45124ca80c184929a1954 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -155,6 +155,11 @@ jobs:
+     timeout-minutes: 30
+     permissions:
+       contents: read
++    # Two lavapipe processes side by side corrupted Mesa's on-disk shader
++    # cache, after which every lavapipe process died (rung 2, TA1); the
++    # render-bug and rule cases render in copies, one after another.
++    env:
++      MESA_SHADER_CACHE_DISABLE: "true"
+     steps:
+       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+         with:
+@@ -277,6 +282,12 @@ jobs:
+     defaults:
+       run:
+         shell: bash
++    # Job-wide (rung 2, TA1): two lavapipe processes side by side corrupted
++    # Mesa's on-disk shader cache, after which every lavapipe process died,
++    # a likely cause of the shot processes lost before. Other drivers
++    # ignore it.
++    env:
++      MESA_SHADER_CACHE_DISABLE: "true"
+     steps:
+       # Windows images check text out with CRLF; the committed hash streams
+       # must stay byte for byte.
+@@ -384,11 +395,30 @@ jobs:
+         if: always()
+         with:
+           name: report-native-${{ matrix.runner }}
+-          # report.json is the copy of reports/native-<host>.json.
++          # report.json is the copy of reports/native-<host>.json. The
++          # videos and their frame records (about 50 MB) go in proof-video,
++          # so the summary, which downloads every report, stays small.
+           path: |
+             target/ci/
+             !target/ci/report.json
++            !target/ci/*.apng
++            !target/ci/*.apng.frame.json
+             target/nextest/ci/junit.xml
++      # The proof videos (criterion 22): proof.apng, the dot session, and
++      # room.apng, the 600-tick room walk, with their reports and frame
++      # records; only ubuntu-24.04's proof-video step makes them.
++      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
++        if: always() && matrix.runner == 'ubuntu-24.04'
++        with:
++          name: proof-video
++          path: |
++            target/ci/*.apng
++            target/ci/*.apng.frame.json
++            target/ci/proof.json
++            target/ci/room.json
++          if-no-files-found: ignore
++          # Already compressed.
++          compression-level: 0
+       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+         if: always()
+         with:
+@@ -410,6 +440,21 @@ jobs:
+         with:
+           name: golden-candidates-${{ matrix.runner }}
+           path: target/golden-candidates/
++      # The frame-record step's records and frames.json (plan addition A1):
++      # the pinned runner's are the references' candidates for G6.
++      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
++        if: always()
++        with:
++          name: frame-candidates-${{ matrix.runner }}
++          path: target/frame-candidates/
++          if-no-files-found: ignore
++      # The scene-rules step's findings, passed or not (plan addition A2).
++      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
++        if: always()
++        with:
++          name: scene-rules-${{ matrix.runner }}
++          path: target/scene-rules/rules.json
++          if-no-files-found: ignore
+       # A shot that panics inside the shot harness writes its crash.json
+       # under the harness's ENG_AGENT_LOG_DIR.
+       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+@@ -497,9 +542,17 @@ jobs:
+       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+         with:
+           save-if: ${{ github.ref == 'refs/heads/main' }}
++      # Only what the summary reads: the hash streams and every job's report
++      # (the mutants shards' too), each artifact in a directory of its own.
++      # The rest (dist archives, candidates, videos, logs) stays behind.
++      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
++        with:
++          path: target/ci/in
++          pattern: hashes-*
+       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+         with:
+           path: target/ci/in
++          pattern: report-*
+       - name: compare hashes and measure the PR tier and the native jobs
+         env:
+           GH_TOKEN: ${{ github.token }}

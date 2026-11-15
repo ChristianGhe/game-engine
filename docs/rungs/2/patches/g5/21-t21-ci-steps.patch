@@ -1,0 +1,1959 @@
+diff --git a/xtask/src/ci.rs b/xtask/src/ci.rs
+index e90181b6a42e1eef9a6ec6965669a91dfbd527b4..c6de6248b5a3b8b9ae2212156aa743dea3ca56f8 100644
+--- a/xtask/src/ci.rs
++++ b/xtask/src/ci.rs
+@@ -22,6 +22,9 @@ pub const JOBS: [&str; 10] = [
+ pub const RISCV: &str = "riscv64gc-unknown-linux-gnu";
+ pub const WASM: &str = "wasm32-unknown-unknown";
+ 
++#[path = "ci_harness.rs"]
++mod harnesses;
++
+ /// `cargo <args>` in `root`, with `--locked` on CI.
+ pub(crate) fn cargo_command(root: &Path, args: &[&str]) -> Command {
+     let mut args = args.to_vec();
+@@ -97,46 +100,6 @@ pub(crate) fn tests_env(root: &Path, env: &[(&str, &str)]) -> Result<String, Str
+     })
+ }
+ 
+-/// The `test` job's named harness steps, in order: the step's name, then
+-/// the test files it runs, each as a package and a test target
+-/// (`crates/<package>/tests/<target>.rs`). `tests` runs them as well; a
+-/// step of their own gives each its own entry in the job's report, where
+-/// acceptance checks find steps by name, and its own log. They build on the
+-/// dev profile: `crash_json` looks for the `eng_cli::run::run` frame, which
+-/// a release build without debug info can inline away. Like every cargo
+-/// command here, they get the stamp's four values from `util::cargo`
+-/// (`stamp.rs`), so `version` checks a stamp with all of them set.
+-const HARNESSES: [(&str, &[(&str, &str)]); 7] = [
+-    ("known-answers", &[("eng-math", "known_answers")]),
+-    ("exit-codes", &[("game-testbed", "exit_codes")]),
+-    ("crash-json", &[("game-testbed", "crash_json")]),
+-    ("version", &[("game-testbed", "version")]),
+-    ("live-input", &[("eng-input", "live_input")]),
+-    // Criterion 11: the wire format's golden vectors, decoders that never
+-    // panic, and a session that hashes the same as stepping the sim.
+-    (
+-        "wire-session",
+-        &[
+-            ("eng-net-wire", "golden"),
+-            ("eng-net-wire", "never_panic"),
+-            ("eng-session", "hash_equality"),
+-        ],
+-    ),
+-    // Criterion 10: every WGSL file validates and translates for each
+-    // backend.
+-    ("shaders", &[("eng-gpu", "shaders")]),
+-];
+-
+-/// One step from `HARNESSES`, logged under the step's name: a single
+-/// `cargo test` that names each of its packages and test targets.
+-fn harness(root: &Path, step: &str, files: &[(&str, &str)]) -> Result<String, String> {
+-    let mut args = vec!["test"];
+-    for &(package, target) in files {
+-        args.extend(["-p", package, "--test", target]);
+-    }
+-    cargo_step(root, step, &args)
+-}
+-
+ pub(crate) fn core_crates(root: &Path) -> Result<Vec<String>, String> {
+     let text = fs::read_to_string(root.join("architecture.toml")).map_err(|e| e.to_string())?;
+     let table: toml::Table = text.parse().map_err(|e: toml::de::Error| e.to_string())?;
+@@ -266,6 +229,14 @@ fn lint(root: &Path, steps: &mut Steps) {
+     });
+     // Criterion 17: the testbed's notices, every licence on deny.toml's list.
+     steps.run("notices", || crate::dist_notices::run(root));
++    // Rung 2 (T11): the room's palette is its script's output, byte for
++    // byte, so a hand edit to room.gpl fails here.
++    steps.run("palette", || {
++        let dir = "crates/game-testbed-client/palettes";
++        let (script, gpl) = (format!("{dir}/room_gpl.py"), format!("{dir}/room.gpl"));
++        let args = ["python3", "-I", script.as_str(), "--check", gpl.as_str()];
++        tool_step(root, "palette", "python3", &args, "Python 3")
++    });
+     steps.run("typos", || {
+         tool_step(
+             root,
+@@ -279,8 +250,8 @@ fn lint(root: &Path, steps: &mut Steps) {
+ 
+ fn test(root: &Path, steps: &mut Steps) {
+     steps.run("tests", || tests(root));
+-    for (step, files) in HARNESSES {
+-        steps.run(step, || harness(root, step, files));
++    for (step, files) in harnesses::HARNESSES {
++        steps.run(step, || harnesses::harness(root, step, files));
+     }
+     steps.run("replay", || replay::run(root, &replay::Options::default()));
+ }
+@@ -331,8 +302,8 @@ fn riscv(root: &Path, steps: &mut Steps) -> Result<(), String> {
+ /// The last job: cross-architecture equality of the downloaded hash streams,
+ /// the PR tier's and the native jobs', each against the committed streams
+ /// (criterion 7), the measured durations of the PR tier and of the native
+-/// jobs (criterion 13), and a mutants report from every shard (criterion
+-/// 19, `mutants.rs`).
++/// jobs (criterion 13), a mutants report from every shard (criterion 19,
++/// `mutants.rs`), and the bench and mutants jobs' times (rung 2).
+ fn summary(root: &Path, steps: &mut Steps) {
+     let incoming = root.join("target/ci/in");
+     steps.run("compare-hashes", || {
+@@ -363,6 +334,13 @@ fn summary(root: &Path, steps: &mut Steps) {
+     steps.run("mutants-shards", || {
+         crate::mutants::shard_reports(&incoming)
+     });
++    // Rung 2: the two new jobs' times, reported against budgets.toml [ci].
++    steps.run_judged("bench-duration", || {
++        ci_durations::job_tier(root, "bench", "bench_job_minutes")
++    });
++    steps.run_judged("mutants-duration", || {
++        ci_durations::job_tier(root, "mutants", "mutants_job_minutes")
++    });
+ }
+ 
+ /// An artifact holds `<triple>/*.txt`; use the directory with the streams.
+@@ -373,72 +351,3 @@ fn stream_dir(artifact: &Path) -> std::path::PathBuf {
+         .and_then(|p| p.parent().map(Path::to_path_buf))
+         .unwrap_or_else(|| artifact.to_path_buf())
+ }
+-
+-#[cfg(test)]
+-mod tests {
+-    use std::path::Path;
+-
+-    use super::HARNESSES;
+-
+-    /// Whether `package` has a test target named `target`: a file
+-    /// `tests/<target>.rs` or `tests/<target>/main.rs`, or a `[[test]]` of
+-    /// that name in its manifest.
+-    fn has_test_target(root: &Path, package: &str, target: &str) -> bool {
+-        let dir = root.join("crates").join(package);
+-        let tests = dir.join("tests");
+-        if tests.join(format!("{target}.rs")).is_file()
+-            || tests.join(target).join("main.rs").is_file()
+-        {
+-            return true;
+-        }
+-        let manifest: toml::Table = std::fs::read_to_string(dir.join("Cargo.toml"))
+-            .ok()
+-            .and_then(|text| text.parse().ok())
+-            .unwrap_or_default();
+-        manifest
+-            .get("test")
+-            .and_then(toml::Value::as_array)
+-            .is_some_and(|list| {
+-                list.iter()
+-                    .any(|t| t.get("name").and_then(toml::Value::as_str) == Some(target))
+-            })
+-    }
+-
+-    /// Every named step runs test files that exist, under a name of its
+-    /// own, so renaming a harness fails here and not only on CI. A step's
+-    /// one `cargo test` runs a target in each package it names that has
+-    /// one, so a step's target names are each in one of its packages only.
+-    #[test]
+-    fn every_harness_step_names_existing_test_files() {
+-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+-            .parent()
+-            .expect("xtask sits in the repo root");
+-        for (step, files) in HARNESSES {
+-            assert!(!files.is_empty(), "step {step} runs nothing");
+-            for &(package, target) in files {
+-                let path = root
+-                    .join("crates")
+-                    .join(package)
+-                    .join("tests")
+-                    .join(format!("{target}.rs"));
+-                assert!(path.is_file(), "step {step}: no {}", path.display());
+-                for &(other, _) in files.iter().filter(|f| f.0 != package) {
+-                    assert!(
+-                        !has_test_target(root, other, target),
+-                        "step {step} also runs {other}'s test target {target}"
+-                    );
+-                }
+-            }
+-        }
+-        // With the job's other two steps.
+-        let mut names: Vec<&str> = HARNESSES.iter().map(|h| h.0).collect();
+-        names.extend(["tests", "replay"]);
+-        names.sort_unstable();
+-        let repeated: Vec<&str> = names
+-            .windows(2)
+-            .filter(|w| w[0] == w[1])
+-            .map(|w| w[0])
+-            .collect();
+-        assert!(repeated.is_empty(), "step names repeat: {repeated:?}");
+-    }
+-}
+diff --git a/xtask/src/ci_durations.rs b/xtask/src/ci_durations.rs
+index 334e6c5aecd059ac701e783b4e92ce3cc8e615d0..519b2d20050cf4c8e7caf1e54d9be03cca69a1b5 100644
+--- a/xtask/src/ci_durations.rs
++++ b/xtask/src/ci_durations.rs
+@@ -1,5 +1,6 @@
+ //! How long the PR tier and the native jobs took on GitHub Actions: the
+-//! summary's `pr-duration` and `native-duration` steps (rung 1b, patch X3).
++//! summary's `pr-duration` and `native-duration` steps (rung 1b, patch X3),
++//! and rung 2's `bench-duration` and `mutants-duration`.
+ //! The steps ask `gh` for this run's jobs; the verdicts are pure functions
+ //! of that list (`ci_durations_tests.rs`).
+ 
+@@ -7,7 +8,8 @@ use std::fs;
+ use std::path::Path;
+ use std::process::Command;
+ 
+-use crate::{ci_native, util};
++use crate::ci_native;
++use crate::util::{self, Done};
+ 
+ /// The PR tier's jobs in the workflow (a matrix job is `<name> (<value>)`).
+ pub(crate) const PR_JOBS: [&str; 5] = ["lint", "test", "riscv", "wasm", "selftest"];
+@@ -25,7 +27,8 @@ fn github_run(measured: &str) -> Result<(String, String), String> {
+     }
+ }
+ 
+-/// This run's jobs, a line each: name, start and end (`null` until set).
++/// This run's jobs, a line each: name, start, end (`null` until set) and
++/// conclusion (`null` until done; `skipped` for a job whose `if` said no).
+ fn run_jobs(root: &Path, repo: &str, run: &str) -> Result<String, String> {
+     let mut cmd = Command::new("gh");
+     cmd.args([
+@@ -33,7 +36,7 @@ fn run_jobs(root: &Path, repo: &str, run: &str) -> Result<String, String> {
+         "--paginate",
+         &format!("repos/{repo}/actions/runs/{run}/jobs?per_page=100"),
+         "--jq",
+-        r#".jobs[] | [.name, (.started_at // "null"), (.completed_at // "null")] | @tsv"#,
++        r#".jobs[] | [.name, (.started_at // "null"), (.completed_at // "null"), (.conclusion // "null")] | @tsv"#,
+     ]);
+     util::run_quiet(root, "gh-jobs", &mut cmd)
+ }
+@@ -76,6 +79,80 @@ pub fn native_tier(root: &Path) -> Result<String, String> {
+     native_duration(&jobs, &runners, budget)
+ }
+ 
++/// The `bench-duration` and `mutants-duration` steps (rung 2): each run of
++/// `job` on GitHub (every shard of a matrix), the slowest held to
++/// `budgets.toml [ci] <key>`.
++pub fn job_tier(root: &Path, job: &str, key: &str) -> Result<Done, String> {
++    let (repo, run) = github_run(&format!("the {job} job's duration"))?;
++    let budget =
++        ci_budget(root, key).ok_or_else(|| format!("[E-BUDGET] budgets.toml has no [ci] {key}"))?;
++    let jobs = run_jobs(root, &repo, &run)?;
++    job_duration(&jobs, job, budget, key)
++}
++
++/// The verdict of [`job_tier`] from `jobs` (as for [`native_duration`],
++/// with the conclusion read): how long each run of `job` (named `job`, or
++/// `job (<value>)` for a matrix) took, the slowest held to
++/// `budget_minutes`. Going over is reported, never failed. A job this event
++/// skipped (bench on the weekly schedule, by its `if`) is pending, since
++/// nothing ran to measure; a run missing or unfinished fails.
++pub fn job_duration(jobs: &str, job: &str, budget_minutes: i64, key: &str) -> Result<Done, String> {
++    let matrix = format!("{job} (");
++    let (mut took, mut skipped, mut unfinished) = (Vec::new(), 0, Vec::new());
++    for line in jobs.lines() {
++        let fields: Vec<&str> = line.split('\t').collect();
++        let name = fields[0];
++        if name != job && !name.starts_with(&matrix) {
++            continue;
++        }
++        if fields.get(3) == Some(&"skipped") {
++            skipped += 1;
++            continue;
++        }
++        let start = fields.get(1).and_then(|t| unix_seconds(t));
++        let end = fields.get(2).and_then(|t| unix_seconds(t));
++        match start
++            .zip(end)
++            .and_then(|(start, end)| end.checked_sub(start))
++        {
++            Some(seconds) => took.push((name, seconds)),
++            None => unfinished.push(name),
++        }
++    }
++    if !unfinished.is_empty() {
++        return Err(format!(
++            "[E-DURATION] unfinished: {}",
++            unfinished.join(", ")
++        ));
++    }
++    if took.is_empty() {
++        return if skipped > 0 {
++            Ok(Done::Pending(format!(
++                "{job} was skipped on this event: nothing to measure"
++            )))
++        } else {
++            Err(format!("[E-DURATION] this run has no {job} job"))
++        };
++    }
++    let minutes = |seconds: u64| format!("{:.1} min", seconds as f64 / 60.0);
++    let list: Vec<String> = took
++        .iter()
++        .map(|&(name, seconds)| format!("{name} {}", minutes(seconds)))
++        .collect();
++    let &(slowest, seconds) = took
++        .iter()
++        .max_by_key(|&&(_, seconds)| seconds)
++        .expect("took is not empty");
++    let within = i64::try_from(seconds).is_ok_and(|s| s <= budget_minutes.saturating_mul(60));
++    let verdict = if within { "within" } else { "OVER" };
++    Ok(Done::Pass(format!(
++        "{}; the slowest, {slowest}, took {} ({verdict} the {budget_minutes} min budget, \
++         budgets.toml [ci] {key})",
++        list.join(", "),
++        minutes(seconds)
++    )))
++}
++
+ /// Seconds since 1970 for a UTC time as GitHub's API writes it,
+ /// `2026-11-01T00:12:34Z`; `None` for anything else.
+ pub fn unix_seconds(iso: &str) -> Option<u64> {
+diff --git a/xtask/src/ci_durations_tests.rs b/xtask/src/ci_durations_tests.rs
+index 6561fd0ff13a7dc06c31ba637fb0ba7f45cf06f7..ba35565b8cf52095a14b9c8ca2cdb7ec99e90e59 100644
+--- a/xtask/src/ci_durations_tests.rs
++++ b/xtask/src/ci_durations_tests.rs
+@@ -131,3 +131,40 @@ fn pr_duration_needs_every_pr_job_finished_and_the_run_start() {
+     let testing = testing.replace("test (ubuntu-24.04-arm)\t", "tests\t");
+     assert!(pr_duration(&testing, "2026-11-01T09:59:30Z", &PR_JOBS, 15).is_err());
+ }
++
++/// Rung 2's `bench-duration` and `mutants-duration`: every run of the job,
++/// shards included, with the fourth column (the conclusion) read.
++#[test]
++fn a_job_s_duration_counts_every_shard_and_a_skip_is_pending() {
++    let jobs = "mutants (0)\t2026-11-01T00:00:00Z\t2026-11-01T00:10:00Z\tsuccess\n\
++                mutants (1)\t2026-11-01T00:00:00Z\t2026-11-01T00:31:00Z\tfailure\n\
++                mutants-extra\t2026-11-01T00:00:00Z\t2026-11-01T02:00:00Z\tsuccess\n\
++                bench\t2026-11-01T00:00:00Z\t2026-11-01T00:00:00Z\tskipped\n";
++    let Ok(Done::Pass(text)) = job_duration(jobs, "mutants", 35, "mutants_job_minutes") else {
++        panic!("two shards measured");
++    };
++    assert!(
++        text.contains("mutants (0) 10.0 min, mutants (1) 31.0 min;"),
++        "{text}"
++    );
++    assert!(
++        text.contains("the slowest, mutants (1), took 31.0 min (within the 35 min"),
++        "{text}"
++    );
++    let Ok(Done::Pass(text)) = job_duration(jobs, "mutants", 30, "mutants_job_minutes") else {
++        panic!("over is reported, not failed");
++    };
++    assert!(text.contains("(OVER the 30 min budget, budgets.toml [ci] mutants_job_minutes)"));
++    assert!(matches!(
++        job_duration(jobs, "bench", 15, "bench_job_minutes"),
++        Ok(Done::Pending(_))
++    ));
++    let none = job_duration(jobs, "native", 25, "k").unwrap_err();
++    assert!(
++        none.contains("[E-DURATION] this run has no native job"),
++        "{none}"
++    );
++    let running = "bench\t2026-11-01T00:00:00Z\tnull\tnull\n";
++    let err = job_duration(running, "bench", 15, "k").unwrap_err();
++    assert!(err.contains("unfinished: bench"), "{err}");
++}
+diff --git a/xtask/src/ci_harness.rs b/xtask/src/ci_harness.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..a340024189dd06ab22597f63e6e4d4a1663bd21c
+--- /dev/null
++++ b/xtask/src/ci_harness.rs
+@@ -0,0 +1,219 @@
++//! The `test` job's named harness steps (`ci.rs`): each criterion's test
++//! files, run on their own so the job's report has a step per criterion.
++
++use std::path::Path;
++
++use super::cargo_step;
++
++/// The `test` job's named harness steps, in order: the step's name, then
++/// the test files it runs, each as a package and a test target
++/// (`crates/<package>/tests/<target>.rs`); one `cargo test` runs a target
++/// in each package of the step that has one, so the step lists each of
++/// those. `tests` runs them as well; a
++/// step of their own gives each its own entry in the job's report, where
++/// acceptance checks find steps by name, and its own log. They build on the
++/// dev profile: `crash_json` looks for the `eng_cli::run::run` frame, which
++/// a release build without debug info can inline away. Like every cargo
++/// command here, they get the stamp's four values from `util::cargo`
++/// (`stamp.rs`), so `version` checks a stamp with all of them set.
++pub(super) const HARNESSES: [(&str, &[(&str, &str)]); 13] = [
++    ("known-answers", &[("eng-math", "known_answers")]),
++    ("exit-codes", &[("game-testbed", "exit_codes")]),
++    ("crash-json", &[("game-testbed", "crash_json")]),
++    ("version", &[("game-testbed", "version")]),
++    ("live-input", &[("eng-input", "live_input")]),
++    // Criterion 11: the wire format's golden vectors, decoders that never
++    // panic, and a session that hashes the same as stepping the sim.
++    (
++        "wire-session",
++        &[
++            ("eng-net-wire", "golden"),
++            ("eng-net-wire", "never_panic"),
++            ("eng-session", "hash_equality"),
++        ],
++    ),
++    // Criterion 10: every WGSL file validates and translates for each
++    // backend.
++    ("shaders", &[("eng-gpu", "shaders")]),
++    // Rung 2, criterion 3 (`collision-grid`): the collision contract and
++    // conformance suite, the brute-force oracle's traces on proptest maps,
++    // the pass-through cases, limits and found traces; the check's own
++    // bad worlds.
++    (
++        "collision",
++        &[
++            ("eng-collision-grid", "contract"),
++            ("eng-collision-grid", "oracle"),
++            ("eng-collision-grid", "corners"),
++            ("eng-collision-grid", "vertices"),
++            ("eng-collision-grid", "limits"),
++            ("eng-collision-grid", "found"),
++            ("eng-collision-api", "room"),
++        ],
++    ),
++    // Criterion 4 (`ground-movement`): Q2's steps, snapping, gravity and
++    // slopes, and the flat-ground proptest over the grid (`ground`).
++    (
++        "movement",
++        &[
++            ("kit-fps", "ground"),
++            ("kit-fps", "slopes"),
++            ("kit-fps", "boxes"),
++            ("kit-fps", "steps"),
++        ],
++    ),
++    // Criterion 5 (`sim-data`): constant resources outside the state, the
++    // sim-data hash's known answer and the room's snapshot size, the room's
++    // pinned values, and the hash in reports, recordings and streams.
++    (
++        "sim-data",
++        &[
++            ("eng-ecs", "constants"),
++            ("eng-sim", "sim_data"),
++            ("game-testbed-sim", "sim_data"),
++            ("game-testbed-sim", "room"),
++            ("game-testbed", "maps"),
++            ("game-testbed", "room"),
++        ],
++    ),
++    // Criterion 6 (`render-graph`): Q1's oracles that need no GPU; the
++    // native job's `tests` runs `bypass_render` and `transients`.
++    (
++        "render-graph",
++        &[
++            ("eng-gpu", "graph_order"),
++            ("eng-gpu", "graph_errors"),
++            ("eng-gpu", "pool"),
++            ("eng-gpu", "bypass"),
++        ],
++    ),
++    // Criterion 8 (`sprites`): Q4's rotations against the f64 oracle; the
++    // native job's `look` draws them.
++    ("sprites", &[("eng-render", "sprite_rotation")]),
++    // Criterion 9 (`mouse-look`): Q3's oracle and model, and T15's angles
++    // between ticks.
++    (
++        "mouse-look",
++        &[
++            ("eng-input", "mouse_look"),
++            ("eng-input", "mouse_look_exact"),
++            ("eng-input", "mouse_look_model"),
++            ("eng-input", "look_between_ticks"),
++        ],
++    ),
++];
++
++/// One step from `HARNESSES`, logged under the step's name: a single
++/// `cargo test` that names each of its packages and test targets.
++pub(super) fn harness(root: &Path, step: &str, files: &[(&str, &str)]) -> Result<String, String> {
++    let mut args = vec!["test"];
++    for &(package, target) in files {
++        args.extend(["-p", package, "--test", target]);
++    }
++    cargo_step(root, step, &args)
++}
++
++#[cfg(test)]
++mod tests {
++    use std::path::Path;
++
++    use super::HARNESSES;
++
++    /// Whether `package` has a test target named `target`: a file
++    /// `tests/<target>.rs` or `tests/<target>/main.rs`, or a `[[test]]` of
++    /// that name in its manifest.
++    fn has_test_target(root: &Path, package: &str, target: &str) -> bool {
++        let dir = root.join("crates").join(package);
++        let tests = dir.join("tests");
++        if tests.join(format!("{target}.rs")).is_file()
++            || tests.join(target).join("main.rs").is_file()
++        {
++            return true;
++        }
++        let manifest: toml::Table = std::fs::read_to_string(dir.join("Cargo.toml"))
++            .ok()
++            .and_then(|text| text.parse().ok())
++            .unwrap_or_default();
++        manifest
++            .get("test")
++            .and_then(toml::Value::as_array)
++            .is_some_and(|list| {
++                list.iter()
++                    .any(|t| t.get("name").and_then(toml::Value::as_str) == Some(target))
++            })
++    }
++
++    /// Every named step runs test files that exist, under a name of its
++    /// own, so renaming a harness fails here and not only on CI. A step's
++    /// one `cargo test` runs a target in each package it names that has
++    /// one, so the step lists the target for each of those packages.
++    #[test]
++    fn every_harness_step_names_existing_test_files() {
++        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
++            .parent()
++            .expect("xtask sits in the repo root");
++        for (step, files) in HARNESSES {
++            assert!(!files.is_empty(), "step {step} runs nothing");
++            for &(package, target) in files {
++                let path = root
++                    .join("crates")
++                    .join(package)
++                    .join("tests")
++                    .join(format!("{target}.rs"));
++                assert!(path.is_file(), "step {step}: no {}", path.display());
++                for &(other, _) in files.iter().filter(|f| f.0 != package) {
++                    assert!(
++                        !has_test_target(root, other, target) || files.contains(&(other, target)),
++                        "step {step} also runs {other}'s test target {target}"
++                    );
++                }
++            }
++        }
++        // With the job's other two steps.
++        let mut names: Vec<&str> = HARNESSES.iter().map(|h| h.0).collect();
++        names.extend(["tests", "replay"]);
++        names.sort_unstable();
++        let repeated: Vec<&str> = names
++            .windows(2)
++            .filter(|w| w[0] == w[1])
++            .map(|w| w[0])
++            .collect();
++        assert!(repeated.is_empty(), "step names repeat: {repeated:?}");
++    }
++
++    /// Every `test` and `selftest` check of the current rung's acceptance
++    /// list names a step those jobs run, as `ci_native_tests.rs` holds the
++    /// native checks (rung 2, T21: the six new test steps and the
++    /// selftest's cases).
++    #[test]
++    fn every_test_and_selftest_check_names_a_step() {
++        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
++            .parent()
++            .expect("xtask sits in the repo root");
++        let rung = std::fs::read_to_string(root.join("docs/rungs/current.txt")).unwrap();
++        let path = root
++            .join("docs/rungs")
++            .join(rung.trim())
++            .join("acceptance.json");
++        let text = std::fs::read_to_string(path).unwrap();
++        let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
++        let mut steps: Vec<&str> = HARNESSES.iter().map(|h| h.0).collect();
++        steps.extend(["tests", "replay"]);
++        let checks = doc["features"].as_array().unwrap().iter();
++        let checks = checks.flat_map(|f| f["checks"].as_array().into_iter().flatten());
++        for check in checks {
++            let step = check["step"].as_str().unwrap();
++            match check["job"].as_str().unwrap() {
++                "test" => assert!(steps.contains(&step), "the test job has no step {step}"),
++                "selftest" => {
++                    let case = step.strip_prefix("violation:").unwrap_or_default();
++                    assert!(
++                        crate::selftest::CASES.contains(&case),
++                        "the selftest job has no step {step}"
++                    );
++                }
++                _ => {}
++            }
++        }
++    }
++}
+diff --git a/xtask/src/ci_native.rs b/xtask/src/ci_native.rs
+index dc55a88d4129146f777624c9c99f6565134dbfa1..034b2c781d785b11bfa64e5a2d0829135d9f361f 100644
+--- a/xtask/src/ci_native.rs
++++ b/xtask/src/ci_native.rs
+@@ -4,14 +4,15 @@
+ //! crash files, version stamp, GPU counters and proof video on the runner's
+ //! own adapter.
+ //!
+-//! [`STEPS`] is the job. Its names are the steps that the acceptance list's
+-//! native checks name (`docs/rungs/1b/acceptance.json`), on the hosts it
+-//! names, and `ci_native_tests.rs` holds the two together. The report
++//! [`STEPS`] is the job (rung 2's first-person steps in `ci_native_fps.rs`,
++//! macOS's own in `ci_native_mac.rs`). Its names are the steps the current
++//! rung's acceptance list's native checks name, on the hosts it names, and
++//! `ci_native_tests.rs` holds the two together. The report
+ //! (`target/ci/reports/native-<host>.json`) adds the adapter and driver
+ //! (`gpu`, from the `gpu-budgets` shot) and the OS version. The steps write
+-//! their files to `target/ci/` (`version.*`, `window.*`, `shot.*`,
+-//! `proof.*`), the hash streams to `target/ci/hashes/<host>/`, and the shot
+-//! harness its candidates to `target/golden-candidates/`.
++//! their files to `target/ci/` ([`OUTPUTS`]), the hash streams to
++//! `target/ci/hashes/<host>/`, and candidates to `target/golden-candidates/`
++//! (shots), `target/frame-candidates/` and `target/scene-rules/`.
+ //!
+ //! The job sets `ENG_REQUIRE_GPU=1` and `ENG_REQUIRE_DISPLAY=1` for every
+ //! step that renders or opens a window, so none of those tests can skip. On
+@@ -28,6 +29,11 @@ use serde_json::{Map, Value, json};
+ use crate::util::{self, Done, Steps};
+ use crate::{ci, ci_verdicts as verdicts, replay};
+ 
++#[path = "ci_native_fps.rs"]
++mod fps;
++#[path = "ci_native_mac.rs"]
++mod mac;
++
+ /// The five native runners (spec 8.2) and the host each reports, as the
+ /// acceptance checks' targets name them. `windows-11-arm` needs a native
+ /// aarch64 toolchain to report its own (rung 1b, T5 open question 4).
+@@ -42,7 +48,6 @@ pub const RUNNERS: [(&str, &str); 5] = [
+ /// The pinned configuration's host (plan decision 3): exact shots, and the
+ /// steps that run only there.
+ const LINUX_X64: &str = "x86_64-unknown-linux-gnu";
+-const INTEL_MAC: &str = "x86_64-apple-darwin";
+ 
+ /// Which hosts a step runs on.
+ #[derive(Clone, Copy)]
+@@ -70,7 +75,7 @@ impl Hosts {
+ type Step = fn(&Path) -> Result<Done, String>;
+ 
+ /// The native job: each step's name, where it runs, and what it does.
+-const STEPS: [(&str, Hosts, Step); 13] = [
++const STEPS: [(&str, Hosts, Step); 19] = [
+     ("build", Hosts::All, build),
+     ("tests", Hosts::All, tests),
+     ("replay", Hosts::All, replay),
+@@ -78,11 +83,19 @@ const STEPS: [(&str, Hosts, Step); 13] = [
+     ("version", Hosts::All, version),
+     ("shot-exact", Hosts::LinuxX64, shot_exact),
+     ("shot-flip", Hosts::NotLinuxX64, shot_flip),
++    // Rung 2: `poses` reads the `shots.json` the shot step just wrote.
++    ("poses", Hosts::All, fps::poses),
++    ("look", Hosts::All, fps::look),
++    ("frame-record", Hosts::All, fps::frame_record),
++    ("scene-rules", Hosts::All, fps::scene_rules),
+     ("window", Hosts::All, window),
++    ("window-room", Hosts::All, fps::window_room),
++    // After both windows, whose frames it holds too.
+     ("gpu-budgets", Hosts::All, gpu_budgets),
+     ("esc", Hosts::LinuxX64, esc),
+     ("proof-video", Hosts::LinuxX64, proof_video),
+-    ("check-intel-mac", Hosts::MacOs, check_intel_mac),
++    ("check-intel-mac", Hosts::MacOs, mac::check_intel_mac),
++    ("clippy-shim", Hosts::MacOs, mac::clippy_shim),
+     ("dist", Hosts::Playable, crate::dist_check::step),
+ ];
+ 
+@@ -95,7 +108,15 @@ const STREAM: &str = "crates/game-testbed/hashes/dot-square.seed1.txt";
+ 
+ /// The files the steps leave in `target/ci/` (`<stem>.<extension>`),
+ /// removed when the job starts so a step never reads an earlier run's.
+-const OUTPUTS: [&str; 4] = ["version", "window", "shot", "proof"];
++const OUTPUTS: [&str; 7] = [
++    "version",
++    "window",
++    "window-room",
++    "shot",
++    "room-shot",
++    "proof",
++    "room",
++];
+ const EXTENSIONS: [&str; 4] = ["txt", "json", "png", "apng"];
+ 
+ /// The `gpu` keys the report copies from a render's report: the adapter and
+@@ -384,7 +405,9 @@ fn window(root: &Path) -> Result<Done, String> {
+ 
+ /// A shot held to `budgets.toml [gpu]` by the probe (exit 13 over), whose
+ /// report records the adapter; the window's frames are held too (criterion
+-/// 9, amendment 42).
++/// 9, amendment 42). Rung 2 (criterion 21): a room shot and the room
++/// window's frames under `[gpu.first_person]`, with the shot's pass times
++/// and pool size (`ci_native_fps.rs`).
+ fn gpu_budgets(root: &Path) -> Result<Done, String> {
+     let binary = testbed(root)?;
+     let (png, report) = (
+@@ -415,7 +438,8 @@ fn gpu_budgets(root: &Path) -> Result<Done, String> {
+     let shot = read_json(&root.join("target/ci/shot.json"))?;
+     let window = read_json(&root.join("target/ci/window.json")).ok();
+     let budgets = read_text(&root.join("budgets.toml"))?;
+-    pass(verdicts::gpu_budgets(&shot, &budgets, window.as_ref()))
++    let dots = verdicts::gpu_budgets(&shot, &budgets, window.as_ref())?;
++    fps::with_room_budgets(root, &binary, &dots)
+ }
+ 
+ /// Escape from the keyboard through XTEST quits `play` within 5 s
+@@ -445,7 +469,8 @@ fn esc(root: &Path) -> Result<Done, String> {
+ }
+ 
+ /// The proof video of the scripted session (criterion 15, amendment 42):
+-/// 241 frames, uploaded with the job's files.
++/// 241 frames; and rung 2's `room.apng`, the room walk (criterion 22).
++/// The workflow uploads both as `proof-video`.
+ fn proof_video(root: &Path) -> Result<Done, String> {
+     let binary = testbed(root)?;
+     let (apng, report) = (
+@@ -464,31 +489,9 @@ fn proof_video(root: &Path) -> Result<Done, String> {
+     )?;
+     let bytes = fs::read(root.join("target/ci/proof.apng")).map_err(|e| format!("{apng}: {e}"))?;
+     let report = read_json(&root.join("target/ci/proof.json"))?;
+-    pass(verdicts::video(&bytes, &report, 241))
+-}
+-
+-/// The Intel Mac is compile-checked only (spec 8.2, criterion 1). The
+-/// workflow adds the target in the macOS job only.
+-fn check_intel_mac(root: &Path) -> Result<Done, String> {
+-    let mut libdir = Command::new("rustc");
+-    libdir
+-        .current_dir(root)
+-        .args(["--print", "target-libdir", "--target", INTEL_MAC]);
+-    let libdir = util::run_quiet(root, "native-intel-libdir", &mut libdir)?;
+-    if !Path::new(libdir.trim()).is_dir() {
+-        return Err(format!(
+-            "[E-NO-TARGET] {INTEL_MAC}'s standard library is not installed: `rustup target add \
+-             {INTEL_MAC}` (the macos-26 job does)"
+-        ));
+-    }
+-    let args = [
+-        "check",
+-        "--workspace",
+-        "--all-targets",
+-        "--target",
+-        INTEL_MAC,
+-    ];
+-    pass(ci::cargo_step(root, "native-check-intel-mac", &args))
++    let dots = verdicts::video(&bytes, &report, 241)?;
++    let room = fps::room_video(root, &binary)?;
++    pass(Ok(format!("{dots}; {room}")))
+ }
+ 
+ #[cfg(test)]
+diff --git a/xtask/src/ci_native_fps.rs b/xtask/src/ci_native_fps.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..63eab9fb8fb0be7467dc56d106baccc2487696cf
+--- /dev/null
++++ b/xtask/src/ci_native_fps.rs
+@@ -0,0 +1,202 @@
++//! Rung 2's native steps (T21, gate G5): the room in a real window, the
++//! look checks, the frame records, the scene rules and the poses, with
++//! `gpu-budgets`' and `proof-video`'s room halves. Each names the
++//! acceptance check it serves; the verdicts are `ci_verdicts_fps.rs`'s.
++
++use std::path::Path;
++
++use super::{arg, offscreen_adapter, pass, probe, read_json, read_text, testbed};
++use crate::util::{self, Done};
++use crate::{ci, ci_verdicts as verdicts, ci_verdicts_fps as fps, replay};
++
++/// The room's scripted walk and its committed stream (criterion 1).
++const ROOM_SCRIPT: &str = "crates/game-testbed/scenarios/room-walk.input.toml";
++const ROOM_STREAM: &str = "crates/game-testbed/hashes/room-walk.seed1.txt";
++
++/// A `cargo test` of `targets`, each `(package, test target)`, with a GPU
++/// required, on the pinned lavapipe on Linux x64 (as the shots are), and
++/// `ENG_SHOT_MODE=exact` there when `exact`, or unset.
++fn gpu_tests(
++    root: &Path,
++    log: &str,
++    targets: &[(&str, &str)],
++    exact: bool,
++) -> Result<String, String> {
++    let mut args = vec!["test"];
++    for &(package, target) in targets {
++        args.extend(["-p", package, "--test", target]);
++    }
++    let mut cmd = ci::cargo_command(root, &args);
++    cmd.env("ENG_REQUIRE_GPU", "1")
++        .env("MESA_SHADER_CACHE_DISABLE", "true")
++        .env_remove("ENG_SHOT_MODE");
++    if let Some(adapter) = offscreen_adapter(&replay::host_triple(root)?) {
++        cmd.env("ENG_GPU_ADAPTER", adapter);
++        if exact {
++            cmd.env("ENG_SHOT_MODE", "exact");
++        }
++    }
++    util::run_quiet(root, log, &mut cmd)
++}
++
++/// Criterion 1 (`room-window`) and 10 (`cursor-fullscreen`): `play --map
++/// room --windowed` with the room's walk presents first-person frames in
++/// a real window, gives the committed stream, and reports the grab,
++/// fullscreen and refresh rate.
++pub(super) fn window_room(root: &Path) -> Result<Done, String> {
++    let binary = testbed(root)?;
++    let (hashes, report) = (
++        arg(root, "target/ci/window-room.txt"),
++        arg(root, "target/ci/window-room.json"),
++    );
++    let script = arg(root, ROOM_SCRIPT);
++    let args = [
++        "play",
++        "--map",
++        "room",
++        "--windowed",
++        "--ticks",
++        "600",
++        "--seed",
++        "1",
++        "--input",
++        &script,
++        "--hashes",
++        &hashes,
++        "--report",
++        &report,
++    ];
++    util::run_quiet(root, "native-window-room", &mut probe(root, &binary, &args))?;
++    let stream = read_text(&root.join("target/ci/window-room.txt"))?;
++    let committed = read_text(&root.join(ROOM_STREAM))?;
++    let report = read_json(&root.join("target/ci/window-room.json"))?;
++    let presented = verdicts::window(&stream, &committed, &report)?;
++    let window = fps::window_room(&report)?;
++    pass(Ok(format!("{presented}; {window}")))
++}
++
++/// Criteria 7 (`look-stack`) and 8 (`sprites`): decision 13's exact look
++/// checks, each look pass off alone, and the sprites drawn with depth, in
++/// eng-render's tests and through the binary (`tests/look.rs`).
++pub(super) fn look(root: &Path) -> Result<Done, String> {
++    let targets = [
++        ("eng-render", "look_checks"),
++        ("eng-render", "look_fog_tone"),
++        ("eng-render", "sprites"),
++        ("eng-render", "sprites_look"),
++        ("game-testbed", "look"),
++    ];
++    gpu_tests(root, "native-look", &targets, false)?;
++    let names: Vec<&str> = targets.iter().map(|t| t.1).collect();
++    pass(Ok(format!("{} passed with a GPU", names.join(", "))))
++}
++
++/// Plan addition A1 (`frame-record`): every shot's frame record, exact on
++/// the pinned lavapipe (Linux x64) and within tolerances elsewhere, and
++/// the planted bugs each change it. Pending until the owner commits the
++/// reference records (G6); CI's records are the candidates.
++pub(super) fn frame_record(root: &Path) -> Result<Done, String> {
++    let summary = root.join("target/frame-candidates/frames.json");
++    let _ = std::fs::remove_file(&summary);
++    let targets = [
++        ("game-testbed", "frame_record"),
++        ("game-testbed", "frame_bugs"),
++    ];
++    let exact = offscreen_adapter(&replay::host_triple(root)?).is_some();
++    gpu_tests(root, "native-frame-record", &targets, exact)?;
++    let text = read_text(&summary)
++        .map_err(|e| format!("[E-GOLDEN] the frame-record harness wrote no frames.json: {e}"))?;
++    fps::frames(&text, exact)
++}
++
++/// Plan addition A2 (`scene-rules`): the committed `*.rules.toml` hold on
++/// every first-person shot. `ENG_RULES_DIR` is never set here.
++pub(super) fn scene_rules(root: &Path) -> Result<Done, String> {
++    let summary = root.join("target/scene-rules/rules.json");
++    let _ = std::fs::remove_file(&summary);
++    let args = ["test", "-p", "game-testbed", "--test", "scene_rules"];
++    let mut cmd = ci::cargo_command(root, &args);
++    cmd.env("ENG_REQUIRE_GPU", "1")
++        .env("MESA_SHADER_CACHE_DISABLE", "true")
++        .env_remove("ENG_RULES_DIR");
++    if let Some(adapter) = offscreen_adapter(&replay::host_triple(root)?) {
++        cmd.env("ENG_GPU_ADAPTER", adapter);
++    }
++    util::run_quiet(root, "native-scene-rules", &mut cmd)?;
++    let text = read_text(&summary)
++        .map_err(|e| format!("[E-SCENE-RULE] the scene-rules test wrote no rules.json: {e}"))?;
++    pass(fps::scene_rules(&text))
++}
++
++/// Plan addition A3 (`fps-poses`): the shot harness's `shots.json`, which
++/// `shot-exact` or `shot-flip` wrote just before, drew every pose
++/// `shots.toml` names from its own camera, and no shot failed.
++pub(super) fn poses(root: &Path) -> Result<Done, String> {
++    let summary = read_text(&root.join("target/golden-candidates/shots.json")).map_err(|e| {
++        format!("[E-POSE] no shots.json from this job's shot-exact or shot-flip step: {e}")
++    })?;
++    let manifest = read_text(&root.join("crates/game-testbed/shots.toml"))?;
++    pass(fps::poses(&summary, &manifest))
++}
++
++/// The `gpu-budgets` step's first-person half (criterion 21): a room shot
++/// held by the probe to `budgets.toml [gpu.first_person]` (exit 13 over),
++/// with its pass times and pool size, and the room window's frames; with
++/// `dots`, the top-down half's verdict. Pending without the room window's
++/// frames.
++pub(super) fn with_room_budgets(root: &Path, binary: &Path, dots: &str) -> Result<Done, String> {
++    Ok(match room_budgets(root, binary)? {
++        Done::Pass(room) => Done::Pass(format!("{dots}; {room}")),
++        Done::Pending(room) => Done::Pending(format!("{room}; {dots}")),
++    })
++}
++
++/// The room shot, and its verdict with `window-room`'s report.
++fn room_budgets(root: &Path, binary: &Path) -> Result<Done, String> {
++    let (png, report) = (
++        arg(root, "target/ci/room-shot.png"),
++        arg(root, "target/ci/room-shot.json"),
++    );
++    let budgets = arg(root, "budgets.toml");
++    let args = [
++        "shot",
++        "--map",
++        "room",
++        "--at-tick",
++        "60",
++        "--budgets",
++        &budgets,
++        "--report",
++        &report,
++        "--out",
++        &png,
++    ];
++    let mut cmd = super::offscreen(root, binary, &args)?;
++    util::run_quiet(root, "native-gpu-budgets-room", &mut cmd)?;
++    let shot = read_json(&root.join("target/ci/room-shot.json"))?;
++    let window = read_json(&root.join("target/ci/window-room.json")).ok();
++    fps::first_person_budgets(&shot, window.as_ref())
++}
++
++/// The `proof-video` step's room half (criterion 22): `room.apng`, the
++/// 600-tick room walk, 601 frames.
++pub(super) fn room_video(root: &Path, binary: &Path) -> Result<String, String> {
++    let (apng, report) = (
++        arg(root, "target/ci/room.apng"),
++        arg(root, "target/ci/room.json"),
++    );
++    let script = arg(root, ROOM_SCRIPT);
++    let args = [
++        "video", "--map", "room", "--ticks", "600", "--seed", "1", "--input", &script, "--out",
++        &apng, "--report", &report,
++    ];
++    let mut cmd = super::offscreen(root, binary, &args)?;
++    util::run_quiet(root, "native-proof-video-room", &mut cmd)?;
++    let bytes =
++        std::fs::read(root.join("target/ci/room.apng")).map_err(|e| format!("{apng}: {e}"))?;
++    let report = read_json(&root.join("target/ci/room.json"))?;
++    let named = |text: String| text.replacen("proof.apng", "room.apng", 1);
++    verdicts::video(&bytes, &report, 601)
++        .map(named)
++        .map_err(named)
++}
+diff --git a/xtask/src/ci_native_mac.rs b/xtask/src/ci_native_mac.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..0b548b75b223dbc29e496ddb93dc013d5de79540
+--- /dev/null
++++ b/xtask/src/ci_native_mac.rs
+@@ -0,0 +1,54 @@
++//! The macOS runner's own native steps: the Intel Mac's compile check
++//! (rung 1b) and the GCMouse shim's clippy (rung 2, ADR-0021).
++
++use std::path::Path;
++use std::process::Command;
++
++use super::pass;
++use crate::ci;
++use crate::util::{self, Done};
++
++const INTEL_MAC: &str = "x86_64-apple-darwin";
++
++/// The Intel Mac is compile-checked only (spec 8.2, criterion 1). The
++/// workflow adds the target in the macOS job only.
++pub(super) fn check_intel_mac(root: &Path) -> Result<Done, String> {
++    let mut libdir = Command::new("rustc");
++    libdir
++        .current_dir(root)
++        .args(["--print", "target-libdir", "--target", INTEL_MAC]);
++    let libdir = util::run_quiet(root, "native-intel-libdir", &mut libdir)?;
++    if !Path::new(libdir.trim()).is_dir() {
++        return Err(format!(
++            "[E-NO-TARGET] {INTEL_MAC}'s standard library is not installed: `rustup target add \
++             {INTEL_MAC}` (the macos-26 job does)"
++        ));
++    }
++    let args = [
++        "check",
++        "--workspace",
++        "--all-targets",
++        "--target",
++        INTEL_MAC,
++    ];
++    pass(ci::cargo_step(root, "native-check-intel-mac", &args))
++}
++
++/// ADR-0021: clippy on the GCMouse shim where its `unsafe` module is
++/// compiled, macOS (the lint job's Linux compiles it out), so a block
++/// without its `// SAFETY:` comment fails on CI too.
++pub(super) fn clippy_shim(root: &Path) -> Result<Done, String> {
++    let args = [
++        "clippy",
++        "-p",
++        "eng-platform-gcmouse",
++        "--all-targets",
++        "--",
++        "-D",
++        "warnings",
++    ];
++    ci::cargo_step(root, "native-clippy-shim", &args)?;
++    pass(Ok(
++        "eng-platform-gcmouse, src/macos.rs included: no warning".into(),
++    ))
++}
+diff --git a/xtask/src/ci_native_tests.rs b/xtask/src/ci_native_tests.rs
+index 77e117f9686a9f1db88e1fff8eaa2ea3fa75f4d8..91ca3100779e996b73f0ec89f58caa9470ead1cb 100644
+--- a/xtask/src/ci_native_tests.rs
++++ b/xtask/src/ci_native_tests.rs
+@@ -18,16 +18,16 @@ fn root() -> &'static Path {
+ #[test]
+ fn each_runner_runs_its_steps_in_order() {
+     let common = ["build", "tests", "replay", "crash-json", "version"];
++    // Rung 2: after the shot step, whose shots.json `poses` reads; the two
++    // windows before `gpu-budgets`, which holds both.
++    let fps = ["poses", "look", "frame-record", "scene-rules"];
++    let windows = ["window", "window-room", "gpu-budgets"];
+     let linux_x64 = steps_for("x86_64-unknown-linux-gnu");
+     let mut expected: Vec<&str> = common.to_vec();
+-    expected.extend([
+-        "shot-exact",
+-        "window",
+-        "gpu-budgets",
+-        "esc",
+-        "proof-video",
+-        "dist",
+-    ]);
++    expected.push("shot-exact");
++    expected.extend(fps);
++    expected.extend(windows);
++    expected.extend(["esc", "proof-video", "dist"]);
+     assert_eq!(linux_x64, expected);
+     for (host, dist) in [
+         ("aarch64-unknown-linux-gnu", false),
+@@ -35,18 +35,17 @@ fn each_runner_runs_its_steps_in_order() {
+         ("aarch64-pc-windows-msvc", false),
+     ] {
+         let mut expected: Vec<&str> = common.to_vec();
+-        expected.extend(["shot-flip", "window", "gpu-budgets"]);
++        expected.push("shot-flip");
++        expected.extend(fps);
++        expected.extend(windows);
+         expected.extend(dist.then_some("dist"));
+         assert_eq!(steps_for(host), expected, "{host}");
+     }
+     let mut expected: Vec<&str> = common.to_vec();
+-    expected.extend([
+-        "shot-flip",
+-        "window",
+-        "gpu-budgets",
+-        "check-intel-mac",
+-        "dist",
+-    ]);
++    expected.push("shot-flip");
++    expected.extend(fps);
++    expected.extend(windows);
++    expected.extend(["check-intel-mac", "clippy-shim", "dist"]);
+     assert_eq!(steps_for("aarch64-apple-darwin"), expected);
+ }
+ 
+@@ -83,8 +82,10 @@ fn every_native_check_in_acceptance_finds_its_step() {
+             checked += 1;
+         }
+     }
+-    if rung.trim() == "1b" {
+-        assert_eq!(checked, 53, "rung 1b's native checks");
++    match rung.trim() {
++        "1b" => assert_eq!(checked, 53, "rung 1b's native checks"),
++        "2" => assert_eq!(checked, 102, "rung 2's native checks"),
++        _ => {}
+     }
+ }
+ 
+@@ -103,9 +104,25 @@ fn the_workflow_runs_the_native_job_on_every_runner() {
+         "report-native-${{ matrix.runner }}",
+         "golden-candidates-${{ matrix.runner }}",
+         "crash-native-${{ matrix.runner }}",
++        // Rung 2: the frame records, the scene rules' findings and the
++        // proof videos, kept out of the report so the summary stays small.
++        "frame-candidates-${{ matrix.runner }}",
++        "scene-rules-${{ matrix.runner }}",
++        "name: proof-video\n",
++        "!target/ci/*.apng\n",
+     ] {
+         assert!(workflow.contains(artifact), "ci.yml uploads no {artifact}");
+     }
++    // The summary downloads only the streams and the reports.
++    for pattern in ["pattern: hashes-*\n", "pattern: report-*\n"] {
++        assert!(
++            workflow.contains(pattern),
++            "ci.yml's summary has no {pattern}"
++        );
++    }
++    // The shader cache is off job-wide in the native and selftest jobs.
++    let off = "    env:\n      MESA_SHADER_CACHE_DISABLE: \"true\"\n";
++    assert_eq!(workflow.matches(off).count(), 2, "ci.yml: {off}");
+     assert!(workflow.contains("cargo xtask ci --job native"));
+     // `pr-duration` finds the PR tier's jobs by their ids.
+     for job in crate::ci_durations::PR_JOBS {
+diff --git a/xtask/src/ci_verdicts_fps.rs b/xtask/src/ci_verdicts_fps.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..3898be3bf691a5ff70401053775e2e8725e0c380
+--- /dev/null
++++ b/xtask/src/ci_verdicts_fps.rs
+@@ -0,0 +1,345 @@
++//! What rung 2's first-person native steps conclude from the files they
++//! read (`ci_native_fps.rs`, T21): pure functions, as in `ci_verdicts.rs`,
++//! so each verdict is tested without a GPU or a window.
++
++use serde_json::Value;
++
++use crate::util::Done;
++
++/// A JSON value as text: a string as it is, anything else as JSON.
++fn text(value: &Value) -> String {
++    value
++        .as_str()
++        .map_or_else(|| value.to_string(), String::from)
++}
++
++/// The keys criterion 10 needs in a first-person `play`'s `window` report:
++/// the grab asked and granted, fullscreen asked and granted, and the
++/// refresh rate (`null` when unknown, as under Xvfb).
++const WINDOW_KEYS: [&str; 6] = [
++    "grab_asked",
++    "grab",
++    "grab_at_end",
++    "fullscreen_asked",
++    "fullscreen",
++    "refresh_rate_mhz",
++];
++
++/// The `window-room` step's verdict beyond the window's (criteria 1 and
++/// 10): the report's `window` is a first-person one and names the cursor
++/// grab, fullscreen and the refresh rate. A scripted run never grabs
++/// (T15), so the grab asked is `false` here; the grab itself is checked
++/// by hand (criterion 10's live run).
++pub fn window_room(report: &Value) -> Result<String, String> {
++    let window = &report["window"];
++    if !window.is_object() {
++        return Err("[E-WINDOW] the room's play report has no `window`".into());
++    }
++    if window["view"] != "first-person" {
++        return Err(format!(
++            "[E-WINDOW] the room's window view is {}, not first-person",
++            window["view"]
++        ));
++    }
++    let missing: Vec<&str> = WINDOW_KEYS
++        .iter()
++        .copied()
++        .filter(|key| window.get(*key).is_none())
++        .collect();
++    if !missing.is_empty() {
++        return Err(format!(
++            "[E-WINDOW] the room's window report has no {}",
++            missing.join(", ")
++        ));
++    }
++    let grabs = ["none", "confined", "locked"];
++    for key in ["grab", "grab_at_end"] {
++        if !grabs.contains(&window[key].as_str().unwrap_or_default()) {
++            return Err(format!("[E-WINDOW] window.{key} is {}", window[key]));
++        }
++    }
++    let rate = &window["refresh_rate_mhz"];
++    if !rate.is_u64() && !rate.is_null() {
++        return Err(format!("[E-WINDOW] window.refresh_rate_mhz is {rate}"));
++    }
++    Ok(format!(
++        "window: grab asked {}, grab {} (at the end {}), fullscreen asked {}, fullscreen {}, \
++         refresh rate {} mHz",
++        window["grab_asked"],
++        text(&window["grab"]),
++        text(&window["grab_at_end"]),
++        window["fullscreen_asked"],
++        window["fullscreen"],
++        rate
++    ))
++}
++
++/// The four per-frame counters and their `[gpu.first_person]` limits.
++const COUNTERS: [(&str, &str); 4] = [
++    ("draws", "max_draws_per_frame"),
++    ("pipeline_switches", "max_pipeline_switches_per_frame"),
++    ("bind_group_switches", "max_bind_group_switches_per_frame"),
++    ("upload_bytes", "max_upload_bytes_per_frame"),
++];
++
++/// Holds a report's `per_frame` peaks to `[gpu.first_person]`'s limits.
++fn hold(per_frame: &Value, limits: &[(&str, u64)], what: &str) -> Result<(), String> {
++    let over: Vec<String> = limits
++        .iter()
++        .filter_map(|&(counter, limit)| match per_frame[counter].as_u64() {
++            Some(used) if used <= limit => None,
++            Some(used) => Some(format!("{counter} {used} > {limit}")),
++            None => Some(format!("{counter} missing")),
++        })
++        .collect();
++    if over.is_empty() {
++        Ok(())
++    } else {
++        Err(format!(
++            "[E-BUDGET] the {what}'s frame exceeds budgets.toml [gpu.first_person]: {}",
++            over.join(", ")
++        ))
++    }
++}
++
++/// Criterion 21's keys in a shot's `gpu`: `pass_times`, each pass that ran
++/// with whole nanoseconds or `null`, a list whenever the adapter has
++/// timestamp queries (every CI adapter has), and `transient_textures`.
++fn pass_times(gpu: &Value) -> Result<String, String> {
++    let pool = gpu["transient_textures"]
++        .as_u64()
++        .ok_or("[E-GPU-REPORT] the room shot's report has no gpu.transient_textures")?;
++    let times = &gpu["pass_times"];
++    let timed = gpu["capabilities"]["timestamp_queries"] == true;
++    let Some(list) = times.as_array() else {
++        if times.is_null() && !timed {
++            return Ok(format!(
++                "no pass times (no timestamp queries), {pool} pooled textures"
++            ));
++        }
++        return Err(format!(
++            "[E-GPU-REPORT] gpu.pass_times is {times}, with timestamp queries {timed}"
++        ));
++    };
++    let mut named = Vec::new();
++    for time in list {
++        let ns = &time["nanoseconds"];
++        match time["pass"].as_str() {
++            Some(pass) if ns.is_u64() || ns.is_null() => named.push(format!("{pass} {ns}")),
++            _ => return Err(format!("[E-GPU-REPORT] a pass time is {time}")),
++        }
++    }
++    if named.is_empty() {
++        return Err("[E-GPU-REPORT] gpu.pass_times lists no pass".into());
++    }
++    Ok(format!(
++        "pass times (ns) {}; {pool} pooled textures",
++        named.join(", ")
++    ))
++}
++
++/// The `gpu-budgets` step's first-person half (criterion 21): the room
++/// shot's report ran with `budgets.toml`'s `[gpu.first_person]` table
++/// (the report's `budgets.first_person`, `null` without it), its frame is
++/// within those limits, and its `gpu` has the per-pass times and pool size;
++/// so are the room window's presented frames (a window's frame adds the
++/// present pass). Without `window-room`'s report, or with one that
++/// presented nothing, only the shot is held: pending, never a pass.
++pub fn first_person_budgets(shot: &Value, window: Option<&Value>) -> Result<Done, String> {
++    if shot["exit"] != "ok" {
++        return Err(format!("the room shot exited {}", shot["exit"]));
++    }
++    let table = &shot["budgets"]["first_person"];
++    if !table.is_object() {
++        return Err(
++            "[E-BUDGET] budgets.toml has no [gpu.first_person] (the room shot's report \
++                    has budgets.first_person null)"
++                .into(),
++        );
++    }
++    let limits = COUNTERS
++        .iter()
++        .map(|&(counter, key)| {
++            table[key]
++                .as_u64()
++                .map(|limit| (counter, limit))
++                .ok_or_else(|| format!("[E-BUDGET] budgets.toml [gpu.first_person] has no {key}"))
++        })
++        .collect::<Result<Vec<_>, String>>()?;
++    let gpu = &shot["gpu"];
++    if !gpu["per_frame"].is_object() {
++        return Err("[E-BUDGET] the room shot's report has no per-frame counters".into());
++    }
++    hold(&gpu["per_frame"], &limits, "room shot")?;
++    let times = pass_times(gpu)?;
++    let held = format!(
++        "the room shot's frame {} within budgets.toml [gpu.first_person]; {times}",
++        gpu["per_frame"]
++    );
++    Ok(match window {
++        Some(report) if report["gpu"]["frames"].as_u64().unwrap_or(0) > 0 => {
++            hold(&report["gpu"]["per_frame"], &limits, "room window")?;
++            Done::Pass(format!(
++                "{held}; the room window's frames too ({})",
++                report["gpu"]["per_frame"]
++            ))
++        }
++        Some(_) => Done::Pending(format!(
++            "pending, not a pass: the window-room step's window presented no frame, so only \
++             the room shot is held; {held}"
++        )),
++        None => Done::Pending(format!(
++            "pending, not a pass: no report from the window-room step \
++             (target/ci/window-room.json), so only the room shot is held; {held}"
++        )),
++    })
++}
++
++/// The `frame-record` step's verdict (plan addition A1) from
++/// `target/frame-candidates/frames.json`, which `tests/frame_record.rs`
++/// writes: compared exactly on the pinned configuration (`exact`), within
++/// tolerances elsewhere; a pass only if every shot's record passed, pending
++/// while any has no reference yet (the owner commits `golden/frames/` at
++/// G6) or is marked `golden = "pending"`.
++pub fn frames(summary: &str, exact: bool) -> Result<Done, String> {
++    let summary: Value =
++        serde_json::from_str(summary).map_err(|e| format!("[E-GOLDEN] frames.json: {e}"))?;
++    let config = &summary["configuration"];
++    let adapter = format!(
++        "`{}` `{}`",
++        text(&config["adapter"]),
++        text(&config["driver_info"])
++    );
++    let wanted = if exact { "exact" } else { "tolerances" };
++    let mode = summary["mode"].as_str().unwrap_or_default();
++    if mode != wanted {
++        return Err(format!(
++            "[E-GOLDEN] the frame records were compared by {mode:?}, not {wanted}, on {adapter}"
++        ));
++    }
++    if exact && config["pinned"] != true {
++        return Err(format!(
++            "[E-GOLDEN] frame-record needs the pinned configuration here, not {adapter}"
++        ));
++    }
++    let shots = summary["shots"]
++        .as_array()
++        .filter(|shots| !shots.is_empty())
++        .ok_or("[E-GOLDEN] frames.json names no shot")?;
++    let (mut failed, mut pending) = (Vec::new(), Vec::new());
++    for shot in shots {
++        let name = text(&shot["name"]);
++        match shot["status"].as_str() {
++            Some("pass") => {}
++            Some(status @ ("no-reference" | "pending")) => pending.push(format!("{name} {status}")),
++            other => failed.push(format!("{name}: [E-GOLDEN] status {other:?}")),
++        }
++    }
++    if !failed.is_empty() {
++        return Err(failed.join("\n"));
++    }
++    let count = shots.len();
++    Ok(if pending.is_empty() {
++        Done::Pass(format!("{count} frame records pass ({mode}) on {adapter}"))
++    } else {
++        Done::Pending(format!(
++            "pending, not a pass, until the owner commits golden/frames/ (G6): {}; {count} \
++             records ({mode}) on {adapter}; candidates in target/frame-candidates/",
++            pending.join(", ")
++        ))
++    })
++}
++
++/// The `scene-rules` step's verdict (plan addition A2) from
++/// `target/scene-rules/rules.json`: the committed rules were read (never
++/// `ENG_RULES_DIR`), and no rule failed on any shot.
++pub fn scene_rules(summary: &str) -> Result<String, String> {
++    let summary: Value =
++        serde_json::from_str(summary).map_err(|e| format!("[E-SCENE-RULE] rules.json: {e}"))?;
++    let dir = text(&summary["rules_dir"]).replace('\\', "/");
++    if !dir.ends_with("crates/game-testbed/scenes") {
++        return Err(format!(
++            "[E-SCENE-RULE] the rules came from {dir:?}, not the committed scenes/"
++        ));
++    }
++    let failures = summary["failures"]
++        .as_array()
++        .ok_or("[E-SCENE-RULE] rules.json has no failures list")?
++        .len();
++    if failures > 0 {
++        return Err(format!(
++            "[E-SCENE-RULE] {failures} findings failed: {}",
++            summary["failures"]
++        ));
++    }
++    let shots = summary["shots"].as_array().map_or(0, Vec::len);
++    if shots == 0 {
++        return Err("[E-SCENE-RULE] rules.json judged no shot".into());
++    }
++    Ok(format!(
++        "{shots} shots judged by the committed rules, none failed, on `{}`",
++        text(&summary["configuration"]["adapter"])
++    ))
++}
++
++/// The `poses` step's verdict (plan addition A3) from the shot harness's
++/// `shots.json` and `shots.toml` (`manifest`): the poses the views name
++/// are exactly the manifest's `[pose]` keys, each such view's camera came
++/// from its pose, and no shot failed (marked shots are pending there,
++/// which is no failure).
++pub fn poses(shots_json: &str, manifest: &str) -> Result<String, String> {
++    let summary: Value =
++        serde_json::from_str(shots_json).map_err(|e| format!("[E-GOLDEN] shots.json: {e}"))?;
++    let manifest: toml::Table = manifest
++        .parse()
++        .map_err(|e: toml::de::Error| format!("shots.toml: {e}"))?;
++    let mut named: Vec<String> = manifest
++        .get("pose")
++        .and_then(toml::Value::as_table)
++        .map(|poses| poses.keys().cloned().collect())
++        .unwrap_or_default();
++    named.sort();
++    if named.is_empty() {
++        return Err("[E-POSE] shots.toml names no [pose]".into());
++    }
++    let views = summary["views"]
++        .as_array()
++        .ok_or("[E-POSE] shots.json has no views")?;
++    let mut drawn = Vec::new();
++    for view in views.iter().filter(|v| !v["pose"].is_null()) {
++        let pose = text(&view["pose"]);
++        if view["camera_from"] != "pose" {
++            return Err(format!(
++                "[E-POSE] shot {} names pose {pose}, but its camera came from {}",
++                text(&view["name"]),
++                view["camera_from"]
++            ));
++        }
++        drawn.push(pose);
++    }
++    drawn.sort();
++    drawn.dedup();
++    if drawn != named {
++        return Err(format!(
++            "[E-POSE] the views drew poses {drawn:?}, but shots.toml names {named:?}"
++        ));
++    }
++    let failed: Vec<String> = summary["shots"]
++        .as_array()
++        .into_iter()
++        .flatten()
++        .filter(|shot| shot["status"] == "fail")
++        .map(|shot| text(&shot["message"]))
++        .collect();
++    if !failed.is_empty() {
++        return Err(failed.join("\n"));
++    }
++    Ok(format!(
++        "poses {} each drawn from its own camera, no shot failed",
++        named.join(", ")
++    ))
++}
++
++#[cfg(test)]
++#[path = "ci_verdicts_fps_tests.rs"]
++mod tests;
+diff --git a/xtask/src/ci_verdicts_fps_tests.rs b/xtask/src/ci_verdicts_fps_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..76451c8d5a30b74f22f8081582f8a1c61d007d81
+--- /dev/null
++++ b/xtask/src/ci_verdicts_fps_tests.rs
+@@ -0,0 +1,225 @@
++//! The first-person native steps' verdicts, from made-up reports in the
++//! shapes the probe and the harnesses write.
++
++use serde_json::{Value, json};
++
++use super::*;
++
++fn window() -> Value {
++    json!({"window": {
++        "view": "first-person", "grab_asked": false, "grab": "none", "grab_at_end": "none",
++        "fullscreen_asked": false, "fullscreen": false, "refresh_rate_mhz": null,
++    }})
++}
++
++#[test]
++fn the_room_window_names_grab_fullscreen_and_refresh_rate() {
++    let ok = window_room(&window()).unwrap();
++    assert!(ok.contains("grab asked false, grab none"), "{ok}");
++    assert!(ok.contains("refresh rate null mHz"), "{ok}");
++    let mut with_rate = window();
++    with_rate["window"]["refresh_rate_mhz"] = json!(60_000);
++    assert!(window_room(&with_rate).is_ok());
++    for key in WINDOW_KEYS {
++        let mut report = window();
++        report["window"].as_object_mut().unwrap().remove(key);
++        let err = window_room(&report).unwrap_err();
++        assert!(err.contains(&format!("has no {key}")), "{err}");
++    }
++    let mut top = window();
++    top["window"]["view"] = json!("top-down");
++    assert!(window_room(&top).unwrap_err().contains("not first-person"));
++    let mut odd = window();
++    odd["window"]["grab"] = json!("held");
++    assert!(window_room(&odd).unwrap_err().contains("window.grab is"));
++    assert!(window_room(&json!({"exit": "ok"})).is_err());
++}
++
++fn room_shot() -> Value {
++    json!({
++        "exit": "ok",
++        "budgets": {"first_person": {
++            "max_draws_per_frame": 28, "max_pipeline_switches_per_frame": 28,
++            "max_bind_group_switches_per_frame": 60, "max_upload_bytes_per_frame": 2944,
++        }},
++        "gpu": {
++            "capabilities": {"timestamp_queries": true},
++            "per_frame": {"draws": 7, "pipeline_switches": 7, "bind_group_switches": 15,
++                          "upload_bytes": 736},
++            "pass_times": [{"pass": "opaque", "nanoseconds": 62125},
++                           {"pass": "sprites", "nanoseconds": null}],
++            "transient_textures": 5,
++        },
++    })
++}
++
++#[test]
++fn the_room_shot_is_held_to_the_first_person_table_with_its_new_keys() {
++    let window = json!({"gpu": {"frames": 9, "per_frame": {"draws": 8, "pipeline_switches": 7,
++        "bind_group_switches": 16, "upload_bytes": 736}}});
++    let Ok(Done::Pass(ok)) = first_person_budgets(&room_shot(), Some(&window)) else {
++        panic!("the shot and the window's frames held");
++    };
++    assert!(
++        ok.contains("opaque 62125, sprites null; 5 pooled textures"),
++        "{ok}"
++    );
++    assert!(ok.contains("the room window's frames too"), "{ok}");
++    // T21's review: without the window's frames, never a pass.
++    for (report, why) in [
++        (None, "no report from the window-room step"),
++        (Some(json!({"gpu": {"frames": 0}})), "presented no frame"),
++    ] {
++        let Ok(Done::Pending(text)) = first_person_budgets(&room_shot(), report.as_ref()) else {
++            panic!("pending: {why}");
++        };
++        assert!(text.contains(why), "{text}");
++    }
++    let mut no_table = room_shot();
++    no_table["budgets"]["first_person"] = Value::Null;
++    let err = first_person_budgets(&no_table, None).unwrap_err();
++    assert!(err.contains("has no [gpu.first_person]"), "{err}");
++    let mut over = room_shot();
++    over["gpu"]["per_frame"]["bind_group_switches"] = json!(61);
++    let err = first_person_budgets(&over, None).unwrap_err();
++    assert!(err.contains("bind_group_switches 61 > 60"), "{err}");
++    let mut busy = window.clone();
++    busy["gpu"]["per_frame"]["draws"] = json!(29);
++    let err = first_person_budgets(&room_shot(), Some(&busy)).unwrap_err();
++    assert!(err.contains("the room window's frame exceeds"), "{err}");
++    let mut untimed = room_shot();
++    untimed["gpu"]["pass_times"] = Value::Null;
++    let err = first_person_budgets(&untimed, None).unwrap_err();
++    assert!(
++        err.contains("gpu.pass_times is null, with timestamp queries true"),
++        "{err}"
++    );
++    untimed["gpu"]["capabilities"]["timestamp_queries"] = json!(false);
++    assert!(first_person_budgets(&untimed, None).is_ok());
++    let mut no_pool = room_shot();
++    no_pool["gpu"]
++        .as_object_mut()
++        .unwrap()
++        .remove("transient_textures");
++    assert!(
++        first_person_budgets(&no_pool, None)
++            .unwrap_err()
++            .contains("transient_textures")
++    );
++    let mut bad = room_shot();
++    bad["gpu"]["pass_times"] = json!([{"pass": "opaque", "nanoseconds": -1}]);
++    assert!(
++        first_person_budgets(&bad, None)
++            .unwrap_err()
++            .contains("a pass time is")
++    );
++    let mut stopped = room_shot();
++    stopped["exit"] = json!("budget-exceeded");
++    assert!(first_person_budgets(&stopped, None).is_err());
++}
++
++fn frames_json(mode: &str, pinned: bool, statuses: &[&str]) -> String {
++    let shots: Vec<Value> = statuses
++        .iter()
++        .enumerate()
++        .map(|(i, s)| json!({"name": format!("shot-{i}"), "status": s}))
++        .collect();
++    json!({"configuration": {"adapter": "llvmpipe", "driver_info": "Mesa", "pinned": pinned},
++           "mode": mode, "shots": shots})
++    .to_string()
++}
++
++#[test]
++fn frame_records_pass_only_when_every_record_has_its_reference() {
++    let all = frames_json("exact", true, &["pass", "pass"]);
++    assert!(matches!(frames(&all, true), Ok(Done::Pass(_))));
++    let waiting = frames_json("exact", true, &["pass", "no-reference", "pending"]);
++    let Ok(Done::Pending(why)) = frames(&waiting, true) else {
++        panic!("pending until G6");
++    };
++    assert!(why.contains("shot-1 no-reference, shot-2 pending"), "{why}");
++    let failed = frames_json("tolerances", false, &["fail"]);
++    assert!(frames(&failed, false).is_err());
++    let elsewhere = frames_json("tolerances", false, &["pass"]);
++    assert!(frames(&elsewhere, true).unwrap_err().contains("not exact"));
++    let unpinned = frames_json("exact", false, &["pass"]);
++    assert!(
++        frames(&unpinned, true)
++            .unwrap_err()
++            .contains("pinned configuration")
++    );
++    assert!(frames(&frames_json("exact", true, &[]), true).is_err());
++}
++
++#[test]
++fn scene_rules_must_come_from_the_committed_scenes() {
++    let ok = json!({"configuration": {"adapter": "Apple M2 Pro"},
++        "rules_dir": "/x/crates/game-testbed/scenes", "shots": [{}, {}], "failures": []});
++    assert!(
++        scene_rules(&ok.to_string())
++            .unwrap()
++            .contains("2 shots judged")
++    );
++    let mut elsewhere = ok.clone();
++    elsewhere["rules_dir"] = json!("/tmp/weaker");
++    assert!(
++        scene_rules(&elsewhere.to_string())
++            .unwrap_err()
++            .contains("not the committed")
++    );
++    let mut failed = ok.clone();
++    failed["failures"] = json!(["[E-SCENE-RULE] room-spawn: rule 1"]);
++    assert!(scene_rules(&failed.to_string()).is_err());
++    // T21's review: no failures list is no verdict, not none failed.
++    let mut unlisted = ok.clone();
++    unlisted.as_object_mut().unwrap().remove("failures");
++    let err = scene_rules(&unlisted.to_string()).unwrap_err();
++    assert!(err.contains("has no failures list"), "{err}");
++    let mut none = ok;
++    none["shots"] = json!([]);
++    assert!(scene_rules(&none.to_string()).is_err());
++}
++
++const MANIFEST: &str = "[[shot]]\nname = \"a\"\n[pose]\nledge = \"9,3.5,1.6,-90,-15\"\n\
++                        overview = \"0.5,8.5,1.6,-30,15\"\n";
++
++fn shots_json(views: Value, statuses: &[&str]) -> String {
++    let shots: Vec<Value> = statuses
++        .iter()
++        .map(|s| json!({"name": "x", "status": s, "message": "x: failed"}))
++        .collect();
++    json!({"views": views, "shots": shots}).to_string()
++}
++
++#[test]
++fn every_named_pose_is_drawn_from_its_own_camera() {
++    let view = |pose: Value, from: &str| json!({"name": "s", "pose": pose, "camera_from": from});
++    let both = json!([
++        view(json!("ledge"), "pose"),
++        view(json!("overview"), "pose"),
++        view(Value::Null, "game"),
++    ]);
++    let ok = poses(&shots_json(both.clone(), &["pass", "no-golden"]), MANIFEST).unwrap();
++    assert!(ok.contains("ledge, overview"), "{ok}");
++    let one = json!([view(json!("ledge"), "pose")]);
++    assert!(
++        poses(&shots_json(one, &[]), MANIFEST)
++            .unwrap_err()
++            .contains("names [\"ledge\", \"overview\"]")
++    );
++    let game = json!([
++        view(json!("ledge"), "game"),
++        view(json!("overview"), "pose")
++    ]);
++    assert!(
++        poses(&shots_json(game, &[]), MANIFEST)
++            .unwrap_err()
++            .contains("camera came from")
++    );
++    assert!(
++        poses(&shots_json(both, &["fail"]), MANIFEST)
++            .unwrap_err()
++            .contains("x: failed")
++    );
++    assert!(poses(&shots_json(json!([]), &[]), "[[shot]]\nname = \"a\"\n").is_err());
++}
+diff --git a/xtask/src/dist_tests.rs b/xtask/src/dist_tests.rs
+index 81b256e820be1c97779af9d5937086a71cb51652..9c752c3066523fc7f484659df35fccc4a7518fb7 100644
+--- a/xtask/src/dist_tests.rs
++++ b/xtask/src/dist_tests.rs
+@@ -7,9 +7,7 @@ use std::path::{Path, PathBuf};
+ use std::process::Command;
+ 
+ use super::{Built, DebugInfo, megabytes, parse, plan};
+-use crate::dist_check::{
+-    elf_sections, elf_unstripped, holds, macho_symbols, pe_symbols, release_stamp,
+-};
++use crate::dist_check::{holds, release_stamp};
+ use crate::dist_notices::PLAYABLE;
+ use crate::dist_tar;
+ 
+@@ -361,118 +359,6 @@ fn the_stamp_must_be_a_release_for_the_target() {
+     }
+ }
+ 
+-/// A minimal ELF64 file: the null section, `names` and the section-name
+-/// table last.
+-fn elf(names: &[&str]) -> Vec<u8> {
+-    let mut table = vec![0u8];
+-    let mut offsets = vec![0u32];
+-    for name in names.iter().chain([&".shstrtab"]) {
+-        offsets.push(table.len() as u32);
+-        table.extend(name.as_bytes());
+-        table.push(0);
+-    }
+-    let count = offsets.len();
+-    let shoff = 64 + table.len();
+-    let mut bytes = vec![0u8; shoff + 64 * count];
+-    bytes[..6].copy_from_slice(b"\x7fELF\x02\x01");
+-    bytes[0x28..0x30].copy_from_slice(&(shoff as u64).to_le_bytes());
+-    bytes[0x3a..0x3c].copy_from_slice(&64u16.to_le_bytes());
+-    bytes[0x3c..0x3e].copy_from_slice(&(count as u16).to_le_bytes());
+-    bytes[0x3e..0x40].copy_from_slice(&((count - 1) as u16).to_le_bytes());
+-    bytes[64..shoff].copy_from_slice(&table);
+-    for (i, name) in offsets.iter().enumerate() {
+-        let at = shoff + 64 * i;
+-        bytes[at..at + 4].copy_from_slice(&name.to_le_bytes());
+-    }
+-    let last = shoff + 64 * (count - 1);
+-    bytes[last + 0x18..last + 0x20].copy_from_slice(&64u64.to_le_bytes());
+-    bytes[last + 0x20..last + 0x28].copy_from_slice(&(table.len() as u64).to_le_bytes());
+-    bytes
+-}
+-
+-#[test]
+-fn elf_section_names_are_read() {
+-    let names = elf_sections(&elf(&[".text", ".gnu_debuglink"])).unwrap();
+-    assert_eq!(names, ["", ".text", ".gnu_debuglink", ".shstrtab"]);
+-    assert!(elf_sections(b"MZ not elf").is_err());
+-    assert!(elf_sections(&elf(&[".text"])[..80]).is_err(), "cut short");
+-}
+-
+-#[test]
+-fn a_stripped_elf_binary_keeps_no_symbols_or_debug_info() {
+-    let names = |list: &[&str]| list.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+-    // What objcopy --strip-all leaves of a Rust binary (aarch64 Linux).
+-    let stripped = names(&[".text", ".debug_gdb_scripts", ".gnu_debuglink", ".shstrtab"]);
+-    assert!(elf_unstripped(&stripped).is_empty());
+-    let full = names(&[".text", ".symtab", ".strtab", ".debug_info", ".zdebug_line"]);
+-    assert_eq!(
+-        elf_unstripped(&full),
+-        [".symtab", ".debug_info", ".zdebug_line"]
+-    );
+-}
+-
+-/// A PE file's COFF symbol count, the 4 bytes 16 past the `PE\0\0` that
+-/// offset 0x3c points at.
+-#[test]
+-fn pe_coff_symbols_are_counted() {
+-    let pe = |symbols: u32| {
+-        let mut bytes = vec![0u8; 0x80];
+-        bytes[..2].copy_from_slice(b"MZ");
+-        bytes[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+-        bytes[0x40..0x44].copy_from_slice(b"PE\0\0");
+-        bytes[0x50..0x54].copy_from_slice(&symbols.to_le_bytes());
+-        bytes
+-    };
+-    assert_eq!(pe_symbols(&pe(0)).unwrap(), 0);
+-    assert_eq!(pe_symbols(&pe(7)).unwrap(), 7);
+-    let mut not_pe = pe(0);
+-    not_pe[0x40] = b'X';
+-    assert!(pe_symbols(&not_pe).is_err());
+-    assert!(pe_symbols(b"MZ").is_err(), "cut short");
+-}
+-
+-/// A minimal Mach-O file with one `LC_SYMTAB` over `kinds` (`n_type`s).
+-fn macho(kinds: &[u8]) -> Vec<u8> {
+-    let symbols = 32 + 24;
+-    let mut bytes = vec![0u8; symbols + 16 * kinds.len()];
+-    bytes[..4].copy_from_slice(&0xfeed_facfu32.to_le_bytes());
+-    bytes[16..20].copy_from_slice(&1u32.to_le_bytes());
+-    bytes[32..36].copy_from_slice(&2u32.to_le_bytes());
+-    bytes[36..40].copy_from_slice(&24u32.to_le_bytes());
+-    bytes[40..44].copy_from_slice(&(symbols as u32).to_le_bytes());
+-    bytes[44..48].copy_from_slice(&(kinds.len() as u32).to_le_bytes());
+-    for (i, kind) in kinds.iter().enumerate() {
+-        bytes[symbols + 16 * i + 4] = *kind;
+-    }
+-    bytes
+-}
+-
+-#[test]
+-fn macho_debug_maps_and_local_symbols_are_counted() {
+-    // N_OSO and N_FUN stabs; a local N_SECT; an external N_SECT; undefined.
+-    assert_eq!(
+-        macho_symbols(&macho(&[0x66, 0x24, 0x0e, 0x0f, 0x01])).unwrap(),
+-        (2, 1)
+-    );
+-    assert_eq!(macho_symbols(&macho(&[0x0f, 0x01])).unwrap(), (0, 0));
+-    assert!(macho_symbols(b"\x7fELF").is_err());
+-}
+-
+-/// The readers on this test binary, which is neither stripped nor split:
+-/// an ELF one keeps `.symtab` and DWARF, a Mach-O one its debug map.
+-#[test]
+-fn this_unstripped_test_binary_reads_as_unstripped() {
+-    let bytes = fs::read(std::env::current_exe().unwrap()).unwrap();
+-    if bytes.starts_with(b"\x7fELF") {
+-        let names = elf_sections(&bytes).unwrap();
+-        assert!(names.iter().any(|n| n == ".symtab"), "{names:?}");
+-        assert!(names.iter().any(|n| n == ".text"), "{names:?}");
+-    } else if bytes.starts_with(&0xfeed_facfu32.to_le_bytes()) {
+-        let (stabs, locals) = macho_symbols(&bytes).unwrap();
+-        assert!(stabs > 0 && locals > 0, "{stabs} stabs, {locals} locals");
+-    }
+-}
+-
+ /// The workflow installs cargo-about where the notices are made, and keeps
+ /// the archive of each runner whose host `dist` packages.
+ #[test]
+@@ -504,3 +390,6 @@ fn the_workflow_installs_cargo_about_and_keeps_the_archives() {
+         .join(" || ");
+     assert_eq!(workflow.matches(&condition).count(), 2, "{condition}");
+ }
++
++#[path = "dist_tests_binaries.rs"]
++mod binaries;
+diff --git a/xtask/src/dist_tests_binaries.rs b/xtask/src/dist_tests_binaries.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..1baca51245ca9526bf47baea15b9e95fc02ce300
+--- /dev/null
++++ b/xtask/src/dist_tests_binaries.rs
+@@ -0,0 +1,120 @@
++//! The native `dist` step's readers of the unpacked binary: ELF section
++//! names, PE's COFF symbol count and Mach-O's debug map and local symbols,
++//! on made-up files and on this test binary (moved from `dist_tests.rs`,
++//! which grew past 500 lines, at G5).
++
++use std::fs;
++
++use crate::dist_check::{elf_sections, elf_unstripped, macho_symbols, pe_symbols};
++
++/// A minimal ELF64 file: the null section, `names` and the section-name
++/// table last.
++fn elf(names: &[&str]) -> Vec<u8> {
++    let mut table = vec![0u8];
++    let mut offsets = vec![0u32];
++    for name in names.iter().chain([&".shstrtab"]) {
++        offsets.push(table.len() as u32);
++        table.extend(name.as_bytes());
++        table.push(0);
++    }
++    let count = offsets.len();
++    let shoff = 64 + table.len();
++    let mut bytes = vec![0u8; shoff + 64 * count];
++    bytes[..6].copy_from_slice(b"\x7fELF\x02\x01");
++    bytes[0x28..0x30].copy_from_slice(&(shoff as u64).to_le_bytes());
++    bytes[0x3a..0x3c].copy_from_slice(&64u16.to_le_bytes());
++    bytes[0x3c..0x3e].copy_from_slice(&(count as u16).to_le_bytes());
++    bytes[0x3e..0x40].copy_from_slice(&((count - 1) as u16).to_le_bytes());
++    bytes[64..shoff].copy_from_slice(&table);
++    for (i, name) in offsets.iter().enumerate() {
++        let at = shoff + 64 * i;
++        bytes[at..at + 4].copy_from_slice(&name.to_le_bytes());
++    }
++    let last = shoff + 64 * (count - 1);
++    bytes[last + 0x18..last + 0x20].copy_from_slice(&64u64.to_le_bytes());
++    bytes[last + 0x20..last + 0x28].copy_from_slice(&(table.len() as u64).to_le_bytes());
++    bytes
++}
++
++#[test]
++fn elf_section_names_are_read() {
++    let names = elf_sections(&elf(&[".text", ".gnu_debuglink"])).unwrap();
++    assert_eq!(names, ["", ".text", ".gnu_debuglink", ".shstrtab"]);
++    assert!(elf_sections(b"MZ not elf").is_err());
++    assert!(elf_sections(&elf(&[".text"])[..80]).is_err(), "cut short");
++}
++
++#[test]
++fn a_stripped_elf_binary_keeps_no_symbols_or_debug_info() {
++    let names = |list: &[&str]| list.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
++    // What objcopy --strip-all leaves of a Rust binary (aarch64 Linux).
++    let stripped = names(&[".text", ".debug_gdb_scripts", ".gnu_debuglink", ".shstrtab"]);
++    assert!(elf_unstripped(&stripped).is_empty());
++    let full = names(&[".text", ".symtab", ".strtab", ".debug_info", ".zdebug_line"]);
++    assert_eq!(
++        elf_unstripped(&full),
++        [".symtab", ".debug_info", ".zdebug_line"]
++    );
++}
++
++/// A PE file's COFF symbol count, the 4 bytes 16 past the `PE\0\0` that
++/// offset 0x3c points at.
++#[test]
++fn pe_coff_symbols_are_counted() {
++    let pe = |symbols: u32| {
++        let mut bytes = vec![0u8; 0x80];
++        bytes[..2].copy_from_slice(b"MZ");
++        bytes[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
++        bytes[0x40..0x44].copy_from_slice(b"PE\0\0");
++        bytes[0x50..0x54].copy_from_slice(&symbols.to_le_bytes());
++        bytes
++    };
++    assert_eq!(pe_symbols(&pe(0)).unwrap(), 0);
++    assert_eq!(pe_symbols(&pe(7)).unwrap(), 7);
++    let mut not_pe = pe(0);
++    not_pe[0x40] = b'X';
++    assert!(pe_symbols(&not_pe).is_err());
++    assert!(pe_symbols(b"MZ").is_err(), "cut short");
++}
++
++/// A minimal Mach-O file with one `LC_SYMTAB` over `kinds` (`n_type`s).
++fn macho(kinds: &[u8]) -> Vec<u8> {
++    let symbols = 32 + 24;
++    let mut bytes = vec![0u8; symbols + 16 * kinds.len()];
++    bytes[..4].copy_from_slice(&0xfeed_facfu32.to_le_bytes());
++    bytes[16..20].copy_from_slice(&1u32.to_le_bytes());
++    bytes[32..36].copy_from_slice(&2u32.to_le_bytes());
++    bytes[36..40].copy_from_slice(&24u32.to_le_bytes());
++    bytes[40..44].copy_from_slice(&(symbols as u32).to_le_bytes());
++    bytes[44..48].copy_from_slice(&(kinds.len() as u32).to_le_bytes());
++    for (i, kind) in kinds.iter().enumerate() {
++        bytes[symbols + 16 * i + 4] = *kind;
++    }
++    bytes
++}
++
++#[test]
++fn macho_debug_maps_and_local_symbols_are_counted() {
++    // N_OSO and N_FUN stabs; a local N_SECT; an external N_SECT; undefined.
++    assert_eq!(
++        macho_symbols(&macho(&[0x66, 0x24, 0x0e, 0x0f, 0x01])).unwrap(),
++        (2, 1)
++    );
++    assert_eq!(macho_symbols(&macho(&[0x0f, 0x01])).unwrap(), (0, 0));
++    assert!(macho_symbols(b"\x7fELF").is_err());
++}
++
++/// The readers on this test binary, which is neither stripped nor split:
++/// an ELF one keeps `.symtab` and DWARF, a Mach-O one its debug map.
++#[test]
++fn this_unstripped_test_binary_reads_as_unstripped() {
++    let bytes = fs::read(std::env::current_exe().unwrap()).unwrap();
++    if bytes.starts_with(b"\x7fELF") {
++        let names = elf_sections(&bytes).unwrap();
++        assert!(names.iter().any(|n| n == ".symtab"), "{names:?}");
++        assert!(names.iter().any(|n| n == ".text"), "{names:?}");
++    } else if bytes.starts_with(&0xfeed_facfu32.to_le_bytes()) {
++        let (stabs, locals) = macho_symbols(&bytes).unwrap();
++        assert!(stabs > 0 && locals > 0, "{stabs} stabs, {locals} locals");
++    }
++}
+diff --git a/xtask/src/main.rs b/xtask/src/main.rs
+index 0c32a45b0a7f1f78de299b5daf55a2b036fa3979..a6379728a832d91ca95fac659d5fce90943369e6 100644
+--- a/xtask/src/main.rs
++++ b/xtask/src/main.rs
+@@ -16,6 +16,7 @@ mod ci_durations;
+ mod ci_native;
+ mod ci_report;
+ mod ci_verdicts;
++mod ci_verdicts_fps;
+ mod dist;
+ mod dist_check;
+ mod dist_notices;

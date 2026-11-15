@@ -1,0 +1,39 @@
+diff --git a/docs/rungs/2/acceptance.json b/docs/rungs/2/acceptance.json
+index 01da9a8fa420b692bdce96dc57c9492a7128154d..6652f2abcbb0bbaa73054d5fc19e3932c2461638 100644
+--- a/docs/rungs/2/acceptance.json
++++ b/docs/rungs/2/acceptance.json
+@@ -487,12 +487,16 @@
+     {
+       "id": "mutants",
+       "done_when": 11,
+-      "description": "Over the rung's core changes (the diff from 314383d, the commit that added docs/rungs/2/plan.md, Q2's ground_move included), no missed mutant outside .cargo/mutants.toml's exclusions. Pending on push runs; the weekly schedule and a manual dispatch run it.",
+-      "command": "cargo xtask ci --job mutants (step rung-diff)",
++      "description": "Over the rung's core changes (the diff from 314383d, the commit that added docs/rungs/2/plan.md, Q2's ground_move included), no missed mutant outside .cargo/mutants.toml's exclusions, in every one of the four shards (the summary's mutants-shards step fails unless a report from each is present). Pending on push runs; the weekly schedule and a manual dispatch run it.",
++      "command": "cargo xtask ci --job mutants (step rung-diff, in each shard) && cargo xtask ci --job summary (step mutants-shards)",
+       "checks": [
+         {
+           "job": "mutants",
+           "step": "rung-diff"
++        },
++        {
++          "job": "summary",
++          "step": "mutants-shards"
+         }
+       ]
+     },
+@@ -622,7 +626,7 @@
+     {
+       "id": "scene-rules",
+       "done_when": null,
+-      "description": "Agent seeing A2: protected <scene>.rules.toml files, checked by a script over frame records, with three rules: an object marked must_see has at least 50 visible pixels and contrast at least 0.1; no first-person pixel shows the clear colour; floor shows in the lower third and ceiling or sky in the upper third. Every shot passes, and each rule has a self-test that breaks it.",
++      "description": "Agent seeing A2: protected <scene>.rules.toml files (the room's: crates/game-testbed/scenes/room.rules.toml), judged over frame records by eng-cli's scene_rules, with three rules: an object a shot names in must_see has at least 50 visible pixels, an OKLab distance of at least 0.03 between its mean colour and its surroundings', and a mean luminance at least 0.2 of that of the surfaces in view, so one drawn black fails; nothing shows where the world should be: no void below the horizon, and no sky but where a shot's bounded exception gives the skylight's; the floor covers at least 0.1 of the lower third, and ceiling or sky at least 0.1 of the upper third, a shot excused only within a bound and with a reason. Every first-person shot passes, and each rule has a self-test that breaks it.",
+       "command": "cargo xtask ci --job native (step scene-rules) && cargo xtask selftest rule-1 (and rule-2, rule-3)",
+       "checks": [
+         {
+diff --git a/docs/rungs/current.txt b/docs/rungs/current.txt
+index 6f8bafa51b6bfda80899f7614f4e27e39a352d82..0cfbf08886fca9a91cb753ec8734c84fcbe52c9f 100644
+--- a/docs/rungs/current.txt
++++ b/docs/rungs/current.txt
+@@ -1 +1 @@
+-1b
++2

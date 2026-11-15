@@ -1,0 +1,1339 @@
+diff --git a/architecture.toml b/architecture.toml
+index 5879ebd138a68c6546752b3ae3a8d411885d2968..d876a90af248f5d0cb71adc5b73f94e0c2cf35d4 100644
+--- a/architecture.toml
++++ b/architecture.toml
+@@ -82,6 +82,10 @@ same_layer = ["eng-platform-api"]
+ 
+ [crates.eng-platform-gcmouse]
+ layer = "L1"
++# The one file in the workspace that may allow `unsafe_code` (ADR-0021):
++# arch-check refuses an allow, warn or expect of it in any other Rust file,
++# and a module, `#[path]` or `include!` in this one.
++unsafe_file = "src/macos.rs"
+ 
+ [crates.eng-platform-winit]
+ layer = "L1"
+diff --git a/xtask/src/arch.rs b/xtask/src/arch.rs
+index cc0870ab6748357ad03e1dd594dd5f88e6dcbe90..004d7874c07e7b803bb1e5972d2306807a3e7ab9 100644
+--- a/xtask/src/arch.rs
++++ b/xtask/src/arch.rs
+@@ -13,6 +13,9 @@ use serde::Deserialize;
+ 
+ use crate::util;
+ 
++#[path = "arch_unsafe.rs"]
++mod unsafe_scan;
++
+ #[derive(Debug, Deserialize)]
+ #[serde(deny_unknown_fields)]
+ pub struct ArchFile {
+@@ -45,6 +48,9 @@ pub struct CrateRule {
+     proc_macro: bool,
+     #[serde(default)]
+     same_layer: Vec<String>,
++    /// The one file (in the crate) that may allow `unsafe_code`, ADR-0021.
++    #[serde(default)]
++    unsafe_file: Option<String>,
+ }
+ 
+ /// One package in the dependency graph.
+@@ -69,6 +75,10 @@ pub struct Package {
+     pub sources: Vec<(String, String)>,
+     /// Workspace crates only: `[lints] workspace = true`.
+     pub inherits_lints: bool,
++    /// Workspace crates only: the crate's directory and every `.rs` file
++    /// in it, `src` or not (ADR-0021's scan, `arch_unsafe.rs`).
++    pub dir: String,
++    pub rust_files: Vec<(String, String)>,
+ }
+ 
+ pub struct Model {
+@@ -207,6 +217,7 @@ pub fn violations(model: &Model) -> Vec<String> {
+             check_core(model, name, pkg, &mut out);
+         }
+     }
++    unsafe_scan::violations(model, &mut out);
+     out
+ }
+ 
+@@ -387,14 +398,8 @@ pub fn load(root: &Path, locked: bool) -> Result<Model, String> {
+             {
+                 pkg.odd_lib_path = Some(lib.src_path.clone());
+             }
+-            // Every file, including directories named `target`, which a
+-            // `mod target;` can reach.
+-            for file in util::walk_all(&dir.join("src")) {
+-                if file.extension().is_some_and(|e| e == "rs") {
+-                    let text = fs::read_to_string(&file).unwrap_or_default();
+-                    pkg.sources.push((util::rel(root, &file), text));
+-                }
+-            }
++            (pkg.sources, pkg.rust_files) = unsafe_scan::crate_files(root, dir);
++            pkg.dir = util::rel(root, dir);
+             let manifest: toml::Table = fs::read_to_string(&meta_pkg.manifest_path)
+                 .ok()
+                 .and_then(|t| t.parse().ok())
+diff --git a/xtask/src/arch_scan.rs b/xtask/src/arch_scan.rs
+index b97719bf7576c199ccd4f1cea03566c71608210f..d79c7873de74e9fe6ded98257109231c350c9fde 100644
+--- a/xtask/src/arch_scan.rs
++++ b/xtask/src/arch_scan.rs
+@@ -21,6 +21,9 @@ const NEVER_SILENCED: [&str; 8] = [
+ pub(crate) struct Token {
+     pub(crate) text: String,
+     pub(crate) line: usize,
++    /// A string literal's text between its quotes, escapes as written;
++    /// `None` for every other token (`arch_unsafe.rs` reads `#[path]`s).
++    pub(crate) value: Option<String>,
+ }
+ 
+ /// `src` as tokens, comments and literals skipped (also for `mutants_skip.rs`).
+@@ -62,16 +65,19 @@ pub(crate) fn tokens(src: &str) -> Vec<Token> {
+             }
+             '"' => {
+                 i += 1;
++                let start = i;
+                 while i < chars.len() && chars[i] != '"' {
+                     // An escaped line end (`\` then a newline) is a line too.
+                     let at = if chars[i] == '\\' { i + 1 } else { i };
+                     line += usize::from(chars.get(at) == Some(&'\n'));
+                     i = at + 1;
+                 }
++                let value = chars[start..i.min(chars.len())].iter().collect();
+                 i += 1;
+                 out.push(Token {
+                     text: "\"\"".into(),
+                     line,
++                    value: Some(value),
+                 });
+             }
+             '\'' => {
+@@ -82,6 +88,7 @@ pub(crate) fn tokens(src: &str) -> Vec<Token> {
+                 out.push(Token {
+                     text: "'".into(),
+                     line,
++                    value: None,
+                 });
+             }
+             c if c.is_alphanumeric() || c == '_' => {
+@@ -103,7 +110,11 @@ pub(crate) fn tokens(src: &str) -> Vec<Token> {
+                         i += 1;
+                     }
+                     let text = chars[start..i].iter().collect();
+-                    out.push(Token { text, line });
++                    out.push(Token {
++                        text,
++                        line,
++                        value: None,
++                    });
+                     continue;
+                 }
+                 // Raw strings: r"..", r#".."#, br#".."#, cr".."
+@@ -117,6 +128,7 @@ pub(crate) fn tokens(src: &str) -> Vec<Token> {
+                     }
+                     if chars.get(i) == Some(&'"') {
+                         i += 1;
++                        let (start, mut end) = (i, chars.len());
+                         loop {
+                             if i >= chars.len() {
+                                 break;
+@@ -124,6 +136,7 @@ pub(crate) fn tokens(src: &str) -> Vec<Token> {
+                             if chars[i] == '"'
+                                 && (1..=hashes).all(|k| chars.get(i + k) == Some(&'#'))
+                             {
++                                end = i;
+                                 i += 1 + hashes;
+                                 break;
+                             }
+@@ -133,18 +146,24 @@ pub(crate) fn tokens(src: &str) -> Vec<Token> {
+                         out.push(Token {
+                             text: "\"\"".into(),
+                             line,
++                            value: Some(chars[start..end].iter().collect()),
+                         });
+                         continue;
+                     }
+                     // Not a raw string: the `#`s are tokens of their own.
+                     i -= hashes;
+                 }
+-                out.push(Token { text: ident, line });
++                out.push(Token {
++                    text: ident,
++                    line,
++                    value: None,
++                });
+             }
+             c => {
+                 out.push(Token {
+                     text: c.to_string(),
+                     line,
++                    value: None,
+                 });
+                 i += 1;
+             }
+@@ -226,24 +245,8 @@ pub fn scan(src: &str) -> Vec<(usize, String)> {
+                 "`include!` can pull in code from outside src/".to_string(),
+             )),
+             "allow" | "expect" | "warn" if text(i + 1) == "(" => {
+-                // Collect the lint paths inside the parentheses.
+-                let (mut depth, mut j, mut inner) = (0, i + 1, String::new());
+-                while j < toks.len() {
+-                    match text(j) {
+-                        "(" => depth += 1,
+-                        ")" => {
+-                            depth -= 1;
+-                            if depth == 0 {
+-                                break;
+-                            }
+-                        }
+-                        t if depth == 1 => inner.push_str(if t == "," { " " } else { t }),
+-                        _ => {}
+-                    }
+-                    j += 1;
+-                }
+-                for lint in inner.split_whitespace() {
+-                    if NEVER_SILENCED.contains(&lint) {
++                for lint in lints(&toks, i + 1) {
++                    if NEVER_SILENCED.contains(&lint.as_str()) {
+                         out.push((
+                             tok.line,
+                             format!("`{}({lint})` silences a determinism lint", tok.text),
+@@ -257,6 +260,28 @@ pub fn scan(src: &str) -> Vec<(usize, String)> {
+     out
+ }
+ 
++/// The lint paths inside the parentheses that open at token `open`
++/// (`allow(a, clippy::b)` gives `a` and `clippy::b`).
++pub(crate) fn lints(toks: &[Token], open: usize) -> Vec<String> {
++    let text = |i: usize| toks.get(i).map_or("", |t| t.text.as_str());
++    let (mut depth, mut j, mut inner) = (0, open, String::new());
++    while j < toks.len() {
++        match text(j) {
++            "(" => depth += 1,
++            ")" => {
++                depth -= 1;
++                if depth == 0 {
++                    break;
++                }
++            }
++            t if depth == 1 => inner.push_str(if t == "," { " " } else { t }),
++            _ => {}
++        }
++        j += 1;
++    }
++    inner.split_whitespace().map(String::from).collect()
++}
++
+ /// The crate-root inner attributes of a `lib.rs`: the `#![...]` lines before
+ /// the first item, ignoring comments and blank lines.
+ pub fn root_attributes(lib_rs: &str) -> Vec<String> {
+diff --git a/xtask/src/arch_tests.rs b/xtask/src/arch_tests.rs
+index ceb8b00814068bb2f4494ba581d1217eaafef350..750bb6631639b684941aad32cc66e2faa283b1c8 100644
+--- a/xtask/src/arch_tests.rs
++++ b/xtask/src/arch_tests.rs
+@@ -227,3 +227,183 @@ fn build_scripts_clippy_configs_patches_and_pins() {
+         model(|p| p.get_mut("libm").unwrap().source = Some("git+https://example.com/libm".into()));
+     assert_eq!(tags(&m), ["E-ARCH-PIN"]);
+ }
++
++/// ADR-0021: eng-std plays the GCMouse shim, whose `src/ffi.rs` alone may
++/// allow `unsafe_code`.
++fn shim_model(edit: impl FnOnce(&mut BTreeMap<String, Package>)) -> Model {
++    let mut m = model(|p| {
++        let shim = p.get_mut("eng-std").unwrap();
++        shim.dir = "crates/eng-std".into();
++        shim.rust_files = vec![
++            ("crates/eng-std/src/lib.rs".into(), "mod ffi;\n".into()),
++            (
++                "crates/eng-std/src/ffi.rs".into(),
++                "//! FFI.\n#![allow(unsafe_code)]\n".into(),
++            ),
++        ];
++        edit(p);
++    });
++    let exempt = "[crates.eng-std]\nlayer = \"L1\"\nunsafe_file = \"src/ffi.rs\"\n";
++    m.rules = toml::from_str(&RULES.replace("[crates.eng-std]\nlayer = \"L1\"\n", exempt)).unwrap();
++    m
++}
++
++fn file(p: &mut BTreeMap<String, Package>, krate: &str, path: &str, text: &str) {
++    let pkg = p.get_mut(krate).unwrap();
++    pkg.rust_files.push((path.into(), text.into()));
++}
++
++#[test]
++fn unsafe_code_is_allowed_in_the_exempt_file_only() {
++    assert_eq!(violations(&shim_model(|_| {})), Vec::<String>::new());
++    // Any crate, any directory: a test, an example, a build script.
++    for (krate, path) in [
++        ("eng-gpu", "crates/eng-gpu/tests/t.rs"),
++        ("eng-gpu", "crates/eng-gpu/examples/e.rs"),
++        ("eng-std", "crates/eng-std/build.rs"),
++        ("eng-std", "crates/eng-std/src/other.rs"),
++    ] {
++        let m = shim_model(|p| {
++            let text = "fn a() {}\n#![cfg_attr(test, allow(dead_code, unsafe_code))]\n";
++            file(p, krate, path, text);
++        });
++        assert_eq!(
++            violations(&m),
++            [format!(
++                "[E-ARCH-UNSAFE] {path}:2: allows unsafe_code; only crates/eng-std/src/ffi.rs \
++                 may (ADR-0021)"
++            )]
++        );
++    }
++    // Without the key, no file may.
++    let m = model(|p| {
++        file(
++            p,
++            "eng-gpu",
++            "crates/eng-gpu/src/x.rs",
++            "#[warn(unsafe_code)]",
++        )
++    });
++    assert_eq!(
++        violations(&m),
++        ["[E-ARCH-UNSAFE] crates/eng-gpu/src/x.rs:1: allows unsafe_code; no file may (ADR-0021)"]
++    );
++}
++
++#[test]
++fn the_exempt_file_pulls_in_no_code_and_must_exist() {
++    for (text, why) in [
++        ("mod more;", "`mod more` in the one file"),
++        (
++            "macro_rules! m { () => {} }",
++            "`macro_rules!` in the one file",
++        ),
++        ("pub macro n() {}", "`macro` in the one file"),
++        (
++            "#[path = \"x.rs\"]\nfn f() {}",
++            "`#[path]` is in the one file",
++        ),
++        (
++            "include!(\"x.rs\");",
++            "`include!` (by any name) brings in text",
++        ),
++        ("#[allow(unsafe_code)] fn g() {}", "allows unsafe_code"),
++    ] {
++        let m = shim_model(|p| {
++            let shim = p.get_mut("eng-std").unwrap();
++            shim.rust_files[1].1.push_str(text);
++        });
++        let found = violations(&m);
++        assert_eq!(found.len(), 1, "{text}: {found:?}");
++        assert!(
++            found[0].starts_with("[E-ARCH-UNSAFE] crates/eng-std/src/ffi.rs:3: ")
++                && found[0].contains(why),
++            "{text}: {found:?}"
++        );
++    }
++    let m = shim_model(|p| {
++        p.get_mut("eng-std").unwrap().rust_files.remove(1);
++    });
++    assert_eq!(
++        violations(&m),
++        [
++            "[E-ARCH-UNSAFE] architecture.toml lets crates/eng-std/src/ffi.rs allow unsafe_code, but \
++          eng-std has no such Rust file"
++        ]
++    );
++}
++
++/// T21's review: a `#[path]` anywhere must name a workspace crate's Rust
++/// file, which the scan reads, and never the exempt one; `include!` and
++/// a lint list a macro fills fail anywhere.
++#[test]
++fn no_file_pulls_in_text_the_scan_does_not_read() {
++    let gpu = "crates/eng-gpu/src/lib.rs";
++    let one = |text: &str| {
++        let m = shim_model(|p| {
++            let pkg = p.get_mut("eng-gpu").unwrap();
++            pkg.dir = "crates/eng-gpu".into();
++            pkg.rust_files = vec![
++                (gpu.into(), text.into()),
++                ("crates/eng-gpu/src/ok.rs".into(), String::new()),
++            ];
++        });
++        violations(&m)
++    };
++    assert_eq!(one("#[path = \"ok.rs\"] mod ok;"), Vec::<String>::new());
++    assert_eq!(
++        one("#[path = \"../../eng-std/src/lib.rs\"] mod other;"),
++        Vec::<String>::new()
++    );
++    for (text, why) in [
++        (
++            "#[path = \"hidden.txt\"] mod h;",
++            "names crates/eng-gpu/src/hidden.txt, which is no",
++        ),
++        (
++            "#[path = \"../../eng-std/src/ffi.rs\"] mod f;",
++            "mounts crates/eng-std/src/ffi.rs",
++        ),
++        (
++            "#[path = \"../../../../x.rs\"] mod x;",
++            "names no file in the repository",
++        ),
++        (
++            "mod m {\n#[path = \"ok.rs\"] mod ok;\n}",
++            "is inside an inline module",
++        ),
++        (
++            "include!(\"ok.rs\");",
++            "`include!` (by any name) brings in text",
++        ),
++        // T21's second review: an alias, a backslash, a macro variable.
++        (
++            "use core::include as inc;",
++            "`include!` (by any name) brings in text",
++        ),
++        (
++            "#[path = \"ok\\\\x.rs\"] mod x;",
++            "`#[path]` has a backslash",
++        ),
++        (
++            "macro_rules! m { ($m:meta) => { #[$m] fn h() {} } }",
++            "a `$` in a lint attribute",
++        ),
++        (
++            "macro_rules! m { ($l:ident) => { #[allow($l)] fn g() {} } }",
++            "a `$` in a lint attribute",
++        ),
++        (
++            "m!(unsafe_code);",
++            "names unsafe_code outside deny(…) or forbid(…)",
++        ),
++    ] {
++        let found = one(text);
++        assert_eq!(found.len(), 1, "{text}: {found:?}");
++        assert!(
++            found[0].starts_with(&format!("[E-ARCH-UNSAFE] {gpu}:")),
++            "{found:?}"
++        );
++        assert!(found[0].contains(why), "{text}: {found:?}");
++    }
++}
+diff --git a/xtask/src/arch_unsafe.rs b/xtask/src/arch_unsafe.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..9338ba1b4526413754fc19e36d269bf441e7d987
+--- /dev/null
++++ b/xtask/src/arch_unsafe.rs
+@@ -0,0 +1,379 @@
++//! `arch-check`'s confinement of `unsafe` (ADR-0021, rung 2 criterion 20),
++//! over every Rust file of every workspace crate (its `src`, `tests`,
++//! `examples`, `benches` and build script, `xtask` too), each finding an
++//! `[E-ARCH-UNSAFE]`:
++//!
++//! - **`unsafe_code` only in `deny(…)` or `forbid(…)`.** Any other use of
++//!   the name, in an `allow`, `warn` or `expect` (`cfg_attr` forms too) or
++//!   as a macro's argument that a macro could put in one, fails; so does a
++//!   `$` in an attribute that names `allow`, `warn` or `expect` at any
++//!   depth, in an attribute that is itself a macro variable (`#[$meta]`),
++//!   or in such a list outside an attribute, where a macro could put any
++//!   lint. The one exception is the file `architecture.toml` names for
++//!   the GCMouse shim (`unsafe_file`), whose leading inner attribute may be
++//!   `#![allow(unsafe_code)]`, and nothing else there.
++//! - **That file stays its own text.** It declares no module and no macro
++//!   (`macro_rules!` or `macro`, which could hand its `allow` to code
++//!   elsewhere), and has no `#[path]` or `include!`.
++//! - **No code from outside the scan.** `include` fails everywhere, by
++//!   any path or alias (`use core::include as inc;`). A `#[path]` must
++//!   name, relative to its file's directory, a `.rs` file of a workspace
++//!   crate, which this scan reads too, and never the exempt file; it may
++//!   have no backslash (rustc decodes escapes before the path), and may
++//!   not sit inside an inline module, where rustc looks in a subdirectory
++//!   of the module's name instead.
++//!
++//! The workspace lint denies `unsafe_code` everywhere and core crates
++//! forbid it; this scan stops the escapes the compiler allows in a crate
++//! that only denies it. The selftest `unsafe-outside-shim` plants each.
++//! A proc-macro crate could still build the lint's name from a string; a
++//! review of `eng-derive` covers that (ADR-0021).
++
++use std::collections::BTreeSet;
++use std::fs;
++use std::path::Path;
++
++use super::Model;
++use crate::arch_scan::{self, Token};
++use crate::util;
++
++/// A file's path from the repo root and its text.
++type Source = (String, String);
++
++/// A finding in one file: its line and what it is.
++type Finding = (usize, String);
++
++/// A crate's Rust files under `src` (the core scan's), then every one in
++/// its directory (this scan's), each `(path from the root, text)`. Every
++/// directory counts, those named `target` too, which a `mod target;` can
++/// reach.
++pub fn crate_files(root: &Path, dir: &Path) -> (Vec<Source>, Vec<Source>) {
++    let (mut sources, mut all) = (Vec::new(), Vec::new());
++    for file in util::walk_all(dir) {
++        if file.extension().is_some_and(|e| e == "rs") {
++            let path = util::rel(root, &file);
++            let text = fs::read_to_string(&file).unwrap_or_default();
++            if file.starts_with(dir.join("src")) {
++                sources.push((path.clone(), text.clone()));
++            }
++            all.push((path, text));
++        }
++    }
++    (sources, all)
++}
++
++fn text(toks: &[Token], i: usize) -> &str {
++    toks.get(i).map_or("", |t| t.text.as_str())
++}
++
++/// Whether the tokens open with the inner attribute
++/// `#![allow(unsafe_code)]`, comments aside.
++fn leads_with_the_allow(toks: &[Token]) -> bool {
++    let lead = ["#", "!", "[", "allow", "(", "unsafe_code", ")", "]"];
++    lead.iter().enumerate().all(|(i, t)| text(toks, i) == *t)
++}
++
++/// An attribute's tokens, `#` to its closing `]`: whether it names
++/// `allow`, `warn` or `expect` anywhere, at any depth, or is itself a macro
++/// variable (`#[$meta]`).
++struct Attribute {
++    start: usize,
++    end: usize,
++    lints: bool,
++    variable: bool,
++}
++
++/// Every attribute (`#[…]` and `#![…]`) in the tokens.
++fn attributes(toks: &[Token]) -> Vec<Attribute> {
++    let mut out = Vec::new();
++    for i in 0..toks.len() {
++        if text(toks, i) != "#" {
++            continue;
++        }
++        let open = if text(toks, i + 1) == "!" {
++            i + 2
++        } else {
++            i + 1
++        };
++        if text(toks, open) != "[" {
++            continue;
++        }
++        let (mut depth, mut end) = (0, open);
++        while end < toks.len() {
++            match text(toks, end) {
++                "[" => depth += 1,
++                "]" => {
++                    depth -= 1;
++                    if depth == 0 {
++                        break;
++                    }
++                }
++                _ => {}
++            }
++            end += 1;
++        }
++        let inside = open + 1..end.min(toks.len());
++        out.push(Attribute {
++            start: i,
++            end,
++            lints: inside
++                .clone()
++                .any(|k| matches!(text(toks, k), "allow" | "warn" | "expect")),
++            variable: text(toks, open + 1) == "$",
++        });
++    }
++    out
++}
++
++/// Every `unsafe_code` outside `deny(…)` or `forbid(…)`, and every `$` a
++/// macro could fill with a lint: in an attribute that names `allow`,
++/// `warn` or `expect` at any depth (`#[allow $x]` too), in an attribute
++/// that is itself a macro variable (`#[$meta]`), or in an `allow`, `warn`
++/// or `expect` list outside an attribute. Each `(line, what)`. In the
++/// exempt file (`exempt`) the leading `#![allow(unsafe_code)]` is no
++/// finding.
++pub(super) fn unsafe_code_uses(toks: &[Token], exempt: bool) -> Vec<Finding> {
++    let mut out = Vec::new();
++    let attrs = attributes(toks);
++    // The token before each open `(`, innermost last.
++    let mut opened: Vec<&str> = Vec::new();
++    let lead = exempt && leads_with_the_allow(toks);
++    for (i, tok) in toks.iter().enumerate() {
++        match tok.text.as_str() {
++            "(" => opened.push(text(toks, i.wrapping_sub(1))),
++            ")" => {
++                opened.pop();
++            }
++            "unsafe_code" if lead && i == 5 => {}
++            "unsafe_code" => match opened.last().copied() {
++                Some("deny" | "forbid") => {}
++                Some("allow" | "warn" | "expect") => {
++                    out.push((tok.line, "allows unsafe_code".to_string()));
++                }
++                _ => out.push((
++                    tok.line,
++                    "names unsafe_code outside deny(…) or forbid(…), where a macro could \
++                     allow it"
++                        .to_string(),
++                )),
++            },
++            "$" => {
++                let attr = attrs.iter().find(|a| a.start < i && i < a.end);
++                let fills = match attr {
++                    Some(attr) => attr.lints || attr.variable,
++                    None => opened
++                        .last()
++                        .is_some_and(|t| matches!(*t, "allow" | "warn" | "expect")),
++                };
++                if fills {
++                    out.push((
++                        tok.line,
++                        "a `$` in a lint attribute or list, or an attribute that is a macro \
++                         variable, where a macro could put any lint"
++                            .to_string(),
++                    ));
++                }
++            }
++            _ => {}
++        }
++    }
++    out
++}
++
++/// A `#[path = "…"]` (also inside `cfg_attr`): its line, its string, and
++/// whether it sits inside an inline module (`mod m { … }`).
++pub(super) struct PathAttribute {
++    pub line: usize,
++    pub value: Option<String>,
++    pub inline: bool,
++}
++
++/// Every `#[path]` in the tokens.
++pub(super) fn path_attributes(toks: &[Token]) -> Vec<PathAttribute> {
++    let mut out = Vec::new();
++    // For each open `{`: whether it opens an inline module.
++    let mut braces: Vec<bool> = Vec::new();
++    for (i, tok) in toks.iter().enumerate() {
++        match tok.text.as_str() {
++            "{" => braces.push(i >= 2 && text(toks, i - 2) == "mod"),
++            "}" => {
++                braces.pop();
++            }
++            "#" => {
++                let open = if text(toks, i + 1) == "!" {
++                    i + 2
++                } else {
++                    i + 1
++                };
++                if text(toks, open) != "[" {
++                    continue;
++                }
++                let (mut depth, mut j) = (0, open);
++                while j < toks.len() {
++                    match text(toks, j) {
++                        "[" => depth += 1,
++                        "]" => {
++                            depth -= 1;
++                            if depth == 0 {
++                                break;
++                            }
++                        }
++                        "path" if text(toks, j + 1) == "=" => out.push(PathAttribute {
++                            line: toks[j].line,
++                            value: toks.get(j + 2).and_then(|t| t.value.clone()),
++                            inline: braces.iter().any(|m| *m),
++                        }),
++                        _ => {}
++                    }
++                    j += 1;
++                }
++            }
++            _ => {}
++        }
++    }
++    out
++}
++
++/// The line of each `include`, the macro by any path or alias
++/// (`include!`, `core::include!`, `use core::include as inc;`).
++pub(super) fn includes(toks: &[Token]) -> Vec<usize> {
++    (0..toks.len())
++        .filter(|&i| text(toks, i) == "include")
++        .map(|i| toks[i].line)
++        .collect()
++}
++
++/// What would let the exempt file's text reach beyond it: a module
++/// declaration or a macro definition, each `(line, what)`.
++pub(super) fn declarations(toks: &[Token]) -> Vec<Finding> {
++    let mut out = Vec::new();
++    for (i, tok) in toks.iter().enumerate() {
++        let what = match tok.text.as_str() {
++            "mod" => format!("`mod {}`", text(toks, i + 1)),
++            "macro_rules" if text(toks, i + 1) == "!" => "`macro_rules!`".to_string(),
++            "macro" => "`macro`".to_string(),
++            _ => continue,
++        };
++        out.push((tok.line, what));
++    }
++    out
++}
++
++/// `rel` from the directory `dir` (both from the repo root, `/`-separated),
++/// with `.` and `..` resolved; `None` if it is absolute, has a backslash
++/// (refused before this) or leaves the root.
++pub(super) fn resolve(dir: &str, rel: &str) -> Option<String> {
++    if rel.starts_with('/') || rel.contains([':', '\\']) {
++        return None;
++    }
++    let mut parts: Vec<&str> = dir.split('/').filter(|p| !p.is_empty()).collect();
++    for part in rel.split('/') {
++        match part {
++            "" | "." => {}
++            ".." => {
++                parts.pop()?;
++            }
++            name => parts.push(name),
++        }
++    }
++    Some(parts.join("/"))
++}
++
++/// Adds a finding to `out` for each rule above that a workspace file
++/// breaks.
++pub fn violations(model: &Model, out: &mut Vec<String>) {
++    let mut exempt = Vec::new();
++    for (name, rule) in &model.rules.crates {
++        let (Some(file), Some(pkg)) = (&rule.unsafe_file, model.packages.get(name)) else {
++            continue;
++        };
++        let path = if pkg.dir.is_empty() {
++            file.clone()
++        } else {
++            format!("{}/{file}", pkg.dir)
++        };
++        if !pkg.rust_files.iter().any(|(f, _)| *f == path) {
++            out.push(format!(
++                "[E-ARCH-UNSAFE] architecture.toml lets {path} allow unsafe_code, but {name} has \
++                 no such Rust file"
++            ));
++        }
++        exempt.push(path);
++    }
++    if exempt.len() > 1 {
++        out.push(format!(
++            "[E-ARCH-UNSAFE] architecture.toml lets {} files allow unsafe_code ({}); ADR-0021 \
++             allows one",
++            exempt.len(),
++            exempt.join(", ")
++        ));
++    }
++    let only = exempt.first().map_or_else(
++        || "no file may".to_string(),
++        |path| format!("only {path} may"),
++    );
++    let workspace: Vec<_> = model.packages.values().filter(|p| p.workspace).collect();
++    let scanned: BTreeSet<&str> = workspace
++        .iter()
++        .flat_map(|p| p.rust_files.iter().map(|(f, _)| f.as_str()))
++        .collect();
++    for (file, text) in workspace.iter().flat_map(|p| &p.rust_files) {
++        let toks = arch_scan::tokens(text);
++        let is_exempt = exempt.contains(file);
++        let mut found = Vec::new();
++        for (line, what) in unsafe_code_uses(&toks, is_exempt) {
++            found.push((line, format!("{what}; {only} (ADR-0021)")));
++        }
++        for line in includes(&toks) {
++            found.push((
++                line,
++                "`include!` (by any name) brings in text no scan reads; use a module (ADR-0021)"
++                    .into(),
++            ));
++        }
++        let dir = file.rsplit_once('/').map_or("", |(dir, _)| dir);
++        for path in path_attributes(&toks) {
++            let value = path.value.as_deref();
++            let named = value.and_then(|v| resolve(dir, v));
++            let why = match &named {
++                _ if is_exempt => "is in the one file that may allow unsafe_code".to_string(),
++                _ if value.is_some_and(|v| v.contains('\\')) => {
++                    "has a backslash, which rustc reads as an escape before the path".to_string()
++                }
++                _ if path.inline => "is inside an inline module, so its file is not \
++                                     where this scan looks"
++                    .to_string(),
++                None => "names no file in the repository".to_string(),
++                Some(target) if exempt.contains(target) => {
++                    format!("mounts {target}, the one file that may allow unsafe_code")
++                }
++                Some(target) if !target.ends_with(".rs") || !scanned.contains(target.as_str()) => {
++                    format!("names {target}, which is no workspace crate's Rust file")
++                }
++                Some(_) => continue,
++            };
++            found.push((path.line, format!("`#[path]` {why} (ADR-0021)")));
++        }
++        if is_exempt {
++            for (line, what) in declarations(&toks) {
++                found.push((
++                    line,
++                    format!(
++                        "{what} in the one file that may allow unsafe_code; the exception \
++                         covers this file's text only (ADR-0021)"
++                    ),
++                ));
++            }
++        }
++        found.sort();
++        out.extend(
++            found
++                .into_iter()
++                .map(|(line, what)| format!("[E-ARCH-UNSAFE] {file}:{line}: {what}")),
++        );
++    }
++}
++
++#[cfg(test)]
++#[path = "arch_unsafe_tests.rs"]
++mod tests;
+diff --git a/xtask/src/arch_unsafe_tests.rs b/xtask/src/arch_unsafe_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..8582df0eea1f0b5350d4fb03ae8b584fe510a83d
+--- /dev/null
++++ b/xtask/src/arch_unsafe_tests.rs
+@@ -0,0 +1,135 @@
++//! The unsafe scan's helpers (`arch_unsafe.rs`), on made-up sources.
++
++use super::*;
++
++fn uses(src: &str, exempt: bool) -> Vec<usize> {
++    let toks = arch_scan::tokens(src);
++    unsafe_code_uses(&toks, exempt)
++        .into_iter()
++        .map(|(line, _)| line)
++        .collect()
++}
++
++#[test]
++fn unsafe_code_is_named_only_in_deny_or_forbid() {
++    assert_eq!(uses("#![allow(unsafe_code)]\nfn f() {}", false), [1]);
++    assert_eq!(
++        uses("fn f() {}\n#[allow(dead_code, unsafe_code)]", false),
++        [2]
++    );
++    assert_eq!(
++        uses("#![cfg_attr(\n test,\n expect(\n unsafe_code))]", false),
++        [4]
++    );
++    assert_eq!(uses("#[warn(unsafe_code)] fn f() {}", false), [1]);
++    assert_eq!(uses("#[allow(r#unsafe_code)] fn f() {}", false), [1]);
++    // A macro's argument, and a lint list a macro fills.
++    assert_eq!(uses("m!(unsafe_code);", false), [1]);
++    assert_eq!(
++        uses(
++            "macro_rules! m {\n ($l:ident) => { #[allow($l)] fn g() {} }\n}",
++            false
++        ),
++        [2]
++    );
++    assert!(
++        uses(
++            "#![forbid(unsafe_code)]\n#![deny(dead_code, unsafe_code)]",
++            false
++        )
++        .is_empty()
++    );
++    assert!(
++        uses(
++            "// allow(unsafe_code)\nconst S: &str = \"allow(unsafe_code)\";",
++            false
++        )
++        .is_empty()
++    );
++    assert!(uses("#[allow(unsafe_op_in_unsafe_fn)] fn f() {}", false).is_empty());
++    // T21's second review: a `$` anywhere in a lint attribute, and an
++    // attribute that is itself a macro variable.
++    assert_eq!(
++        uses("#[cfg_attr(x, allow(dead_code, $l))] fn f() {}", false),
++        [1]
++    );
++    assert_eq!(
++        uses("#[cfg_attr($c, warn(dead_code))] fn f() {}", false),
++        [1]
++    );
++    assert_eq!(uses("#[allow $x] fn f() {}", false), [1]);
++    assert_eq!(
++        uses(
++            "macro_rules! m { ($m:meta) => {\n #[$m] fn h() {} } }",
++            false
++        ),
++        [2]
++    );
++    assert_eq!(uses("#![$m]", false), [1]);
++    assert_eq!(uses("m!(allow($l));", false), [1]);
++    assert!(
++        uses(
++            "macro_rules! d { ($d:literal $x:expr) => { #[doc = $d] fn f() { $x; } } }",
++            false
++        )
++        .is_empty()
++    );
++    // The exempt file: its leading inner attribute only.
++    assert!(uses("//! Doc.\n#![allow(unsafe_code)]\nfn f() {}", true).is_empty());
++    assert_eq!(
++        uses(
++            "#![allow(unsafe_code)]\n#[allow(unsafe_code)] fn f() {}",
++            true
++        ),
++        [2]
++    );
++    assert_eq!(
++        uses("#![allow(dead_code)]\n#![allow(unsafe_code)]", true),
++        [2]
++    );
++}
++
++#[test]
++fn paths_includes_and_declarations_are_found() {
++    let toks = arch_scan::tokens(
++        "#[path = \"a.rs\"]\nmod a;\nmod b {\n #[cfg_attr(x, path = r\"c.rs\")]\n mod c;\n}\n\
++         #[path = \"d.rs\"] mod d;\ninclude!(\"e.rs\");\nconst T: &str = include_str!(\"t\");",
++    );
++    let paths: Vec<_> = path_attributes(&toks)
++        .into_iter()
++        .map(|p| (p.line, p.value.unwrap_or_default(), p.inline))
++        .collect();
++    assert_eq!(
++        paths,
++        [
++            (1, "a.rs".into(), false),
++            (4, "c.rs".into(), true),
++            (7, "d.rs".into(), false)
++        ]
++    );
++    assert_eq!(includes(&toks), [8]);
++    let alias =
++        arch_scan::tokens("use core::include as inc;\ninc!(\"x.txt\");\n::std::include!(\"y\");");
++    assert_eq!(includes(&alias), [1, 3]);
++    let found: Vec<usize> = declarations(&toks).into_iter().map(|(l, _)| l).collect();
++    assert_eq!(found, [2, 3, 5, 7]);
++    let toks = arch_scan::tokens("macro_rules! m { () => {} }\npub macro n() {}");
++    assert_eq!(declarations(&toks).len(), 2);
++}
++
++#[test]
++fn paths_resolve_from_their_file_s_directory() {
++    let dir = "crates/eng-bench/benches/collision";
++    assert_eq!(
++        resolve(dir, "../../../eng-collision-grid/tests/oracle/brute.rs").as_deref(),
++        Some("crates/eng-collision-grid/tests/oracle/brute.rs")
++    );
++    assert_eq!(
++        resolve("xtask/src", "./ci_harness.rs").as_deref(),
++        Some("xtask/src/ci_harness.rs")
++    );
++    assert_eq!(resolve("a", "../../x.rs"), None);
++    assert_eq!(resolve("a", "/etc/x.rs"), None);
++    assert_eq!(resolve("a", "C:\\x.rs"), None);
++    assert_eq!(resolve("a", "b\\x.rs"), None);
++}
+diff --git a/xtask/src/selftest.rs b/xtask/src/selftest.rs
+index 63a42daf750f910863401bdfb5a1d361e9cbee14..3d38e144efed265bfd6753ff0624e0daa51ca512 100644
+--- a/xtask/src/selftest.rs
++++ b/xtask/src/selftest.rs
+@@ -22,12 +22,15 @@ use std::time::Instant;
+ use crate::arch;
+ use crate::util::{self, Steps};
+ 
++#[path = "selftest_floor.rs"]
++mod floor;
+ #[path = "selftest_verdict.rs"]
+ mod verdict;
++use floor::deny_rejects;
+ pub use verdict::{KNOWN_MISS, NOT_RUN};
+ use verdict::{judged, last_line, outcome, status, strict};
+ 
+-pub const CASES: [&str; 39] = [
++pub const CASES: [&str; 41] = [
+     "float-sin",
+     "float-min",
+     "allow-escape",
+@@ -52,6 +55,8 @@ pub const CASES: [&str; 39] = [
+     "core-depends-on-gpu",
+     "golden-edit",
+     // Rung 2, criteria 16 (`docs-lint`) and 20 (`violations-2`).
++    "unsafe-outside-shim",
++    "gcmouse-outside-shim",
+     "docs-stale-path",
+     "mutant-missed",
+     // Rung 2, plan addition A2 (`scene-rules`): a render bug breaking each
+@@ -249,6 +254,8 @@ fn run_case(root: &Path, case: &str) -> Result<String, String> {
+             |ws| add_dependency(ws, "eng-sim", "eng-gpu"),
+         ),
+         "golden-edit" => crate::selftest_golden::run(root),
++        "unsafe-outside-shim" => floor::unsafe_outside_shim(root, case),
++        "gcmouse-outside-shim" => floor::gcmouse_outside_shim(root, case),
+         "docs-stale-path" => crate::selftest_docs::run(root),
+         "mutant-missed" => crate::selftest_mutants::run(root, &copy_workspace(root, case)?),
+         "rule-1" | "rule-2" | "rule-3" => {
+@@ -443,66 +450,6 @@ fn guard_blocks(
+     }
+ }
+ 
+-/// Whether `cargo deny check bans` refused `banned` because `parent`, its
+-/// direct user, is not one of its wrappers.
+-fn deny_verdict(
+-    succeeded: bool,
+-    output: &str,
+-    banned: &str,
+-    parent: &str,
+-) -> Result<String, String> {
+-    let ban = format!("error[banned]: crate '{banned} = ");
+-    let user = format!("direct parent '{parent} = ");
+-    let of = format!("of banned crate '{banned} = ");
+-    let named = output
+-        .lines()
+-        .any(|line| line.contains(&user) && line.contains(&of));
+-    if succeeded {
+-        Err("cargo-deny accepted the violation".into())
+-    } else if output.contains(&ban) && named {
+-        Ok(format!(
+-            "rejected: error[banned] {banned}, used by {parent}"
+-        ))
+-    } else {
+-        Err(format!(
+-            "failed, but not with error[banned] for {banned} used by {parent}:\n{}",
+-            util::tail(output, 15)
+-        ))
+-    }
+-}
+-
+-/// `cargo deny check bans` on a fresh copy changed by `mutate`: it must
+-/// refuse `banned` because `parent` is not one of its wrappers.
+-fn deny_rejects(
+-    root: &Path,
+-    case: &str,
+-    (banned, parent): (&str, &str),
+-    mutate: impl FnOnce(&Path) -> Result<(), String>,
+-) -> Result<String, String> {
+-    let ws = copy_workspace(root, case)?;
+-    mutate(&ws)?;
+-    let installed = util::cargo(&ws)
+-        .args(["deny", "--version"])
+-        .output()
+-        .is_ok_and(|o| o.status.success());
+-    if !installed {
+-        return Err(format!(
+-            "{NOT_RUN} {case} could not run: cargo-deny is not installed \
+-             (cargo install --locked cargo-deny@0.20.2, as CI's lint job has it)"
+-        ));
+-    }
+-    let out = util::cargo(&ws)
+-        .args(["deny", "check", "bans"])
+-        .output()
+-        .map_err(|e| format!("cannot run cargo-deny: {e}"))?;
+-    let text = format!(
+-        "{}{}",
+-        String::from_utf8_lossy(&out.stdout),
+-        String::from_utf8_lossy(&out.stderr)
+-    );
+-    deny_verdict(out.status.success(), &text, banned, parent)
+-}
+-
+ #[cfg(test)]
+ #[path = "selftest_tests.rs"]
+ mod tests;
+diff --git a/xtask/src/selftest_floor.rs b/xtask/src/selftest_floor.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..678c184846988fb6c9ae6c7196f92cd6aa8e02fe
+--- /dev/null
++++ b/xtask/src/selftest_floor.rs
+@@ -0,0 +1,275 @@
++//! Rung 2's confinement cases (criterion 20, ADR-0021) and the cargo-deny
++//! wrapper bans they share with rung 1b's `rwh-outside-seam` (ADR-0016):
++//! `unsafe-outside-shim`, where `arch-check` must refuse each way of
++//! allowing `unsafe_code` outside the GCMouse shim's one file, and
++//! `gcmouse-outside-shim`, where `arch-check`'s `[floor]` and cargo-deny's
++//! wrapper ban must refuse `objc2-game-controller` used by any crate but
++//! the shim. Both fail on a finding they did not plant as well as on one
++//! missing.
++
++use std::fs;
++use std::path::Path;
++
++use super::{NOT_RUN, add_dependency, arch, copy_workspace, util};
++
++/// The shim's one file that may allow `unsafe_code` (`architecture.toml`).
++const EXEMPT: &str = "crates/eng-platform-gcmouse/src/macos.rs";
++
++/// What `arch-check` says of an allow outside the exempt file.
++const ALLOWS: &str = "allows unsafe_code; only crates/eng-platform-gcmouse/src/macos.rs may";
++
++/// Each plant of `unsafe-outside-shim`: the file, the text appended to it,
++/// and what each of its findings says there.
++const UNSAFE_PLANTS: [(&str, &str, &[&str]); 13] = [
++    // A crate that only denies `unsafe_code`, where an allow compiles.
++    (
++        "crates/game-testbed/src/main.rs",
++        "\n#[allow(unsafe_code)]\nfn planted() {}\n",
++        &[ALLOWS],
++    ),
++    // A test file, outside `src`, in a `cfg_attr`.
++    (
++        "crates/eng-render/tests/camera.rs",
++        "\n#[cfg_attr(all(), expect(unsafe_code))]\nfn planted() {}\n",
++        &[ALLOWS],
++    ),
++    // The shim's own safe module.
++    (
++        "crates/eng-platform-gcmouse/src/shim.rs",
++        "\n#[warn(unsafe_code)]\nfn planted() {}\n",
++        &[ALLOWS],
++    ),
++    // The exempt file declares a module, so its exception would cover
++    // another file's text.
++    (
++        EXEMPT,
++        "\nmod planted;\n",
++        &["`mod planted` in the one file that may allow unsafe_code"],
++    ),
++    // The exempt file hands its allow to code elsewhere through a macro
++    // (T21's review), an allow that is not its leading attribute.
++    (
++        EXEMPT,
++        "\nmacro_rules! planted_m { ($($t:tt)*) => { #[allow(unsafe_code)] $($t)* } }\n",
++        &["`macro_rules!` in the one file that may allow", ALLOWS],
++    ),
++    // A `#[path]` to a file no scan reads, which could allow anything.
++    (
++        "crates/eng-app/src/lib.rs",
++        "\n#[path = \"hidden.txt\"]\nmod hidden;\n",
++        &["`#[path]` names crates/eng-app/src/hidden.txt, which is no workspace crate's"],
++    ),
++    // Another crate mounts the exempt file itself.
++    (
++        "crates/eng-platform-winit/src/lib.rs",
++        "\n#[path = \"../../eng-platform-gcmouse/src/macos.rs\"]\nmod stolen;\n",
++        &["`#[path]` mounts crates/eng-platform-gcmouse/src/macos.rs"],
++    ),
++    // `include!` of text no scan reads.
++    (
++        "crates/eng-cli/build.rs",
++        "\ninclude!(\"hidden.txt\");\n",
++        &["`include!` (by any name) brings in text"],
++    ),
++    // A macro whose lint list takes an argument...
++    (
++        "crates/eng-cli/src/lib.rs",
++        "\nmacro_rules! planted { ($l:ident) => { #[allow($l)] fn g() {} } }\n",
++        &["a `$` in a lint attribute or list"],
++    ),
++    // ...and the lint's name handed to one.
++    (
++        "crates/game-testbed-client/src/lib.rs",
++        "\nplanted!(unsafe_code);\n",
++        &["names unsafe_code outside deny(…) or forbid(…)"],
++    ),
++    // T21's second review: an attribute that is itself a macro variable,
++    // which a macro could fill with any lint...
++    (
++        "crates/eng-gpu/src/lib.rs",
++        "\nmacro_rules! planted { ($m:meta) => { #[$m] fn h() {} } }\n",
++        &["a `$` in a lint attribute or list, or an attribute that is a macro variable"],
++    ),
++    // ...`include!` by an alias...
++    (
++        "crates/eng-render/src/lib.rs",
++        "\nuse core::include as planted_include;\n",
++        &["`include!` (by any name) brings in text"],
++    ),
++    // ...and a `#[path]` whose escape rustc decodes before the path.
++    (
++        "crates/eng-input/tests/input.rs",
++        "\n#[path = \"look_rig\\\\mod.rs\"]\nmod planted;\n",
++        &["`#[path]` has a backslash"],
++    ),
++];
++
++/// The files a plant names that it also writes.
++const UNSAFE_FILES: [(&str, &str); 1] =
++    [("crates/eng-app/src/hidden.txt", "#![allow(unsafe_code)]\n")];
++
++/// Each line of `found` matched to one expected `(file, what)` and each
++/// expected one to one line: the lines no plant explains, then the
++/// findings no line gave.
++fn unmatched(found: &str, expected: &[(&str, &str)]) -> (Vec<String>, Vec<String>) {
++    let mut used = vec![false; expected.len()];
++    let mut extra = Vec::new();
++    for line in found.lines() {
++        let hit = expected.iter().enumerate().position(|(k, (file, what))| {
++            !used[k] && line.starts_with(&format!("[E-ARCH-UNSAFE] {file}:")) && line.contains(what)
++        });
++        match hit {
++            Some(k) => used[k] = true,
++            None => extra.push(line.to_string()),
++        }
++    }
++    let missing = expected
++        .iter()
++        .zip(&used)
++        .filter(|(_, used)| !**used)
++        .map(|((file, what), _)| format!("{file}: {what}"))
++        .collect();
++    (extra, missing)
++}
++
++/// `unsafe-outside-shim`: the plants, in one copy, each give their own
++/// `[E-ARCH-UNSAFE]` findings at their file, and nothing else is found.
++pub(super) fn unsafe_outside_shim(root: &Path, case: &str) -> Result<String, String> {
++    let ws = copy_workspace(root, case)?;
++    for (file, plant, _) in UNSAFE_PLANTS {
++        let path = ws.join(file);
++        let mut text = fs::read_to_string(&path).map_err(|e| format!("{file}: {e}"))?;
++        text.push_str(plant);
++        fs::write(&path, text).map_err(|e| format!("{file}: {e}"))?;
++    }
++    for (file, text) in UNSAFE_FILES {
++        fs::write(ws.join(file), text).map_err(|e| format!("{file}: {e}"))?;
++    }
++    let found = match arch::check_unlocked(&ws) {
++        Ok(_) => return Err("arch-check accepted every plant".into()),
++        Err(found) => found,
++    };
++    let expected: Vec<(&str, &str)> = UNSAFE_PLANTS
++        .iter()
++        .flat_map(|(file, _, whats)| whats.iter().map(move |what| (*file, *what)))
++        .collect();
++    match unmatched(&found, &expected) {
++        (extra, missing) if extra.is_empty() && missing.is_empty() => Ok(format!(
++            "rejected: [E-ARCH-UNSAFE] for each of {} plants ({} findings), {EXEMPT} exempt",
++            UNSAFE_PLANTS.len(),
++            expected.len()
++        )),
++        (extra, missing) => Err(format!(
++            "arch-check's findings differ from the plants'.\nmissing: {missing:#?}\nunplanted: \
++             {extra:#?}\n{found}"
++        )),
++    }
++}
++
++/// `gcmouse-outside-shim`: eng-platform-winit, the shim's one user, takes
++/// the binding itself; `arch-check`'s `[floor]` (and nothing else) and
++/// cargo-deny's wrapper ban must both refuse it.
++pub(super) fn gcmouse_outside_shim(root: &Path, case: &str) -> Result<String, String> {
++    const BINDING: &str = "objc2-game-controller";
++    let floor = format!(
++        "[E-ARCH-FLOOR] eng-platform-winit depends on {BINDING}; only eng-platform-gcmouse may"
++    );
++    let ws = copy_workspace(root, case)?;
++    add_dependency(&ws, "eng-platform-winit", BINDING)?;
++    match arch::check_unlocked(&ws) {
++        Err(found) if found.trim() == floor => {}
++        Err(found) => return Err(format!("arch-check did not say only {floor}:\n{found}")),
++        Ok(_) => return Err("arch-check accepted the violation".into()),
++    }
++    let banned = deny_rejects(root, case, (BINDING, "eng-platform-winit"), |ws| {
++        add_dependency(ws, "eng-platform-winit", BINDING)
++    })?;
++    Ok(format!("{floor}; {banned}"))
++}
++/// Whether `cargo deny check bans` refused `banned` because `parent`, its
++/// direct user, is not one of its wrappers.
++pub(super) fn deny_verdict(
++    succeeded: bool,
++    output: &str,
++    banned: &str,
++    parent: &str,
++) -> Result<String, String> {
++    let ban = format!("error[banned]: crate '{banned} = ");
++    let user = format!("direct parent '{parent} = ");
++    let of = format!("of banned crate '{banned} = ");
++    let named = output
++        .lines()
++        .any(|line| line.contains(&user) && line.contains(&of));
++    if succeeded {
++        Err("cargo-deny accepted the violation".into())
++    } else if output.contains(&ban) && named {
++        Ok(format!(
++            "rejected: error[banned] {banned}, used by {parent}"
++        ))
++    } else {
++        Err(format!(
++            "failed, but not with error[banned] for {banned} used by {parent}:\n{}",
++            util::tail(output, 15)
++        ))
++    }
++}
++
++/// `cargo deny check bans` on a fresh copy changed by `mutate`: it must
++/// refuse `banned` because `parent` is not one of its wrappers.
++pub(super) fn deny_rejects(
++    root: &Path,
++    case: &str,
++    (banned, parent): (&str, &str),
++    mutate: impl FnOnce(&Path) -> Result<(), String>,
++) -> Result<String, String> {
++    let ws = copy_workspace(root, case)?;
++    mutate(&ws)?;
++    let installed = util::cargo(&ws)
++        .args(["deny", "--version"])
++        .output()
++        .is_ok_and(|o| o.status.success());
++    if !installed {
++        return Err(format!(
++            "{NOT_RUN} {case} could not run: cargo-deny is not installed \
++             (cargo install --locked cargo-deny@0.20.2, as CI's lint job has it)"
++        ));
++    }
++    let out = util::cargo(&ws)
++        .args(["deny", "check", "bans"])
++        .output()
++        .map_err(|e| format!("cannot run cargo-deny: {e}"))?;
++    let text = format!(
++        "{}{}",
++        String::from_utf8_lossy(&out.stdout),
++        String::from_utf8_lossy(&out.stderr)
++    );
++    deny_verdict(out.status.success(), &text, banned, parent)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::unmatched;
++
++    /// A finding no plant explains fails the case as one missing does.
++    #[test]
++    fn each_finding_needs_its_plant_and_each_plant_its_finding() {
++        let expected = [("a.rs", "allows"), ("a.rs", "mounts"), ("b.rs", "allows")];
++        let found = "[E-ARCH-UNSAFE] a.rs:1: allows x\n[E-ARCH-UNSAFE] a.rs:2: mounts y\n\
++                     [E-ARCH-UNSAFE] b.rs:3: allows z";
++        let (extra, missing) = unmatched(found, &expected);
++        assert!(
++            extra.is_empty() && missing.is_empty(),
++            "{extra:?} {missing:?}"
++        );
++        let more = format!("{found}\n[E-ARCH-UNSAFE] c.rs:4: allows w");
++        assert_eq!(
++            unmatched(&more, &expected).0,
++            ["[E-ARCH-UNSAFE] c.rs:4: allows w"]
++        );
++        let twice = "[E-ARCH-UNSAFE] a.rs:1: allows x\n[E-ARCH-UNSAFE] a.rs:9: allows x";
++        let (extra, missing) = unmatched(twice, &expected[..1]);
++        assert_eq!((extra.len(), missing.len()), (1, 0));
++        let (_, missing) = unmatched("[E-ARCH-UNSAFE] a.rs:1: allows x", &expected);
++        assert_eq!(missing, ["a.rs: mounts", "b.rs: allows"]);
++    }
++}
+diff --git a/xtask/src/selftest_tests.rs b/xtask/src/selftest_tests.rs
+index f9ad8a0736e7241c14aadc24bb140a7834bf7124..f711f166781a2818cb69a794021548ee32e2d159 100644
+--- a/xtask/src/selftest_tests.rs
++++ b/xtask/src/selftest_tests.rs
+@@ -1,4 +1,4 @@
+-use super::deny_verdict;
++use super::floor::deny_verdict;
+ 
+ /// cargo-deny 0.20.2's lines for `raw-window-handle` in eng-render.
+ const DENIED: &str = "\

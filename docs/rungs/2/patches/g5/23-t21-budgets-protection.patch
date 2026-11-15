@@ -1,0 +1,252 @@
+diff --git a/.github/CODEOWNERS b/.github/CODEOWNERS
+index e3ef0a154296ea4c7b52a8c250da0f2388b9f7af..ea1d93d0c1a82cf4f46ed6c0255a980f7a694191 100644
+--- a/.github/CODEOWNERS
++++ b/.github/CODEOWNERS
+@@ -48,3 +48,89 @@
+ /.github/CODEOWNERS @ChristianGhe
+ /.github/workflows/ @ChristianGhe
+ /.claude/ @ChristianGhe
++# Rung 2 (gate G5), in protected.toml's order.
++/crates/eng-gpu/tests/graph_order.rs @ChristianGhe
++/crates/eng-gpu/tests/graph_errors.rs @ChristianGhe
++/crates/eng-gpu/tests/pool.rs @ChristianGhe
++/crates/eng-gpu/tests/bypass.rs @ChristianGhe
++/crates/eng-gpu/tests/bypass_render.rs @ChristianGhe
++/crates/eng-gpu/tests/transients.rs @ChristianGhe
++/crates/eng-gpu/tests/support/ @ChristianGhe
++/crates/eng-gpu/tests/depth_targets.rs @ChristianGhe
++/crates/eng-gpu/tests/depth_rules.rs @ChristianGhe
++/crates/eng-gpu/tests/texture_arrays.rs @ChristianGhe
++/crates/eng-gpu/tests/frame_input.rs @ChristianGhe
++/crates/eng-gpu/tests/pass_times.rs @ChristianGhe
++/crates/eng-gpu/tests/wgsl/ @ChristianGhe
++/crates/eng-gpu/tests/rig/ @ChristianGhe
++/crates/eng-gpu/tests/readback.rs @ChristianGhe
++/crates/eng-gpu/tests/upscale.rs @ChristianGhe
++/crates/kit-fps/tests/ground.rs @ChristianGhe
++/crates/kit-fps/tests/slopes.rs @ChristianGhe
++/crates/kit-fps/tests/boxes.rs @ChristianGhe
++/crates/kit-fps/tests/steps.rs @ChristianGhe
++/crates/kit-fps/tests/support/ @ChristianGhe
++/crates/eng-input/tests/mouse_look.rs @ChristianGhe
++/crates/eng-input/tests/mouse_look_exact.rs @ChristianGhe
++/crates/eng-input/tests/mouse_look_model.rs @ChristianGhe
++/crates/eng-input/tests/look_rig/ @ChristianGhe
++/crates/eng-input/tests/look_between_ticks.rs @ChristianGhe
++/crates/eng-render/tests/camera.rs @ChristianGhe
++/crates/eng-render/tests/sprite_rotation.rs @ChristianGhe
++/crates/eng-render/tests/palette.rs @ChristianGhe
++/crates/eng-render/tests/first_person.rs @ChristianGhe
++/crates/eng-render/tests/first_person_layout.rs @ChristianGhe
++/crates/eng-render/tests/room/ @ChristianGhe
++/crates/eng-render/tests/look_checks.rs @ChristianGhe
++/crates/eng-render/tests/look_fog_tone.rs @ChristianGhe
++/crates/eng-render/tests/light_model.rs @ChristianGhe
++/crates/eng-render/tests/gpl.rs @ChristianGhe
++/crates/eng-render/tests/tone/ @ChristianGhe
++/crates/eng-render/tests/look/ @ChristianGhe
++/crates/eng-render/tests/sprites.rs @ChristianGhe
++/crates/eng-render/tests/sprites_look.rs @ChristianGhe
++/crates/eng-render/tests/things/ @ChristianGhe
++/crates/eng-platform-gcmouse/tests/shim.rs @ChristianGhe
++/crates/eng-platform-gcmouse/tests/start.rs @ChristianGhe
++/crates/eng-platform-api/tests/requests.rs @ChristianGhe
++/crates/eng-platform-headless/tests/requests.rs @ChristianGhe
++/crates/eng-platform-winit/tests/requests.rs @ChristianGhe
++/crates/eng-collision-api/src/conformance.rs @ChristianGhe
++/crates/eng-collision-api/tests/room.rs @ChristianGhe
++/crates/eng-collision-grid/tests/oracle.rs @ChristianGhe
++/crates/eng-collision-grid/tests/contract.rs @ChristianGhe
++/crates/eng-collision-grid/tests/corners.rs @ChristianGhe
++/crates/eng-collision-grid/tests/vertices.rs @ChristianGhe
++/crates/eng-collision-grid/tests/limits.rs @ChristianGhe
++/crates/eng-collision-grid/tests/found.rs @ChristianGhe
++/crates/eng-collision-grid/tests/oracle/ @ChristianGhe
++/crates/eng-collision-grid/tests/vertices/ @ChristianGhe
++/crates/eng-ecs/tests/constants.rs @ChristianGhe
++/crates/eng-sim/tests/sim_data.rs @ChristianGhe
++/crates/eng-cli/src/maps/tests.rs @ChristianGhe
++/crates/game-testbed/tests/maps.rs @ChristianGhe
++/crates/game-testbed-sim/tests/room.rs @ChristianGhe
++/crates/game-testbed-sim/tests/sim_data.rs @ChristianGhe
++/crates/game-testbed/tests/room.rs @ChristianGhe
++/crates/game-testbed-client/tests/room_gpu.rs @ChristianGhe
++/crates/game-testbed-client/src/**/tests.rs @ChristianGhe
++/crates/game-testbed/shots.toml @ChristianGhe
++/crates/game-testbed/looks/ @ChristianGhe
++/crates/game-testbed/tests/look.rs @ChristianGhe
++/crates/game-testbed/tests/look/ @ChristianGhe
++/crates/game-testbed/tests/views.rs @ChristianGhe
++/crates/game-testbed/tests/frame_record.rs @ChristianGhe
++/crates/game-testbed/tests/frame_bugs.rs @ChristianGhe
++/crates/game-testbed/tests/frame_record/ @ChristianGhe
++/crates/game-testbed/frame-tolerances.toml @ChristianGhe
++/crates/eng-cli/tests/frame_record_text.rs @ChristianGhe
++**/*.rules.toml @ChristianGhe
++/crates/game-testbed/tests/scene_rules.rs @ChristianGhe
++/crates/eng-cli/src/scene_rules.rs @ChristianGhe
++/crates/eng-cli/src/scene_rules/ @ChristianGhe
++/crates/eng-cli/src/frame_record/tests/void.rs @ChristianGhe
++/crates/eng-bench/benches/ @ChristianGhe
++/crates/eng-bench/tests/cases.rs @ChristianGhe
++/about.toml @ChristianGhe
++/about.hbs @ChristianGhe
++/crates/game-testbed/tests/gpu_report.rs @ChristianGhe
+diff --git a/budgets.toml b/budgets.toml
+index 892b23e7666a2de20b72ff4c7632d6d564f57aab..db48a0313d58ff1a9f99f07f70559be20e18d601 100644
+--- a/budgets.toml
++++ b/budgets.toml
+@@ -19,8 +19,30 @@ max_pipeline_switches_per_frame = 12
+ max_bind_group_switches_per_frame = 8
+ max_upload_bytes_per_frame = 2048
+ 
++# First-person frames (rung 2, criterion 21), which hold these in place of
++# [gpu]'s. About four times the room's shot, as [gpu] is for the top-down
++# view: one chunk and three things through the look's graph, 7 draws, 7
++# pipeline switches, 15 bind-group switches and 736 bytes offscreen (T11,
++# T12); `play`'s presented frame adds the present pass, 8/7/16. Each sprite
++# adds 1 draw, 1 pipeline switch, 2 bind-group switches and 32 bytes; each
++# chunk 16 bytes.
++[gpu.first_person]
++max_draws_per_frame = 28
++max_pipeline_switches_per_frame = 28
++max_bind_group_switches_per_frame = 60
++max_upload_bytes_per_frame = 2944
++
+ # Read by cargo xtask. `native_job_minutes` is measured against the slowest
+-# native job (rung 1b criterion 13); going over is reported, not failed.
++# native job (rung 1b criterion 13), `bench_job_minutes` and
++# `mutants_job_minutes` against the bench job and the slowest mutants shard
++# (rung 2, the summary's bench-duration and mutants-duration); going over
++# is reported, not failed. `bench_job_minutes` and `mutants_job_minutes`
++# are placeholders, measured on no CI run yet: T24 sets them from the first
++# runs after G5. `mutants_shard_minutes` is each mutants shard's time box: a
++# shard that reaches it stops and fails (rung 2, decision 15).
+ [ci]
+ pr_tier_minutes = 15
+ native_job_minutes = 25
++bench_job_minutes = 15
++mutants_job_minutes = 35
++mutants_shard_minutes = 20
+diff --git a/protected.toml b/protected.toml
+index 4e96c05df2c0b5c62c698bf51fff64e3e25c562c..43227ac52cf60be842c54f9e585b7df6465cce62 100644
+--- a/protected.toml
++++ b/protected.toml
+@@ -63,6 +63,117 @@ paths = [
+   ".github/CODEOWNERS",
+   ".github/workflows/**",
+   ".claude/**",
++  # Rung 2 (gate G5): the oracles and harnesses its criteria rest on.
++  # Q1's render-graph oracles and T8's eng-gpu tests (criteria 6 and 21).
++  "crates/eng-gpu/tests/graph_order.rs",
++  "crates/eng-gpu/tests/graph_errors.rs",
++  "crates/eng-gpu/tests/pool.rs",
++  "crates/eng-gpu/tests/bypass.rs",
++  "crates/eng-gpu/tests/bypass_render.rs",
++  "crates/eng-gpu/tests/transients.rs",
++  "crates/eng-gpu/tests/support/**",
++  "crates/eng-gpu/tests/depth_targets.rs",
++  "crates/eng-gpu/tests/depth_rules.rs",
++  "crates/eng-gpu/tests/texture_arrays.rs",
++  "crates/eng-gpu/tests/frame_input.rs",
++  "crates/eng-gpu/tests/pass_times.rs",
++  "crates/eng-gpu/tests/wgsl/**",
++  "crates/eng-gpu/tests/rig/**",
++  "crates/eng-gpu/tests/readback.rs",
++  "crates/eng-gpu/tests/upscale.rs",
++  # Q2's and T19b's movement tests (criterion 4).
++  "crates/kit-fps/tests/ground.rs",
++  "crates/kit-fps/tests/slopes.rs",
++  "crates/kit-fps/tests/boxes.rs",
++  "crates/kit-fps/tests/steps.rs",
++  "crates/kit-fps/tests/support/**",
++  # Q3's mouse-look oracle (criterion 9).
++  "crates/eng-input/tests/mouse_look.rs",
++  "crates/eng-input/tests/mouse_look_exact.rs",
++  "crates/eng-input/tests/mouse_look_model.rs",
++  "crates/eng-input/tests/look_rig/**",
++  # T15's angles between ticks, which the `mouse-look` step runs too.
++  "crates/eng-input/tests/look_between_ticks.rs",
++  # Q4's, T9's, T10's and T11's renderer oracles (criteria 7 and 8);
++  # palette.rs holds Ottosson's known answers and the pinned bake hash.
++  "crates/eng-render/tests/camera.rs",
++  "crates/eng-render/tests/sprite_rotation.rs",
++  "crates/eng-render/tests/palette.rs",
++  "crates/eng-render/tests/first_person.rs",
++  "crates/eng-render/tests/first_person_layout.rs",
++  "crates/eng-render/tests/room/**",
++  "crates/eng-render/tests/look_checks.rs",
++  "crates/eng-render/tests/look_fog_tone.rs",
++  "crates/eng-render/tests/light_model.rs",
++  "crates/eng-render/tests/gpl.rs",
++  "crates/eng-render/tests/tone/**",
++  "crates/eng-render/tests/look/**",
++  "crates/eng-render/tests/sprites.rs",
++  "crates/eng-render/tests/sprites_look.rs",
++  "crates/eng-render/tests/things/**",
++  # T14's GCMouse shim tests (criterion 11).
++  "crates/eng-platform-gcmouse/tests/shim.rs",
++  "crates/eng-platform-gcmouse/tests/start.rs",
++  # T13's platform conformance tests (criterion 10; the suite is above).
++  "crates/eng-platform-api/tests/requests.rs",
++  "crates/eng-platform-headless/tests/requests.rs",
++  "crates/eng-platform-winit/tests/requests.rs",
++  # The collision suite, the grid's oracle and contract tests and T19b's
++  # (criterion 3).
++  "crates/eng-collision-api/src/conformance.rs",
++  "crates/eng-collision-api/tests/room.rs",
++  "crates/eng-collision-grid/tests/oracle.rs",
++  "crates/eng-collision-grid/tests/contract.rs",
++  "crates/eng-collision-grid/tests/corners.rs",
++  "crates/eng-collision-grid/tests/vertices.rs",
++  "crates/eng-collision-grid/tests/limits.rs",
++  "crates/eng-collision-grid/tests/found.rs",
++  "crates/eng-collision-grid/tests/oracle/**",
++  "crates/eng-collision-grid/tests/vertices/**",
++  # T6's and T7's sim data and the room (criteria 2 and 5): a change to the
++  # room's data, schemas or systems makes its streams stale, and
++  # sim_data.rs's pinned values fail first.
++  "crates/eng-ecs/tests/constants.rs",
++  "crates/eng-sim/tests/sim_data.rs",
++  "crates/eng-cli/src/maps/tests.rs",
++  "crates/game-testbed/tests/maps.rs",
++  "crates/game-testbed-sim/tests/room.rs",
++  "crates/game-testbed-sim/tests/sim_data.rs",
++  "crates/game-testbed/tests/room.rs",
++  # T12's first-person room on the GPU.
++  "crates/game-testbed-client/tests/room_gpu.rs",
++  "crates/game-testbed-client/src/**/tests.rs",
++  # T16's shot manifest (its pending markers too), poses, looks and their
++  # harnesses (criteria 7, 12 and 13; A3).
++  "crates/game-testbed/shots.toml",
++  "crates/game-testbed/looks/**",
++  "crates/game-testbed/tests/look.rs",
++  "crates/game-testbed/tests/look/**",
++  "crates/game-testbed/tests/views.rs",
++  # TA1's frame record, its oracle and tolerances (A1): Tolerances::DEFAULT
++  # must equal the toml's [default], which a test checks.
++  "crates/game-testbed/tests/frame_record.rs",
++  "crates/game-testbed/tests/frame_bugs.rs",
++  "crates/game-testbed/tests/frame_record/**",
++  "crates/game-testbed/frame-tolerances.toml",
++  "crates/eng-cli/tests/frame_record_text.rs",
++  # TA2's scene rules (A2): the rules, the strict test, and the rule
++  # definitions and void oracle, or a rule could be weakened without
++  # touching the toml.
++  "**/*.rules.toml",
++  "crates/game-testbed/tests/scene_rules.rs",
++  "crates/eng-cli/src/scene_rules.rs",
++  "crates/eng-cli/src/scene_rules/**",
++  "crates/eng-cli/src/frame_record/tests/void.rs",
++  # T17's benchmarks (criterion 15): each tree measures its own cases, so a
++  # push could slow the code and shrink a case together.
++  "crates/eng-bench/benches/**",
++  "crates/eng-bench/tests/cases.rs",
++  # T20's notices configuration (criterion 17).
++  "about.toml",
++  "about.hbs",
++  # T21's report keys (criterion 21).
++  "crates/game-testbed/tests/gpu_report.rs",
+ ]
+ 
+ # Only these tables of the root Cargo.toml are protected; the rest of it is

@@ -1,0 +1,45 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 70c947b68e05f7c43b241fd465b876316abac4f1..d88412bd776933be0851adfa860c5204fee48155 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -45,6 +45,11 @@ jobs:
+       - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+         with:
+           tool: cargo-deny@0.20.2,typos-cli@1.51.1
++      # The notices step (rung 2, decision 17). Its binary needs the `cli`
++      # feature; rust-cache restores ~/.cargo/bin, where an installed copy
++      # of this version is kept.
++      - name: cargo-about 0.9.3
++        run: cargo install --locked cargo-about@0.9.3 --features cli
+       - run: cargo xtask ci --job lint
+       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+         if: always()
+@@ -265,6 +270,11 @@ jobs:
+       - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+         with:
+           tool: cargo-nextest@0.9.148
++      # The dist step's notices (rung 2, decision 17), on the runners of the
++      # playable targets, whose archives the job keeps.
++      - name: cargo-about 0.9.3 (dist)
++        if: matrix.runner == 'ubuntu-24.04' || matrix.runner == 'windows-2025' || matrix.runner == 'macos-26'
++        run: cargo install --locked cargo-about@0.9.3 --features cli
+       # D3D12 loads d3d10warp.dll from the executable's directory first: the
+       # binaries in target/debug and the test binaries in target/debug/deps.
+       - name: WARP 1.0.20 from its pinned NuGet package (Windows)
+@@ -305,6 +315,16 @@ jobs:
+         with:
+           name: hashes-native-${{ matrix.runner }}
+           path: target/ci/hashes/
++      # The dist step's archive (rung 2, decision 17): the stripped release
++      # binary, its debug info, version.json and the notices. A build kept
++      # with the run, not a release: no tag, signing or upload elsewhere.
++      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
++        if: always() && (matrix.runner == 'ubuntu-24.04' || matrix.runner == 'windows-2025' || matrix.runner == 'macos-26')
++        with:
++          name: dist-${{ matrix.runner }}
++          path: target/dist/*.tar.gz
++          # Already gzipped.
++          compression-level: 0
+       # Candidates, FLIP maps and shots.json, for the goldens (G6, T16).
+       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+         if: always()

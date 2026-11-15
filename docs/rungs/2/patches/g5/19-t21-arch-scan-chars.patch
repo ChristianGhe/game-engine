@@ -1,0 +1,205 @@
+diff --git a/xtask/src/arch_scan.rs b/xtask/src/arch_scan.rs
+index 614fe7f271f2b83b400e39d8c8a8b4d68ab74e74..b97719bf7576c199ccd4f1cea03566c71608210f 100644
+--- a/xtask/src/arch_scan.rs
++++ b/xtask/src/arch_scan.rs
+@@ -63,8 +63,10 @@ pub(crate) fn tokens(src: &str) -> Vec<Token> {
+             '"' => {
+                 i += 1;
+                 while i < chars.len() && chars[i] != '"' {
+-                    line += usize::from(chars[i] == '\n');
+-                    i += if chars[i] == '\\' { 2 } else { 1 };
++                    // An escaped line end (`\` then a newline) is a line too.
++                    let at = if chars[i] == '\\' { i + 1 } else { i };
++                    line += usize::from(chars.get(at) == Some(&'\n'));
++                    i = at + 1;
+                 }
+                 i += 1;
+                 out.push(Token {
+@@ -73,18 +75,10 @@ pub(crate) fn tokens(src: &str) -> Vec<Token> {
+                 });
+             }
+             '\'' => {
+-                // A char literal ('x', '\n', '\u{1F600}') or a lifetime ('a).
+-                if next == Some('\\') {
+-                    i += 2;
+-                    while i < chars.len() && chars[i] != '\'' {
+-                        i += 1;
+-                    }
+-                    i += 1;
+-                } else if chars.get(i + 2) == Some(&'\'') {
+-                    i += 3;
+-                } else {
+-                    i += 1;
+-                }
++                // A char literal ('x', '\n', '\'', '\u{1F600}'; a byte
++                // literal's `b` is an identifier before it) or a lifetime
++                // or label ('a, 'static).
++                i = char_literal_end(&chars, i);
+                 out.push(Token {
+                     text: "'".into(),
+                     line,
+@@ -96,6 +90,22 @@ pub(crate) fn tokens(src: &str) -> Vec<Token> {
+                     i += 1;
+                 }
+                 let ident: String = chars[start..i].iter().collect();
++                // A raw identifier, `r#unsafe_code`: its plain name.
++                if ident == "r"
++                    && chars.get(i) == Some(&'#')
++                    && chars
++                        .get(i + 1)
++                        .is_some_and(|c| c.is_alphabetic() || *c == '_')
++                {
++                    let start = i + 1;
++                    i = start;
++                    while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
++                        i += 1;
++                    }
++                    let text = chars[start..i].iter().collect();
++                    out.push(Token { text, line });
++                    continue;
++                }
+                 // Raw strings: r"..", r#".."#, br#".."#, cr".."
+                 if matches!(ident.as_str(), "r" | "br" | "cr")
+                     && matches!(chars.get(i), Some('"' | '#'))
+@@ -126,6 +136,8 @@ pub(crate) fn tokens(src: &str) -> Vec<Token> {
+                         });
+                         continue;
+                     }
++                    // Not a raw string: the `#`s are tokens of their own.
++                    i -= hashes;
+                 }
+                 out.push(Token { text: ident, line });
+             }
+@@ -141,6 +153,38 @@ pub(crate) fn tokens(src: &str) -> Vec<Token> {
+     out
+ }
+ 
++/// Where the token that starts with the `'` at `at` ends. A char literal
++/// is `'`, one character or an escape, then `'`; an escape is `\` and one
++/// character (`\'`, `\\`, `\n`, `\t`, `\r`, `\0`, `\"`), `\x` and two hex
++/// digits, or `\u{...}` up to its `}`. Anything else is a lifetime or a
++/// label, whose name the caller reads next as an identifier. Anything that
++/// does not close where a literal must (which rustc would refuse) is read
++/// as a lone `'`, so what follows it is still tokenized.
++fn char_literal_end(chars: &[char], at: usize) -> usize {
++    let get = |k: usize| chars.get(k).copied();
++    let close = if get(at + 1) == Some('\\') {
++        match get(at + 2) {
++            Some('x') => at + 5,
++            Some('u') if get(at + 3) == Some('{') => {
++                let mut k = at + 4;
++                while get(k).is_some_and(|c| c != '}' && c != '\'' && c != '\n') {
++                    k += 1;
++                }
++                k + 1
++            }
++            _ => at + 3,
++        }
++    } else {
++        at + 2
++    };
++    let on_one_line = chars.get(at + 1..close).is_some_and(|s| !s.contains(&'\n'));
++    if get(close) == Some('\'') && on_one_line {
++        close + 1
++    } else {
++        at + 1
++    }
++}
++
+ /// Findings for one core-crate source file, each `(line, message)`.
+ pub fn scan(src: &str) -> Vec<(usize, String)> {
+     let toks = tokens(src);
+@@ -264,6 +308,93 @@ mod tests {
+         assert_eq!(messages("fn f<'a>(x: &'a str) {}\nextern crate std;"), [2]);
+     }
+ 
++    /// The tokens' texts, in order.
++    fn texts(src: &str) -> Vec<String> {
++        super::tokens(src).into_iter().map(|t| t.text).collect()
++    }
++
++    /// Found in a security review of T19's skip scan: `'\''` ended at its
++    /// escaped quote, so its real closing quote opened a new literal and
++    /// the rest of the line was read out of step (a `"` after it opened a
++    /// string), which could hide a `mutants::skip` or an
++    /// `allow(unsafe_code)` that followed on the same line.
++    #[test]
++    fn char_literals_with_escapes_end_where_rustc_ends_them() {
++        let one = |src: &str| texts(src) == ["'"];
++        for literal in [
++            "'\\''",
++            "'\\\\'",
++            "'\\n'",
++            "'\\t'",
++            "'\\r'",
++            "'\\0'",
++            "'\\\"'",
++            "'\"'",
++            "'x'",
++            "'\\x7f'",
++            "'\\u{1F600}'",
++            "'é'",
++        ] {
++            assert!(one(literal), "{literal} is one token: {:?}", texts(literal));
++        }
++        assert_eq!(texts("b'\\''"), ["b", "'"]);
++        assert_eq!(texts("'\\'' '\"' x"), ["'", "'", "x"]);
++        // With no space, the old lexer took `','` for a literal and the `"`
++        // after it for a string's start.
++        assert_eq!(texts("['\\'','\"'] x"), ["[", "'", ",", "'", "]", "x"]);
++        assert_eq!(
++            texts("fn f<'a>(x: &'a str)"),
++            [
++                "fn", "f", "<", "'", "a", ">", "(", "x", ":", "&", "'", "a", "str", ")"
++            ]
++        );
++        assert_eq!(texts("&'static str"), ["&", "'", "static", "str"]);
++        assert_eq!(
++            texts("'outer: loop {}"),
++            ["'", "outer", ":", "loop", "{", "}"]
++        );
++    }
++
++    /// What follows such a literal on its line is still found, by the
++    /// core scan and by T19's `mutants::skip` scan.
++    #[test]
++    fn what_follows_an_escaped_quote_is_still_scanned() {
++        for literal in ["'\\''", "'\\\\'", "'\\u{1F600}'", "b'\\''", "'\\x27'"] {
++            for gap in ["; const D: char = ", ","] {
++                let src =
++                    format!("const Q = [{literal}{gap}'\"']; #[allow(unsafe_code)] fn f() {{}}");
++                assert_eq!(messages(&src), [1], "{src}");
++                let src = format!("const Q = [{literal}{gap}'\"']; #[mutants::skip] fn f() {{}}");
++                assert_eq!(crate::mutants_skip::skips(&src), [1], "{src}");
++            }
++            let src = format!(
++                "fn g<'a>(s: &'a str) -> char {{ {literal} }} #[mutants::skip] fn f() {{}}"
++            );
++            assert_eq!(crate::mutants_skip::skips(&src), [1], "{src}");
++        }
++        // A real string after the literals still hides what is inside it.
++        assert!(
++            messages("const Q: char = '\\''; const S: &str = \"#[allow(unsafe_code)]\";")
++                .is_empty()
++        );
++    }
++
++    /// Found in T21's review: a string's escaped line end (`\` then a
++    /// newline) was skipped uncounted, so later findings named the line
++    /// before theirs; and `r#unsafe_code` lost its `#` and read as
++    /// `runsafe_code`.
++    #[test]
++    fn escaped_line_ends_count_and_raw_identifiers_are_their_names() {
++        let src = "const S: &str = \"a\\\nb\";\n#[allow(unsafe_code)]\nfn f() {}";
++        assert_eq!(messages(src), [3]);
++        let src = "const S: &[u8] = b\"a\\\n\\\nb\";\nextern crate std;";
++        assert_eq!(messages(src), [4]);
++        assert_eq!(texts("r#unsafe_code r#fn x"), ["unsafe_code", "fn", "x"]);
++        assert_eq!(messages("#[allow(r#unsafe_code)] fn f() {}"), [1]);
++        assert_eq!(messages("#![expect(clippy::r#style)]"), [1]);
++        assert_eq!(texts("r#\"x\"# r\"y\" br#\"z\"#"), ["\"\"", "\"\"", "\"\""]);
++    }
++
+     #[test]
+     fn ignores_comments_literals_and_harmless_lints() {
+         assert!(messages("// extern crate std;\n/* #[allow(warnings)] */").is_empty());

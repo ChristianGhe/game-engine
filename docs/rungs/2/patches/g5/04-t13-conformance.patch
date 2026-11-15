@@ -1,0 +1,1184 @@
+diff --git a/crates/eng-platform-api/src/conformance.rs b/crates/eng-platform-api/src/conformance.rs
+index 47e16fbe3593ecdda90be28c003db71be67b6ce1..aacf20a33db8ab6ece07c86330dab1f6684c82b3 100644
+--- a/crates/eng-platform-api/src/conformance.rs
++++ b/crates/eng-platform-api/src/conformance.rs
+@@ -11,6 +11,7 @@
+ //! <rule>: <what happened>`.
+ 
+ mod probe;
++pub mod requests;
+ mod scripts;
+ 
+ use probe::{Call, Plan, Probe, Seen};
+diff --git a/crates/eng-platform-api/src/conformance/requests.rs b/crates/eng-platform-api/src/conformance/requests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..39bb2b22c5dbc4a9d00a4831ea5aabf6d4a63ab3
+--- /dev/null
++++ b/crates/eng-platform-api/src/conformance/requests.rs
+@@ -0,0 +1,304 @@
++//! The cursor and fullscreen requests (ADR-0022), checked on a platform.
++//!
++//! A suite of its own, so that [`check`](super::check) and
++//! [`check_scripted`](super::check_scripted) keep their expectations: a
++//! wrapper that does not forward requests, as the headless conformance
++//! test's fault wrappers do not, still passes them.
++//!
++//! - [`check`] runs on any platform. Requests made before
++//!   [`App::window`], and on a platform without a window, change nothing
++//!   and answer [`CursorGrab::None`] or `false`; freeing the cursor answers
++//!   `None`; a grab asked for twice in one callback answers the same both
++//!   times; and runs that make requests in `start`, `window` and frames
++//!   still keep the lifecycle and clock rules.
++//! - [`check_recorded`] runs on a platform that records requests and can be
++//!   scripted, as the headless one does. The record holds each request the
++//!   app made, in `start`, events and frames, in order, with the clock's
++//!   time when it asked; each run starts it again; and the scripted
++//!   delivery rules still hold.
++//!
++//! The probe that asks wraps the suite's own probe, which keeps its plan
++//! and its record of callbacks; the rules are checked on both records after
++//! `run` returns. A broken rule panics with `platform conformance:
++//! <platform> (<run>): <rule>: <what happened>`, as the other suites do.
++
++use std::sync::Arc;
++
++use super::Report;
++use super::probe::{Plan, Probe};
++use crate::Request::{Fullscreen, GrabCursor};
++use crate::window::Window;
++use crate::{App, Control, CursorGrab, Instant, Key, Platform, PlatformEvent, Request, Wake};
++
++/// Where the probe made a request.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum Phase {
++    Start,
++    Window,
++    Event,
++    Frame,
++}
++
++/// What a request answered.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum Answer {
++    Grab(CursorGrab),
++    Took(bool),
++}
++
++/// One request the probe made.
++#[derive(Debug, Clone, Copy)]
++struct Asked {
++    now: Instant,
++    /// The callback it was made in, counted from 1.
++    call: usize,
++    phase: Phase,
++    request: Request,
++    answer: Answer,
++    /// The window had been handed over before it.
++    window: bool,
++}
++
++impl Asked {
++    /// The answer of a request that changes nothing.
++    const fn changed_nothing(&self) -> bool {
++        matches!(
++            self.answer,
++            Answer::Grab(CursorGrab::None) | Answer::Took(false)
++        )
++    }
++}
++
++/// What the probe asks, and when.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum Asks {
++    /// [`check`]'s: in `start`, `window` and the first three frames.
++    Lifecycle,
++    /// [`check_recorded`]'s: in `start`, the first frame and some events.
++    Recorded,
++}
++
++/// The suite's probe, asking as it goes.
++struct Asker {
++    probe: Probe,
++    asks: Asks,
++    window: bool,
++    /// Callbacks so far, and frames among them.
++    calls: usize,
++    frames: usize,
++    asked: Vec<Asked>,
++}
++
++impl Asker {
++    const fn new(probe: Probe, asks: Asks) -> Self {
++        Self {
++            probe,
++            asks,
++            window: false,
++            calls: 0,
++            frames: 0,
++            asked: Vec::new(),
++        }
++    }
++
++    /// Makes the requests, before the probe's own part of the callback;
++    /// none once the probe has exited.
++    fn ask(&mut self, ctx: &mut dyn Control, phase: Phase, requests: &[Request]) {
++        self.calls += 1;
++        if self.probe.exited_in.is_some() {
++            return;
++        }
++        for &request in requests {
++            let answer = match request {
++                GrabCursor(grab) => Answer::Grab(ctx.grab_cursor(grab)),
++                Fullscreen(on) => Answer::Took(ctx.set_fullscreen(on)),
++            };
++            self.asked.push(Asked {
++                now: ctx.now(),
++                call: self.calls,
++                phase,
++                request,
++                answer,
++                window: self.window,
++            });
++        }
++    }
++}
++
++impl App for Asker {
++    fn start(&mut self, ctx: &mut dyn Control) {
++        let asks: &[Request] = match self.asks {
++            Asks::Lifecycle => &[
++                GrabCursor(true),
++                Fullscreen(true),
++                GrabCursor(false),
++                Fullscreen(false),
++            ],
++            Asks::Recorded => &[GrabCursor(true), Fullscreen(true)],
++        };
++        self.ask(ctx, Phase::Start, asks);
++        self.probe.start(ctx);
++    }
++
++    fn window(&mut self, ctx: &mut dyn Control, window: Arc<dyn Window>) {
++        self.window = true;
++        let _ = window.refresh_rate();
++        // Fullscreen is not asked for: on macOS it takes a second to land,
++        // and its answer may be either.
++        let asks = [Fullscreen(false), GrabCursor(true), GrabCursor(true)];
++        self.ask(ctx, Phase::Window, &asks);
++        self.probe.window(ctx, window);
++    }
++
++    fn event(&mut self, ctx: &mut dyn Control, event: PlatformEvent) {
++        let asks: &[Request] = match event {
++            PlatformEvent::FocusGained => &[GrabCursor(true)],
++            PlatformEvent::FocusLost => &[GrabCursor(false)],
++            PlatformEvent::CloseRequested => &[Fullscreen(false)],
++            _ => &[],
++        };
++        self.ask(ctx, Phase::Event, asks);
++        self.probe.event(ctx, event);
++    }
++
++    fn frame(&mut self, ctx: &mut dyn Control) -> Wake {
++        self.frames += 1;
++        let asks: &[Request] = match (self.asks, self.frames) {
++            (Asks::Lifecycle, 1) => &[GrabCursor(false), GrabCursor(true), GrabCursor(true)],
++            (Asks::Lifecycle, 2) => &[Fullscreen(false), GrabCursor(true)],
++            (Asks::Lifecycle, 3) | (Asks::Recorded, 1) => &[GrabCursor(false), Fullscreen(false)],
++            _ => &[],
++        };
++        self.ask(ctx, Phase::Frame, asks);
++        self.probe.frame(ctx)
++    }
++
++    fn stop(&mut self, ctx: &dyn Control) {
++        self.probe.stop(ctx);
++    }
++}
++
++/// Checks the request rules every platform follows, in two runs of
++/// `platform` that need no input: requests in `start`, `window` and
++/// frames, answered as the rules say, while the lifecycle and clock rules
++/// hold. Panics with the first rule broken.
++pub fn check<P: Platform + ?Sized>(platform: &mut P) {
++    for run in ["requests", "requests again"] {
++        let probe = Probe::new(Plan::Clock, platform.name(), run);
++        let mut asker = Asker::new(probe, Asks::Lifecycle);
++        let result = platform.run(&mut asker);
++        let report = Report {
++            platform: platform.name(),
++            run,
++        };
++        report.lifecycle(&asker.probe, &result);
++        report.timed_wakes(&asker.probe);
++        report.lasted(&asker.probe, &result);
++        report.answers(&asker);
++    }
++}
++
++/// Checks a platform that records the requests its app makes and can be
++/// scripted, as the headless platform does. `make` builds one that
++/// delivers exactly the given events, as for
++/// [`check_scripted`](super::check_scripted); `record` reads what it
++/// recorded of its last run. One platform runs twice, and after each run
++/// the record must hold every request the app made, in order, with the
++/// clock's time when it asked, and nothing else. Panics with the first
++/// rule broken.
++pub fn check_recorded<P: Platform>(
++    mut make: impl FnMut(&[(Instant, PlatformEvent)]) -> P,
++    record: impl Fn(&P) -> Vec<(Instant, Request)>,
++) {
++    let script = script();
++    let mut platform = make(&script);
++    for run in ["recorded requests", "recorded requests again"] {
++        let probe = Probe::new(Plan::Events, platform.name(), run);
++        let mut asker = Asker::new(probe, Asks::Recorded);
++        let result = platform.run(&mut asker);
++        let report = Report {
++            platform: platform.name(),
++            run,
++        };
++        report.lifecycle(&asker.probe, &result);
++        report.delivery(&asker.probe, &result, &script);
++        report.answers(&asker);
++        report.record(&asker, &record(&platform));
++    }
++}
++
++/// Focus coming, going and coming back in one batch, then a close request.
++fn script() -> Vec<(Instant, PlatformEvent)> {
++    use PlatformEvent as E;
++    let ms = Instant::from_millis;
++    vec![
++        (ms(2), E::FocusGained),
++        (ms(5), E::FocusLost),
++        (ms(5), E::FocusGained),
++        (ms(5), E::KeyDown(Key::KeyW)),
++        (ms(9), E::CloseRequested),
++    ]
++}
++
++impl Report {
++    /// What each request answered.
++    fn answers(&self, asker: &Asker) {
++        let asked = &asker.asked;
++        if let Some(a) = asked.iter().find(|a| !a.window && !a.changed_nothing()) {
++            let rule = if a.phase == Phase::Start || asker.window {
++                "a request before the window changes nothing"
++            } else {
++                "with no window, a request changes nothing"
++            };
++            self.fail(rule, &shown(a));
++        }
++        let freed = asked
++            .iter()
++            .find(|a| a.request == GrabCursor(false) && a.answer != Answer::Grab(CursorGrab::None));
++        if let Some(a) = freed {
++            self.fail("freeing the cursor leaves no grab", &shown(a));
++        }
++        let again = asked.windows(2).find(|w| {
++            w[0].call == w[1].call
++                && w[0].request == GrabCursor(true)
++                && w[1].request == GrabCursor(true)
++                && w[0].answer != w[1].answer
++        });
++        if let Some(w) = again {
++            let what = format!("{}, then {}", shown(&w[0]), shown(&w[1]));
++            self.fail("a grab asked for twice in a row answers the same", &what);
++        }
++    }
++
++    /// The platform's record against the requests the probe made.
++    fn record(&self, asker: &Asker, record: &[(Instant, Request)]) {
++        let made: Vec<(Instant, Request)> =
++            asker.asked.iter().map(|a| (a.now, a.request)).collect();
++        let first_wrong = (0..made.len().max(record.len())).find(|&i| made.get(i) != record.get(i));
++        if let Some(i) = first_wrong {
++            let at = |list: &[(Instant, Request)]| {
++                list.get(i)
++                    .map_or_else(|| "nothing".to_string(), |(t, r)| format!("{r:?} at {t}"))
++            };
++            let what = format!(
++                "entry {} was {}, not {}: {} recorded, {} made",
++                i + 1,
++                at(record),
++                at(&made),
++                record.len(),
++                made.len()
++            );
++            self.fail(
++                "the record holds every request, in order, at its time",
++                &what,
++            );
++        }
++    }
++}
++
++fn shown(a: &Asked) -> String {
++    format!(
++        "{:?} in {:?} at {} answered {:?}",
++        a.request, a.phase, a.now, a.answer
++    )
++}
+diff --git a/crates/eng-platform-api/tests/requests.rs b/crates/eng-platform-api/tests/requests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..14b2763a2b18657ba27bd76b1dbd936e2d2a843b
+--- /dev/null
++++ b/crates/eng-platform-api/tests/requests.rs
+@@ -0,0 +1,172 @@
++//! The request suite (ADR-0022, `conformance::requests`) on a fake
++//! windowed platform: the rules that need a window (freeing answers `None`,
++//! a grab asked for twice answers the same, nothing before the window),
++//! checked without a display, and each broken on purpose.
++
++use std::panic::{AssertUnwindSafe, catch_unwind};
++use std::sync::Arc;
++
++use eng_platform_api::conformance::requests;
++use eng_platform_api::window::Window;
++use eng_platform_api::{
++    App, Control, CursorGrab, Instant, PhysicalSize, Platform, PlatformError, Wake,
++};
++use raw_window_handle::{
++    DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
++};
++
++/// A window with no handles and a 60 Hz monitor.
++struct FakeWindow;
++
++impl HasWindowHandle for FakeWindow {
++    fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
++        Err(HandleError::Unavailable)
++    }
++}
++
++impl HasDisplayHandle for FakeWindow {
++    fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
++        Err(HandleError::Unavailable)
++    }
++}
++
++impl Window for FakeWindow {
++    fn size(&self) -> PhysicalSize {
++        PhysicalSize::new(320, 240)
++    }
++
++    fn refresh_rate(&self) -> Option<u32> {
++        Some(60_000)
++    }
++}
++
++/// One way to break the request rules.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum Fault {
++    None,
++    /// Grabs before the window is handed over.
++    GrabsBeforeWindow,
++    /// Freeing the cursor answers the grab it had.
++    FreeingKeepsTheGrab,
++    /// Each grab answers the other mode.
++    Alternates,
++}
++
++/// The smallest windowed platform: a virtual clock, timed wakes, no
++/// events, one window, and grabs that lock.
++struct Windowed {
++    fault: Fault,
++}
++
++struct Ctx {
++    now: Instant,
++    exit: bool,
++    window: bool,
++    fault: Fault,
++    grab: CursorGrab,
++    grabs: usize,
++}
++
++impl Control for Ctx {
++    fn now(&self) -> Instant {
++        self.now
++    }
++
++    fn exit(&mut self) {
++        self.exit = true;
++    }
++
++    fn grab_cursor(&mut self, grab: bool) -> CursorGrab {
++        if !self.window && self.fault != Fault::GrabsBeforeWindow {
++            return CursorGrab::None;
++        }
++        self.grabs += 1;
++        self.grab = match (grab, self.fault) {
++            (false, Fault::FreeingKeepsTheGrab) => self.grab,
++            (false, _) => CursorGrab::None,
++            (true, Fault::Alternates) if self.grabs.is_multiple_of(2) => CursorGrab::Confined,
++            (true, _) => CursorGrab::Locked,
++        };
++        self.grab
++    }
++
++    fn set_fullscreen(&mut self, on: bool) -> bool {
++        let _ = on;
++        self.window
++    }
++}
++
++impl Platform for Windowed {
++    fn name(&self) -> &'static str {
++        "fake-windowed"
++    }
++
++    fn run(&mut self, app: &mut dyn App) -> Result<(), PlatformError> {
++        let mut ctx = Ctx {
++            now: Instant::ZERO,
++            exit: false,
++            window: false,
++            fault: self.fault,
++            grab: CursorGrab::None,
++            grabs: 0,
++        };
++        app.start(&mut ctx);
++        if !ctx.exit {
++            ctx.window = true;
++            app.window(&mut ctx, Arc::new(FakeWindow));
++        }
++        let mut result = Ok(());
++        while !ctx.exit {
++            match app.frame(&mut ctx) {
++                _ if ctx.exit => {}
++                Wake::At(at) => ctx.now = ctx.now.max(at),
++                Wake::OnEvent => {
++                    result = Err(PlatformError::Idle { at: ctx.now });
++                    break;
++                }
++            }
++        }
++        app.stop(&ctx);
++        result
++    }
++}
++
++fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
++    match payload.downcast::<String>() {
++        Ok(message) => *message,
++        Err(payload) => payload
++            .downcast_ref::<&str>()
++            .map_or_else(|| "(not a string)".to_string(), |s| (*s).to_string()),
++    }
++}
++
++#[test]
++fn a_windowed_platform_that_grabs_passes() {
++    requests::check(&mut Windowed { fault: Fault::None });
++}
++
++#[test]
++fn the_suite_names_the_rule_each_fault_breaks() {
++    let faults = [
++        (
++            Fault::GrabsBeforeWindow,
++            "a request before the window changes nothing",
++        ),
++        (
++            Fault::FreeingKeepsTheGrab,
++            "freeing the cursor leaves no grab",
++        ),
++        (
++            Fault::Alternates,
++            "a grab asked for twice in a row answers the same",
++        ),
++    ];
++    for (fault, rule) in faults {
++        let caught = catch_unwind(AssertUnwindSafe(|| {
++            requests::check(&mut Windowed { fault });
++        }));
++        let message = panic_message(caught.expect_err("the suite must reject it"));
++        assert!(message.contains(rule), "{fault:?}: {message}");
++        assert!(message.contains("fake-windowed"), "{fault:?}: {message}");
++    }
++}
+diff --git a/crates/eng-platform-headless/tests/requests.rs b/crates/eng-platform-headless/tests/requests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..30d1b1fc8da13cdd41604b6c7dcc11326aa1377a
+--- /dev/null
++++ b/crates/eng-platform-headless/tests/requests.rs
+@@ -0,0 +1,269 @@
++//! The request suite (ADR-0022, `conformance::requests`) against the
++//! headless platform (rung 2, T13: "the headless platform records cursor
++//! and fullscreen requests"), and against broken platforms made from it:
++//! each breaks one rule, and the suite must name that rule.
++
++use std::panic::{AssertUnwindSafe, catch_unwind};
++
++use eng_platform_api::conformance::requests;
++use eng_platform_api::{
++    App, Control, CursorGrab, Instant, Platform, PlatformError, PlatformEvent, Request, Wake,
++};
++use eng_platform_headless::HeadlessPlatform;
++
++fn scripted(script: &[(Instant, PlatformEvent)]) -> HeadlessPlatform {
++    HeadlessPlatform::new().script(script.iter().copied())
++}
++
++#[test]
++fn headless_passes_the_request_rules() {
++    requests::check(&mut HeadlessPlatform::new());
++}
++
++#[test]
++fn headless_records_every_request_at_its_time() {
++    requests::check_recorded(scripted, |p| p.requests().to_vec());
++}
++
++/// One way to break the request rules, put between the headless platform
++/// and the app.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum Fault {
++    None,
++    /// Forwards no request, as the conformance test's older wrappers do:
++    /// the answers are right, the record empty.
++    Drops,
++    /// Answers a grab in `start` with `Locked`.
++    GrabsInStart,
++    /// Answers fullscreen in a frame with `true`, with no window.
++    FullscreenInFrames,
++    /// Answers freeing the cursor with `Confined`.
++    FreeingConfines,
++    /// Leaves the app's second request out of the record.
++    DropsOne,
++    /// Records the app's second request twice.
++    RecordsOneTwice,
++    /// Keeps the record from one run to the next.
++    KeepsTheRecord,
++}
++
++/// Each fault, whether the suite catches it in `check` (else in
++/// `check_recorded`), and the rule it must name.
++const FAULTS: [(Fault, bool, &str); 7] = [
++    (Fault::Drops, false, "the record holds every request"),
++    (
++        Fault::GrabsInStart,
++        true,
++        "a request before the window changes nothing",
++    ),
++    (
++        Fault::FullscreenInFrames,
++        true,
++        "with no window, a request changes nothing",
++    ),
++    (
++        Fault::FreeingConfines,
++        true,
++        "a request before the window changes nothing",
++    ),
++    (Fault::DropsOne, false, "the record holds every request"),
++    (
++        Fault::RecordsOneTwice,
++        false,
++        "the record holds every request",
++    ),
++    (Fault::KeepsTheRecord, false, "(recorded requests again)"),
++];
++
++/// The headless platform with a fault, and its own copy of the record.
++struct Faulty {
++    inner: HeadlessPlatform,
++    fault: Fault,
++    record: Vec<(Instant, Request)>,
++}
++
++impl Faulty {
++    fn new(inner: HeadlessPlatform, fault: Fault) -> Self {
++        Self {
++            inner,
++            fault,
++            record: Vec::new(),
++        }
++    }
++}
++
++impl Platform for Faulty {
++    fn name(&self) -> &'static str {
++        "faulty-headless"
++    }
++
++    fn run(&mut self, app: &mut dyn App) -> Result<(), PlatformError> {
++        let mut shim = Shim {
++            app,
++            fault: self.fault,
++            in_start: false,
++            asked: 0,
++        };
++        let result = self.inner.run(&mut shim);
++        if self.fault != Fault::KeepsTheRecord {
++            self.record.clear();
++        }
++        self.record.extend_from_slice(self.inner.requests());
++        result
++    }
++}
++
++/// Sits between the headless platform and the app.
++struct Shim<'a> {
++    app: &'a mut dyn App,
++    fault: Fault,
++    in_start: bool,
++    /// Requests the app has made this run.
++    asked: usize,
++}
++
++/// The platform's controls as the app sees them, with the fault applied.
++struct Lens<'a> {
++    inner: &'a mut dyn Control,
++    fault: Fault,
++    in_start: bool,
++    asked: &'a mut usize,
++}
++
++impl Lens<'_> {
++    /// Passes a request on as the fault says, then gives the answer.
++    fn pass<T>(&mut self, ask: impl Fn(&mut dyn Control) -> T, wrong: Option<T>) -> T {
++        *self.asked += 1;
++        let answer = match self.fault {
++            Fault::Drops => return ask(&mut Defaults),
++            Fault::DropsOne if *self.asked == 2 => return ask(&mut Defaults),
++            Fault::RecordsOneTwice if *self.asked == 2 => {
++                ask(self.inner);
++                ask(self.inner)
++            }
++            _ => ask(self.inner),
++        };
++        wrong.unwrap_or(answer)
++    }
++}
++
++impl Control for Lens<'_> {
++    fn now(&self) -> Instant {
++        self.inner.now()
++    }
++
++    fn exit(&mut self) {
++        self.inner.exit();
++    }
++
++    fn grab_cursor(&mut self, grab: bool) -> CursorGrab {
++        let wrong = match self.fault {
++            Fault::GrabsInStart if grab && self.in_start => Some(CursorGrab::Locked),
++            Fault::FreeingConfines if !grab => Some(CursorGrab::Confined),
++            _ => None,
++        };
++        self.pass(|ctx| ctx.grab_cursor(grab), wrong)
++    }
++
++    fn set_fullscreen(&mut self, on: bool) -> bool {
++        let wrong = (self.fault == Fault::FullscreenInFrames && !self.in_start).then_some(true);
++        self.pass(|ctx| ctx.set_fullscreen(on), wrong)
++    }
++}
++
++/// A `Control` that answers requests with the default bodies.
++struct Defaults;
++
++impl Control for Defaults {
++    fn now(&self) -> Instant {
++        Instant::ZERO
++    }
++
++    fn exit(&mut self) {}
++}
++
++impl Shim<'_> {
++    fn lens<'b>(&'b mut self, ctx: &'b mut dyn Control) -> (&'b mut dyn App, Lens<'b>) {
++        let lens = Lens {
++            inner: ctx,
++            fault: self.fault,
++            in_start: self.in_start,
++            asked: &mut self.asked,
++        };
++        (&mut *self.app, lens)
++    }
++}
++
++impl App for Shim<'_> {
++    fn start(&mut self, ctx: &mut dyn Control) {
++        self.in_start = true;
++        let (app, mut lens) = self.lens(ctx);
++        app.start(&mut lens);
++        self.in_start = false;
++    }
++
++    fn event(&mut self, ctx: &mut dyn Control, event: PlatformEvent) {
++        let (app, mut lens) = self.lens(ctx);
++        app.event(&mut lens, event);
++    }
++
++    fn frame(&mut self, ctx: &mut dyn Control) -> Wake {
++        let (app, mut lens) = self.lens(ctx);
++        app.frame(&mut lens)
++    }
++
++    fn stop(&mut self, ctx: &dyn Control) {
++        self.app.stop(ctx);
++    }
++}
++
++fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
++    match payload.downcast::<String>() {
++        Ok(message) => *message,
++        Err(payload) => payload
++            .downcast_ref::<&str>()
++            .map_or_else(|| "(not a string)".to_string(), |s| (*s).to_string()),
++    }
++}
++
++/// Runs the suite on a faulty platform; the panic's message, if any.
++fn suite(fault: Fault) -> (Option<String>, Option<String>) {
++    let check = catch_unwind(AssertUnwindSafe(|| {
++        requests::check(&mut Faulty::new(HeadlessPlatform::new(), fault));
++    }));
++    let recorded = catch_unwind(AssertUnwindSafe(|| {
++        requests::check_recorded(
++            |script| Faulty::new(scripted(script), fault),
++            |p| p.record.clone(),
++        );
++    }));
++    (
++        check.err().map(panic_message),
++        recorded.err().map(panic_message),
++    )
++}
++
++#[test]
++fn a_platform_that_passes_requests_through_passes() {
++    assert_eq!(suite(Fault::None), (None, None));
++}
++
++#[test]
++fn the_suite_names_the_rule_each_fault_breaks() {
++    for (fault, in_check, rule) in FAULTS {
++        let (check, recorded) = suite(fault);
++        let caught = if in_check { check } else { recorded };
++        let message = caught.unwrap_or_else(|| panic!("{fault:?} was not caught"));
++        assert!(message.contains(rule), "{fault:?}: {message}");
++        assert!(message.contains("faulty-headless"), "{fault:?}: {message}");
++    }
++}
++
++#[test]
++fn a_wrapper_that_drops_requests_answers_as_with_no_window() {
++    // The migration note: a wrapper that does not forward a request drops
++    // it, and the app gets the default answer, which `check` accepts.
++    let (check, recorded) = suite(Fault::Drops);
++    assert_eq!(check, None);
++    assert!(recorded.is_some());
++}
+diff --git a/crates/eng-platform-winit/Cargo.toml b/crates/eng-platform-winit/Cargo.toml
+index 3a594c0188dfb3b5eb2cb3871a22bfc647871f77..9d66e34b2bdb7310f7a4453db74f1d34e1fbd4e2 100644
+--- a/crates/eng-platform-winit/Cargo.toml
++++ b/crates/eng-platform-winit/Cargo.toml
+@@ -20,5 +20,9 @@ winit.workspace = true
+ name = "conformance"
+ harness = false
+ 
++[[test]]
++name = "requests"
++harness = false
++
+ [lints]
+ workspace = true
+diff --git a/crates/eng-platform-winit/tests/requests.rs b/crates/eng-platform-winit/tests/requests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c6d8667c485adbf5fd0f8a1c89f040c0cd058b6e
+--- /dev/null
++++ b/crates/eng-platform-winit/tests/requests.rs
+@@ -0,0 +1,389 @@
++//! The request suite (ADR-0022, `conformance::requests`) on winit, with
++//! real windows (rung 2, T13: "the new suite passes on winit where a
++//! display exists"), and the window's refresh rate.
++//!
++//! Like `tests/conformance.rs` (whose reasons it shares: winit's event
++//! loop needs the main thread and exists once per process), this file is
++//! its own harness (`harness = false`), speaking the part of libtest's
++//! command line that `cargo test` and cargo-nextest use. Without a display
++//! the windowed checks skip, unless `ENG_REQUIRE_DISPLAY=1` makes them
++//! fail.
++//!
++//! Two checks are ignored, to be run by hand (`-- --ignored`) on a desktop
++//! with the screen unlocked: `grab_with_focus` needs the window to get
++//! focus, which a locked screen and Xvfb without a window manager never
++//! give, and `fullscreen` needs a window manager and takes seconds on
++//! macOS, which animates it. Each fails, saying why, if what it waits for
++//! never comes.
++
++use std::process::ExitCode;
++use std::sync::Arc;
++use std::time::Duration;
++
++use eng_platform_api::conformance::requests;
++use eng_platform_api::window::Window;
++use eng_platform_api::{
++    App, Control, CursorGrab, Instant, PhysicalSize, Platform, PlatformEvent, Wake,
++};
++use eng_platform_winit::{WinitPlatform, display_required};
++
++const TITLE: &str = "eng-platform-winit requests";
++
++/// Far longer than the checks take.
++const WATCHDOG: Duration = Duration::from_secs(60);
++
++/// How long the ignored checks wait for focus or for fullscreen to land.
++const PATIENCE: Duration = Duration::from_secs(8);
++
++/// A check, and whether it is ignored unless asked for.
++struct Check {
++    name: &'static str,
++    run: fn(&mut WinitPlatform),
++    ignored: bool,
++}
++
++const CHECKS: &[Check] = &[
++    Check {
++        name: "requests",
++        run: passes_the_request_suite,
++        ignored: false,
++    },
++    Check {
++        name: "refresh_rate",
++        run: the_window_tells_its_refresh_rate,
++        ignored: false,
++    },
++    Check {
++        name: "grab_with_focus",
++        run: a_grab_asked_for_in_window_takes_with_focus,
++        ignored: true,
++    },
++    Check {
++        name: "fullscreen",
++        run: fullscreen_asked_for_in_window_lands_and_leaves,
++        ignored: true,
++    },
++];
++
++/// T13's done-when: the request suite on real windows.
++fn passes_the_request_suite(platform: &mut WinitPlatform) {
++    requests::check(platform);
++}
++
++/// Reads the refresh rate in `window` and in the first frame, then exits.
++#[derive(Default)]
++struct Rates {
++    in_window: Option<Option<u32>>,
++    in_frame: Option<Option<u32>>,
++    window: Option<Arc<dyn Window>>,
++}
++
++impl App for Rates {
++    fn window(&mut self, _ctx: &mut dyn Control, window: Arc<dyn Window>) {
++        self.in_window = Some(window.refresh_rate());
++        self.window = Some(window);
++    }
++
++    fn frame(&mut self, ctx: &mut dyn Control) -> Wake {
++        self.in_frame = Some(self.window.as_ref().and_then(|w| w.refresh_rate()));
++        ctx.exit();
++        Wake::OnEvent
++    }
++
++    fn stop(&mut self, _ctx: &dyn Control) {
++        self.window = None;
++    }
++}
++
++/// The window's monitor's refresh rate, once the window shows: in
++/// millihertz, between 1 Hz and 1 kHz. macOS and Windows always know it;
++/// X11 and Wayland may not (it is printed, for the record).
++fn the_window_tells_its_refresh_rate(platform: &mut WinitPlatform) {
++    let mut app = Rates::default();
++    assert_eq!(platform.run(&mut app), Ok(()));
++    let in_window = app.in_window.expect("the app got the window");
++    let in_frame = app.in_frame.expect("the app framed");
++    println!("refresh rate: {in_window:?} mHz in App::window, {in_frame:?} in the first frame");
++    for rate in [in_window, in_frame].into_iter().flatten() {
++        assert!((1_000..=1_000_000).contains(&rate), "{rate} mHz");
++    }
++    if cfg!(any(target_os = "macos", windows)) {
++        assert!(
++            in_frame.is_some(),
++            "a shown window's monitor has a rate here"
++        );
++    }
++}
++
++/// Asks for a grab in `window`, then again when focus comes; frees the
++/// cursor a moment later and exits.
++#[derive(Default)]
++struct Grabber {
++    in_window: Option<CursorGrab>,
++    with_focus: Option<CursorGrab>,
++    freed: Option<CursorGrab>,
++    focus_at: Option<Instant>,
++    timed_out: bool,
++}
++
++impl App for Grabber {
++    fn window(&mut self, ctx: &mut dyn Control, _window: Arc<dyn Window>) {
++        self.in_window = Some(ctx.grab_cursor(true));
++    }
++
++    fn event(&mut self, ctx: &mut dyn Control, event: PlatformEvent) {
++        if event == PlatformEvent::FocusGained && self.with_focus.is_none() {
++            self.with_focus = Some(ctx.grab_cursor(true));
++            self.focus_at = Some(ctx.now());
++        }
++    }
++
++    fn frame(&mut self, ctx: &mut dyn Control) -> Wake {
++        let now = ctx.now();
++        if let Some(at) = self.focus_at {
++            let free_at = at + Duration::from_millis(300);
++            if now < free_at {
++                return Wake::At(free_at);
++            }
++            self.freed = Some(ctx.grab_cursor(false));
++            ctx.exit();
++            return Wake::OnEvent;
++        }
++        let give_up = Instant::ZERO + PATIENCE;
++        if now >= give_up {
++            self.timed_out = true;
++            ctx.exit();
++            return Wake::OnEvent;
++        }
++        Wake::At(give_up)
++    }
++}
++
++/// ADR-0022: a grab asked for in `App::window` waits for focus, then holds
++/// (`Locked` on macOS, Windows and Wayland, `Confined` on X11); asked again
++/// with focus, it answers the grab in force; freeing answers `None`.
++fn a_grab_asked_for_in_window_takes_with_focus(platform: &mut WinitPlatform) {
++    let mut app = Grabber::default();
++    assert_eq!(platform.run(&mut app), Ok(()));
++    assert!(
++        !app.timed_out,
++        "no focus came in {PATIENCE:?}: is the screen locked, or is there no window manager?"
++    );
++    assert_eq!(app.in_window, Some(CursorGrab::None), "it waits for focus");
++    let grab = app.with_focus.expect("focus came");
++    let want = if cfg!(all(unix, not(target_os = "macos")))
++        && std::env::var_os("WAYLAND_DISPLAY").is_none()
++    {
++        CursorGrab::Confined
++    } else {
++        CursorGrab::Locked
++    };
++    assert_eq!(grab, want);
++    assert_eq!(app.freed, Some(CursorGrab::None));
++}
++
++/// What `Fullscreen` is waiting for.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum Stage {
++    Entering,
++    /// Fullscreen, until macOS's animation has surely ended: a change
++    /// asked for during it can be lost there.
++    Settling(Instant),
++    Leaving,
++    Done,
++}
++
++/// How long `Fullscreen` lets the window settle before it leaves.
++const SETTLE: Duration = Duration::from_secs(2);
++
++/// Asks for fullscreen in `window`, waits for the window to grow and
++/// settle, asks to leave, waits for it to shrink back, and exits.
++struct Fullscreen {
++    took: Option<bool>,
++    first: PhysicalSize,
++    largest: PhysicalSize,
++    last: PhysicalSize,
++    stage: Stage,
++    left: Option<bool>,
++    deadline: Instant,
++    window: Option<Arc<dyn Window>>,
++}
++
++impl Fullscreen {
++    const fn new() -> Self {
++        Self {
++            took: None,
++            first: PhysicalSize::new(0, 0),
++            largest: PhysicalSize::new(0, 0),
++            last: PhysicalSize::new(0, 0),
++            stage: Stage::Entering,
++            left: None,
++            deadline: Instant::ZERO,
++            window: None,
++        }
++    }
++}
++
++const fn area(size: PhysicalSize) -> u64 {
++    size.width as u64 * size.height as u64
++}
++
++impl App for Fullscreen {
++    fn window(&mut self, ctx: &mut dyn Control, window: Arc<dyn Window>) {
++        self.first = window.size();
++        self.last = self.first;
++        self.took = Some(ctx.set_fullscreen(true));
++        self.deadline = ctx.now() + PATIENCE;
++        self.window = Some(window);
++    }
++
++    fn event(&mut self, _ctx: &mut dyn Control, event: PlatformEvent) {
++        if let PlatformEvent::Resized(size) = event {
++            self.last = size;
++            if area(size) > area(self.largest) {
++                self.largest = size;
++            }
++        }
++    }
++
++    fn frame(&mut self, ctx: &mut dyn Control) -> Wake {
++        let now = ctx.now();
++        let size = self.window.as_ref().map_or(self.last, |w| w.size());
++        match self.stage {
++            Stage::Entering if area(size) > area(self.first) * 2 => {
++                self.stage = Stage::Settling(now + SETTLE);
++                self.deadline = now + SETTLE + PATIENCE;
++            }
++            Stage::Settling(at) if now >= at => {
++                self.left = Some(ctx.set_fullscreen(false));
++                self.stage = Stage::Leaving;
++            }
++            Stage::Leaving if area(size) <= area(self.first) => self.stage = Stage::Done,
++            _ => {}
++        }
++        if self.stage == Stage::Done || now >= self.deadline {
++            ctx.exit();
++            return Wake::OnEvent;
++        }
++        Wake::At(now + Duration::from_millis(50))
++    }
++
++    fn stop(&mut self, _ctx: &dyn Control) {
++        self.window = None;
++    }
++}
++
++/// ADR-0022: fullscreen asked for in `App::window` lands once the window
++/// shows (the window grows past twice its first area), and leaving it
++/// brings the window back.
++fn fullscreen_asked_for_in_window_lands_and_leaves(platform: &mut WinitPlatform) {
++    let mut app = Fullscreen::new();
++    assert_eq!(platform.run(&mut app), Ok(()));
++    assert_eq!(app.took, Some(true), "the platform takes the request");
++    println!(
++        "fullscreen: {:?}, then {:?} at its largest, then {:?}",
++        app.first, app.largest, app.last
++    );
++    assert_ne!(
++        app.stage,
++        Stage::Entering,
++        "the window never went fullscreen in {PATIENCE:?}: is the screen locked, or is there \
++         no window manager?"
++    );
++    assert_eq!(app.left, Some(true));
++    assert_eq!(
++        app.stage,
++        Stage::Done,
++        "the window never came back from fullscreen"
++    );
++}
++
++/// The part of libtest's command line that cargo and nextest use.
++#[derive(Default)]
++struct Cli {
++    list: bool,
++    ignored: bool,
++    include_ignored: bool,
++    exact: bool,
++    filters: Vec<String>,
++    skips: Vec<String>,
++}
++
++impl Cli {
++    fn parse(args: impl IntoIterator<Item = String>) -> Self {
++        let mut cli = Cli::default();
++        let mut args = args.into_iter();
++        while let Some(arg) = args.next() {
++            match arg.as_str() {
++                "--list" => cli.list = true,
++                "--ignored" => cli.ignored = true,
++                "--include-ignored" => cli.include_ignored = true,
++                "--exact" => cli.exact = true,
++                "--skip" => cli.skips.extend(args.next()),
++                // libtest's flags that take a value; the value means nothing here.
++                "--format" | "--color" | "--test-threads" | "--logfile" | "--shuffle-seed"
++                | "-Z" => {
++                    args.next();
++                }
++                flag if flag.starts_with('-') => {}
++                filter => cli.filters.push(filter.to_string()),
++            }
++        }
++        cli
++    }
++
++    fn selects(&self, check: &Check) -> bool {
++        let hit = |f: &String| {
++            if self.exact {
++                check.name == f
++            } else {
++                check.name.contains(f.as_str())
++            }
++        };
++        let kind = self.include_ignored || check.ignored == self.ignored;
++        kind && (self.filters.is_empty() || self.filters.iter().any(hit))
++            && !self.skips.iter().any(hit)
++    }
++}
++
++fn main() -> ExitCode {
++    let cli = Cli::parse(std::env::args().skip(1));
++    if cli.list {
++        for check in CHECKS.iter().filter(|c| cli.selects(c)) {
++            println!("{}: test", check.name);
++        }
++        return ExitCode::SUCCESS;
++    }
++    std::thread::spawn(|| {
++        std::thread::sleep(WATCHDOG);
++        eprintln!("[E-TIMEOUT] the windowed checks took more than {WATCHDOG:?}: a run never ended");
++        std::process::exit(1);
++    });
++    let chosen: Vec<&Check> = CHECKS.iter().filter(|c| cli.selects(c)).collect();
++    let mut platform = None;
++    if !chosen.is_empty() {
++        match WinitPlatform::new(TITLE) {
++            Ok(made) => platform = Some(made),
++            Err(e) if display_required() => {
++                eprintln!("[E-NO-DISPLAY] {e}; ENG_REQUIRE_DISPLAY=1 needs a display");
++                return ExitCode::FAILURE;
++            }
++            Err(e) => println!("no display, so the windowed checks skip: {e}"),
++        }
++    }
++    for check in &chosen {
++        match platform.as_mut() {
++            None => println!("test {} ... skipped", check.name),
++            Some(platform) => {
++                (check.run)(platform);
++                println!("test {} ... ok", check.name);
++            }
++        }
++    }
++    let ignored = CHECKS.len() - chosen.len();
++    println!(
++        "test result: ok. {} checks; {ignored} not chosen",
++        chosen.len()
++    );
++    ExitCode::SUCCESS
++}

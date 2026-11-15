@@ -1,0 +1,16 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 70c947b68e05f7c43b241fd465b876316abac4f1..5a1b651167d08795dc7a53d60f6844ae4ee6b337 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -287,7 +287,10 @@ jobs:
+       - name: cargo xtask ci --job native
+         run: |
+           if [ "$RUNNER_OS" = Linux ]; then
+-            xvfb-run -a -s "-screen 0 1280x1024x24" cargo xtask ci --job native
++            # -noreset: Xvfb otherwise resets when its last client leaves,
++            # and a window started during the reset cannot connect (the
++            # esc step after the window step, run 42370402965).
++            xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" cargo xtask ci --job native
+           else
+             cargo xtask ci --job native
+           fi

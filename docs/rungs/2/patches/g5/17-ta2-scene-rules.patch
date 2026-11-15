@@ -1,0 +1,546 @@
+diff --git a/crates/game-testbed/scenes/room.rules.toml b/crates/game-testbed/scenes/room.rules.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..5992ce7734b8a3cb7be090113ebd7ed59403e509
+--- /dev/null
++++ b/crates/game-testbed/scenes/room.rules.toml
+@@ -0,0 +1,74 @@
++# The room's rules for "proper" (rung 2, plan addition A2): what every
++# first-person shot of the room in shots.toml must show. PROTECTED, like
++# the scenarios' assertions: the owner changes it, with shots.toml when a
++# shot is added or renamed. `tests/scene_rules.rs` renders each shot and
++# eng-cli's `scene_rules` judges its frame record; the definitions are
++# there. Measured on the room's seven shots (Metal and the pinned
++# lavapipe, 2026-11-15), the least of each is in brackets.
++version = 1
++map = "room"
++
++# Rule 1: each object a shot names in `must_see` (the record's `name`) is
++# - present: at least `pixels` visible pixels [159, the barrel at spawn];
++# - distinct: its mean colour at least `contrast` from its surroundings'
++#   (the pixels within 4 of its screen box), as the OKLab distance of the
++#   two (deltaEOK; about 0.02 is just noticeable) [0.042, the barrel at
++#   spawn]. Colour counts: the red marker before the grey pillar has
++#   nearly the pillar's luminance, so a luminance contrast misses it;
++# - lit: its mean luminance at least `light` of the mean of every surface
++#   in view (the sky left out), so that one drawn black fails though it
++#   stands out [0.452, the crate in room-look-off; drawn black, the marker
++#   has 0.05].
++[rule-1]
++pixels = 50
++contrast = 0.03
++light = 0.2
++
++# Rule 2: nothing shows where the world should be. The sky pass covers
++# what no surface does, so the clear colour never shows: a hole shows the
++# sky. At most `void` pixels show it below the horizon, where the ground
++# always stands in front of the sky [0 on every shot], and at most `sky`
++# anywhere, so a missing ceiling face fails too [0 but where a shot's
++# exception gives the sky through the skylight].
++[rule-2]
++void = 0
++sky = 0
++
++# Rule 3: the floor covers at least `share` of the lower third, and the
++# ceiling and sky together at least `share` of the upper third [0.448,
++# room-look-off's floor; 0.294, room-step's ceiling]. A tenth of a third
++# is a band 8 rows deep at 320x240: a few stray pixels do not count.
++[rule-3]
++share = 0.1
++
++# Every first-person shot of the room, the objects it must see, and the
++# limits it is excused to, each with its reason: `except.<check> =
++# { pixels = N, why = "..." }` for rule-2-void or rule-2-sky, `{ share = S,
++# why = "..." }` for rule-3-floor or rule-3-above. An exception the shot no
++# longer needs fails. The sky's bounds are the pixels measured on both
++# adapters plus about 2% for edges that rasterize differently elsewhere.
++# The crate hides behind the pillar at spawn.
++[shot.room-spawn]
++must_see = ["marker", "barrel"]
++
++[shot.room-sprites]
++must_see = ["marker", "barrel"]
++
++[shot.room-step]
++must_see = ["barrel"]
++
++[shot.room-sky]
++must_see = []
++except.rule-2-sky = { pixels = 10300, why = "the sky through the skylight's shaft: 10,066 pixels" }
++except.rule-3-floor = { share = 0.0, why = "pitched 60 degrees up under the skylight: the lower third is ceiling and wall" }
++
++[shot.room-alcove]
++must_see = ["crate", "barrel"]
++
++[shot.room-ledge]
++must_see = []
++except.rule-3-above = { share = 0.0, why = "pitched 15 degrees down at the south wall 3.5 m away: the upper third is wall" }
++
++[shot.room-look-off]
++must_see = ["marker", "crate", "barrel"]
++except.rule-2-sky = { pixels = 2250, why = "the sky through the skylight, from the hall's far corner: 2,196 pixels" }
+diff --git a/crates/game-testbed/tests/scene_rules.rs b/crates/game-testbed/tests/scene_rules.rs
+index beff70bd6b987589b5f4d4bae0e2e2022256d488..cdb33c53080650630e712fb689fc2dd26c55bcfc 100644
+--- a/crates/game-testbed/tests/scene_rules.rs
++++ b/crates/game-testbed/tests/scene_rules.rs
+@@ -17,10 +17,10 @@
+ //!   the top-down shots are skipped unrendered, and a first-person map
+ //!   without its rules fails.
+ //!
+-//! **Until the owner commits the first rules file** (gate G5, with
+-//! `docs/rungs/2/patches/ta2-scene-rules.patch`, which also replaces this
+-//! test with its protected, strict form), a tree without `scenes/` passes
+-//! with `[W-NO-RULES]`, as the golden shots pass before their goldens.
++//! This is the test's protected form (gate G5): the rules directory must
++//! exist and hold rules, and every map with a first-person shot its own
++//! file. Before G5 the tree's form passed without `scenes/`, with
++//! `[W-NO-RULES]`.
+ //!
+ //! The environment, as `tests/frame_record.rs` reads it: `ENG_REQUIRE_GPU=1`
+ //! fails without an adapter instead of skipping; `ENG_RULES_DIR` reads the
+@@ -57,14 +57,11 @@ fn rules_dir() -> PathBuf {
+ }
+ 
+ /// Every `<map>.rules.toml` in `dir`, by map, read strictly: a file of
+-/// any other name fails, and so does a map other than its file's name.
+-/// `None` if `dir` does not exist.
+-fn read_rules(dir: &Path) -> Option<BTreeMap<String, SceneRules>> {
+-    let entries = match std::fs::read_dir(dir) {
+-        Ok(entries) => entries,
+-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+-        Err(e) => panic!("[E-SCENE-RULE] {}: {e}", dir.display()),
+-    };
++/// any other name fails, and so does a map other than its file's name, or
++/// a directory that cannot be read.
++fn read_rules(dir: &Path) -> BTreeMap<String, SceneRules> {
++    let entries = std::fs::read_dir(dir)
++        .unwrap_or_else(|e| panic!("[E-SCENE-RULE] the rules directory {}: {e}", dir.display()));
+     let mut files: Vec<PathBuf> = entries
+         .map(|e| {
+             e.unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+@@ -88,7 +85,7 @@ fn read_rules(dir: &Path) -> Option<BTreeMap<String, SceneRules>> {
+         assert_eq!(read.map, map, "{name} must hold the rules of map {map}");
+         rules.insert(map.to_owned(), read);
+     }
+-    Some(rules)
++    rules
+ }
+ 
+ /// Whether `map` (the game's first without one) has a first-person view:
+@@ -137,13 +134,7 @@ fn finding_json(finding: &Finding) -> Value {
+ #[test]
+ fn every_first_person_shot_keeps_its_scenes_rules() {
+     let dir = rules_dir();
+-    let Some(rules) = read_rules(&dir) else {
+-        eprintln!(
+-            "[W-NO-RULES] no {}: no shot is judged until the owner commits the rules (G5)",
+-            dir.display()
+-        );
+-        return;
+-    };
++    let rules = read_rules(&dir);
+     assert!(
+         !rules.is_empty(),
+         "[E-SCENE-RULE] {} holds no <map>.rules.toml",
+diff --git a/xtask/src/main.rs b/xtask/src/main.rs
+index c3f0d3f22c9267f0f7a368fae08a21ce243a3011..3e8a8c8807be18f983e1ad86cfaac4606861ec66 100644
+--- a/xtask/src/main.rs
++++ b/xtask/src/main.rs
+@@ -44,6 +44,7 @@ mod selftest;
+ mod selftest_docs;
+ mod selftest_golden;
+ mod selftest_mutants;
++mod selftest_rules;
+ mod shell;
+ mod size;
+ mod stamp;
+diff --git a/xtask/src/selftest.rs b/xtask/src/selftest.rs
+index 3d2ac60271b08d59080100fca36a2c6ba3e4c15a..1680b161970436b49789eb9f68e9d54ef79c4249 100644
+--- a/xtask/src/selftest.rs
++++ b/xtask/src/selftest.rs
+@@ -3,11 +3,12 @@
+ //! workspace under `target/selftest/`, or against the real guard binary, and
+ //! never change the tree itself. `golden-edit` runs the real shots harness
+ //! against goldens copied there; like every run of that harness (`quick`'s
+-//! too), it empties and rewrites `target/golden-candidates/`. A case that
+-//! needs what this machine lacks (cargo-deny, cargo-mutants, the pinned
+-//! lavapipe) says it could not run: a failure only on CI or with
+-//! `ENG_REQUIRE_GPU=1`, as for GPU tests, and never a pass
+-//! (`selftest_verdict.rs`).
++//! too), it empties and rewrites `target/golden-candidates/`. `rule-1` to
++//! `rule-3` plant a render bug in a copy and run its scene-rules test
++//! (`selftest_rules.rs`). A case that needs what this machine lacks
++//! (cargo-deny, cargo-mutants, the pinned lavapipe, any adapter) says it
++//! could not run: a failure only on CI or with `ENG_REQUIRE_GPU=1`, as for
++//! GPU tests, and never a pass (`selftest_verdict.rs`).
+ 
+ use std::fs;
+ use std::io::Write;
+@@ -23,7 +24,7 @@ mod verdict;
+ pub use verdict::NOT_RUN;
+ use verdict::{judged, last_line, outcome, status, strict};
+ 
+-pub const CASES: [&str; 24] = [
++pub const CASES: [&str; 27] = [
+     "float-sin",
+     "float-min",
+     "allow-escape",
+@@ -50,6 +51,11 @@ pub const CASES: [&str; 24] = [
+     // Rung 2, criteria 16 (`docs-lint`) and 20 (`violations-2`).
+     "docs-stale-path",
+     "mutant-missed",
++    // Rung 2, plan addition A2 (`scene-rules`): a render bug breaking each
++    // of the room's rules for "proper".
++    "rule-1",
++    "rule-2",
++    "rule-3",
+ ];
+ 
+ /// The cases `cargo xtask selftest [CASE]` names: all with no argument.
+@@ -228,6 +234,10 @@ fn run_case(root: &Path, case: &str) -> Result<String, String> {
+         "golden-edit" => crate::selftest_golden::run(root),
+         "docs-stale-path" => crate::selftest_docs::run(root),
+         "mutant-missed" => crate::selftest_mutants::run(root, &copy_workspace(root, case)?),
++        "rule-1" | "rule-2" | "rule-3" => {
++            let ws = copy_workspace(root, case)?;
++            crate::selftest_rules::run(root, &ws, case)
++        }
+         "guard-allows-ordinary-edits" => {
+             let ws = copy_workspace(root, case)?;
+             let input = serde_json::json!({
+@@ -279,12 +289,21 @@ fn copy_workspace(root: &Path, case: &str) -> Result<PathBuf, String> {
+     Ok(ws)
+ }
+ 
++/// Copies `file` into `ws`, modified now. macOS's `fs::copy` keeps the
++/// source's modification time, so cargo, which judges a crate fresh by its
++/// files' times, would reuse a build of another case's planted copy in the
++/// shared `target/selftest/target` (one case's bug showing in the next);
++/// Linux's copy is new already.
+ fn copy(root: &Path, ws: &Path, file: &Path) -> Result<(), String> {
+     let dest = ws.join(file.strip_prefix(root).map_err(|e| e.to_string())?);
+     fs::create_dir_all(dest.parent().expect("has parent")).map_err(|e| e.to_string())?;
+-    fs::copy(file, &dest)
+-        .map(|_| ())
+-        .map_err(|e| format!("{}: {e}", file.display()))
++    let fail = |e: std::io::Error| format!("{}: {e}", file.display());
++    fs::copy(file, &dest).map_err(fail)?;
++    fs::File::options()
++        .write(true)
++        .open(&dest)
++        .and_then(|f| f.set_modified(std::time::SystemTime::now()))
++        .map_err(fail)
+ }
+ 
+ fn edit(ws: &Path, rel: &str, from: &str, to: &str) -> Result<(), String> {
+diff --git a/xtask/src/selftest_rules.rs b/xtask/src/selftest_rules.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..ecc3287e063e0d8119938ca701f0a247fec050dd
+--- /dev/null
++++ b/xtask/src/selftest_rules.rs
+@@ -0,0 +1,273 @@
++//! `cargo xtask selftest rule-1`, `rule-2` and `rule-3` (rung 2, plan
++//! addition A2; acceptance `scene-rules`): each plants render bugs in a
++//! fresh copy of the workspace that break one of the room's rules for
++//! "proper" (`crates/game-testbed/scenes/room.rules.toml`), one at a time,
++//! and the scene-rules test (`crates/game-testbed/tests/scene_rules.rs`)
++//! must fail on that rule for each, naming the check, the shot, the object
++//! and the measure past its limit:
++//! - `rule-1`, two bugs in eng-render's `sprites.wgsl`:
++//!   - every thing drawn black, an albedo of 0. The marker still stands
++//!     out against the pillar, so only its light shows it: `rule-1
++//!     room-spawn marker`, `light` under the limit;
++//!   - every thing not drawn, each fragment discarded: `rule-1 room-spawn
++//!     marker`, `pixels` 0;
++//! - `rule-2`, two holes in the room's meshes (game-testbed-client's
++//!   `room/geometry.rs`):
++//!   - the hall's east wall north of the alcove left out: the sky shows
++//!     through it below the horizon, `rule-2-void room-spawn`, `pixels`
++//!     over the limit;
++//!   - the ceiling east of the skylight left out: the sky shows through it
++//!     above the horizon, where rule 3's upper third still passes (ceiling
++//!     and sky count together), `rule-2-sky room-spawn`, `pixels` over the
++//!     limit;
++//! - `rule-3`: the camera pitched 45 degrees further up than the player
++//!   looks (game-testbed-client's `room::camera`): room-spawn's lower third
++//!   shows no floor, `rule-3-floor room-spawn`, `share` under the limit.
++//!
++//! The test renders, so the case runs it with `ENG_REQUIRE_GPU=1`; with no
++//! adapter it could not run ([`NOT_RUN`]): a failure on CI or with
++//! `ENG_REQUIRE_GPU=1`, never a pass. Its builds share
++//! `target/selftest/target` with the other cases; the copy is new to cargo
++//! (`selftest.rs`'s `copy`), and each bug is taken out again before the
++//! next goes in, so no build of another bug is reused. That the unplanted
++//! tree passes is `ci --job native`'s `scene-rules` step.
++
++use std::fs;
++use std::path::Path;
++
++use crate::selftest::NOT_RUN;
++use crate::util;
++
++/// One bug: where it goes, and the failure it must cause.
++struct Plant {
++    /// The file, from the workspace root, and the text replaced in it.
++    file: &'static str,
++    from: &'static str,
++    to: &'static str,
++    /// What the bug is, for messages.
++    what: &'static str,
++    /// The failing check, shot and object (if any) the test must name.
++    check: &'static str,
++    shot: &'static str,
++    object: Option<&'static str>,
++    /// The measure that must be past its limit.
++    measure: &'static str,
++}
++
++const SPRITES: &str = "crates/eng-render/src/sprites.wgsl";
++const GEOMETRY: &str = "crates/game-testbed-client/src/room/geometry.rs";
++
++/// The bugs case `case` plants, one after another.
++fn plants(case: &str) -> Option<Vec<Plant>> {
++    Some(match case {
++        "rule-1" => vec![
++            Plant {
++                file: SPRITES,
++                from: "    out.albedo = vec4<f32>(colour.rgb, 1.0);\n",
++                to: "    out.albedo = vec4<f32>(colour.rgb * 0.0, 1.0);\n",
++                what: "every thing drawn black",
++                check: "rule-1",
++                shot: "room-spawn",
++                object: Some("marker"),
++                measure: "light",
++            },
++            Plant {
++                file: SPRITES,
++                from: "    if (material.flags & 1u) != 0u && colour.a < 0.5 {\n",
++                to: "    if true {\n",
++                what: "every thing not drawn",
++                check: "rule-1",
++                shot: "room-spawn",
++                object: Some("marker"),
++                measure: "pixels",
++            },
++        ],
++        "rule-2" => vec![
++            Plant {
++                file: GEOMETRY,
++                from: "        let (left, right) = normals(wall.a, wall.b);\n",
++                to: "        if wall.a.x == 12.0 && wall.b.x == 12.0 && wall.b.y == 9.0 {\n            \
++                     continue;\n        }\n        let (left, right) = normals(wall.a, wall.b);\n",
++                what: "the east wall left out of the room",
++                check: "rule-2-void",
++                shot: "room-spawn",
++                object: None,
++                measure: "pixels",
++            },
++            Plant {
++                file: GEOMETRY,
++                from: "            for (cell, centre) in self.cells(&slab.points) {\n",
++                to: "            for (cell, centre) in self.cells(&slab.points) {\n                \
++                     if !up && centre.x > 5.0 {\n                    continue;\n                \
++                     }\n",
++                what: "the ceiling east of the skylight left out",
++                check: "rule-2-sky",
++                shot: "room-spawn",
++                object: None,
++                measure: "pixels",
++            },
++        ],
++        "rule-3" => vec![Plant {
++            file: "crates/game-testbed-client/src/room.rs",
++            from: "        pitch: view.pitch,\n",
++            to: "        pitch: BAngle(view.pitch.0.wrapping_add(1 << 29)),\n",
++            what: "the camera pitched 45 degrees up",
++            check: "rule-3-floor",
++            shot: "room-spawn",
++            object: None,
++            measure: "share",
++        }],
++        _ => return None,
++    })
++}
++
++/// Runs case `case` against `ws`, a fresh copy of the workspace at `root`:
++/// each of its bugs in turn, each taken out again after its run.
++pub fn run(root: &Path, ws: &Path, case: &str) -> Result<String, String> {
++    let plants = plants(case).ok_or_else(|| format!("unknown case {case}"))?;
++    let rules = ws.join("crates/game-testbed/scenes/room.rules.toml");
++    if !rules.is_file() {
++        return Err(format!(
++            "the copy has no {}: with no rules the test judges nothing",
++            util::rel(ws, &rules)
++        ));
++    }
++    let mut caught = Vec::new();
++    for (index, plant) in plants.iter().enumerate() {
++        let path = ws.join(plant.file);
++        let read =
++            |path: &Path| fs::read_to_string(path).map_err(|e| format!("{}: {e}", plant.file));
++        let write = |text: &str| fs::write(&path, text).map_err(|e| format!("{}: {e}", plant.file));
++        let text = read(&path)?;
++        if text.matches(plant.from).count() != 1 {
++            return Err(format!(
++                "selftest setup: {} does not hold {:?} once",
++                plant.file, plant.from
++            ));
++        }
++        write(&text.replacen(plant.from, plant.to, 1))?;
++        let (succeeded, output) = scene_rules(root, ws, &format!("{case}-{}", index + 1))?;
++        write(&text)?;
++        caught.push(judge(plant, succeeded, &output)?);
++    }
++    Ok(caught.join("\n"))
++}
++
++/// The scene-rules test run in `ws`, requiring an adapter; whether it
++/// passed, and its output, which is also logged under `label`.
++fn scene_rules(root: &Path, ws: &Path, label: &str) -> Result<(bool, String), String> {
++    let mut cmd = util::cargo(ws);
++    cmd.args(["test", "-p", "game-testbed", "--test", "scene_rules"]);
++    if util::on_ci() {
++        cmd.arg("--locked");
++    }
++    cmd.arg("--target-dir")
++        .arg(root.join("target/selftest/target"))
++        .env("ENG_REQUIRE_GPU", "1")
++        .env_remove("ENG_RULES_DIR");
++    let out = cmd
++        .output()
++        .map_err(|e| format!("cannot run cargo test: {e}"))?;
++    let output = format!(
++        "{}{}",
++        String::from_utf8_lossy(&out.stdout),
++        String::from_utf8_lossy(&out.stderr)
++    );
++    let log = root.join(format!("target/agent-logs/xtask-selftest-{label}.log"));
++    let _ = fs::create_dir_all(log.parent().expect("has parent"));
++    let _ = fs::write(&log, &output);
++    Ok((out.status.success(), output))
++}
++
++/// Whether the run with `plant`'s bug failed as it must: on its check, for
++/// its shot and object, with its measure past the limit.
++fn judge(plant: &Plant, succeeded: bool, output: &str) -> Result<String, String> {
++    if succeeded {
++        return Err(format!("the scene-rules test passed with {}", plant.what));
++    }
++    if let Some(line) = output.lines().find(|l| l.contains("[E-NO-ADAPTER]")) {
++        return Err(format!(
++            "{NOT_RUN} {} could not run: the scene-rules test renders, and found no \
++             adapter: {}",
++            plant.check,
++            line.trim()
++        ));
++    }
++    let object = plant.object.map_or(String::new(), |o| format!(" {o}"));
++    let start = format!(
++        "[E-SCENE-RULE] {} {}{object} (tick ",
++        plant.check, plant.shot
++    );
++    // `<measure> <value> <` (or `>`): the measure past its limit.
++    let past = |line: &str| {
++        let Some((_, measures)) = line.split_once("): ") else {
++            return false;
++        };
++        measures.split(", ").any(|m| {
++            let words: Vec<&str> = m.split(' ').collect();
++            words.len() >= 3 && words[0] == plant.measure && matches!(words[2], "<" | ">")
++        })
++    };
++    let caught = output
++        .lines()
++        .map(str::trim)
++        .find(|l| l.starts_with(&start) && past(l));
++    match caught {
++        Some(line) => Ok(format!("rejected ({}): {line}", plant.what)),
++        None => Err(format!(
++            "failed, but not with `{start}…): {} … past its limit` ({}):\n{}",
++            plant.measure,
++            plant.what,
++            util::tail(output, 15)
++        )),
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{judge, plants};
++
++    #[test]
++    fn a_bug_is_caught_only_by_its_own_check_shot_and_measure() {
++        let rule_1 = plants("rule-1").unwrap();
++        let line = "[E-SCENE-RULE] rule-1 room-spawn marker (tick 0): light 0.046 < 0.2, \
++                    pixels 1326 >= 50, contrast 0.5 >= 0.03 (colour ...)";
++        let caught = judge(&rule_1[0], false, &format!("noise\n  {line}\nmore")).unwrap();
++        assert!(caught.contains(line), "{caught}");
++        assert!(
++            judge(&rule_1[0], true, line)
++                .unwrap_err()
++                .contains("passed")
++        );
++        // Another shot, object, measure or rule: not this bug's catch.
++        for other in [
++            line.replace("room-spawn", "room-step"),
++            line.replace("marker", "barrel"),
++            line.replace("light 0.046 < 0.2", "light 0.5 >= 0.2"),
++            line.replace("rule-1", "rule-2-void"),
++            line.replace("[E-SCENE-RULE] ", ""),
++        ] {
++            let missed = judge(&rule_1[0], false, &other).unwrap_err();
++            assert!(missed.contains("failed, but not with"), "{missed}");
++        }
++        // The second bug is the pixels': a light failure is not its catch.
++        assert!(judge(&rule_1[1], false, line).is_err());
++        let gone = "[E-SCENE-RULE] rule-1 room-spawn marker (tick 0): pixels 0 < 50, contrast \
++                    none < 0.03, light none < 0.2 (colour none ...)";
++        assert!(judge(&rule_1[1], false, gone).is_ok());
++        let rule_2 = plants("rule-2").unwrap();
++        let void = "[E-SCENE-RULE] rule-2-void room-spawn (tick 0): pixels 412 > 0 (pixels ...)";
++        assert!(judge(&rule_2[0], false, void).is_ok());
++        let sky = void.replace("rule-2-void", "rule-2-sky");
++        assert!(judge(&rule_2[0], false, &sky).is_err());
++        assert!(judge(&rule_2[1], false, &sky).is_ok());
++        assert!(judge(&rule_2[1], false, void).is_err());
++        let rule_3 = plants("rule-3").unwrap();
++        let floor = "[E-SCENE-RULE] rule-3-floor room-spawn (tick 0): share 0 < 0.1 (of ...)";
++        assert!(judge(&rule_3[0], false, floor).is_ok());
++        assert!(judge(&rule_3[0], false, &floor.replace("-floor", "-above")).is_err());
++        let none = judge(&rule_3[0], false, "[E-NO-ADAPTER] no adapter").unwrap_err();
++        assert!(none.starts_with(crate::selftest::NOT_RUN), "{none}");
++        assert!(plants("rule-4").is_none());
++    }
++}
+diff --git a/xtask/src/selftest_tests.rs b/xtask/src/selftest_tests.rs
+index 1bdf2f8a8605eb2982550239f04f03146a310616..f9ad8a0736e7241c14aadc24bb140a7834bf7124 100644
+--- a/xtask/src/selftest_tests.rs
++++ b/xtask/src/selftest_tests.rs
+@@ -21,3 +21,28 @@ fn the_ban_must_name_the_crate_and_its_user() {
+         assert!(other.contains("but not with error[banned]"), "{other}");
+     }
+ }
++
++/// A copy is modified when it is made, not when its source was: cargo
++/// must not take a copy's crate for one built from another case's copy.
++#[test]
++fn a_copy_is_new_to_cargo() {
++    use std::time::{Duration, SystemTime};
++    let dir = std::env::temp_dir().join(format!("xtask-selftest-copy-{}", std::process::id()));
++    let (root, ws) = (dir.join("root"), dir.join("ws"));
++    std::fs::create_dir_all(root.join("crates")).unwrap();
++    let file = root.join("crates/old.rs");
++    std::fs::write(&file, "// old\n").unwrap();
++    let long_ago = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
++    let source = std::fs::File::options().write(true).open(&file).unwrap();
++    source.set_modified(long_ago).unwrap();
++    let before = SystemTime::now() - Duration::from_secs(1);
++    super::copy(&root, &ws, &file).unwrap();
++    let copied = ws.join("crates/old.rs");
++    assert_eq!(std::fs::read_to_string(&copied).unwrap(), "// old\n");
++    let modified = std::fs::metadata(&copied).unwrap().modified().unwrap();
++    assert!(
++        modified >= before,
++        "{modified:?} is the source's {long_ago:?}"
++    );
++    let _ = std::fs::remove_dir_all(&dir);
++}

@@ -1067,16 +1067,36 @@ sorted, in one fixed layout, read back strictly by `FrameRecord::parse`.
     `dist` step, on `ubuntu-24.04`, `windows-2025` and `macos-26`, unpacks
     it and runs the binary.
   - **New steps:** `test`'s `collision`, `movement`, `sim-data`,
-    `render-graph`, `sprites` and `mouse-look`; `native`'s `window-room`,
-    `look`, `frame-record`, `scene-rules`, `poses` and `dist`, with
-    `gpu-budgets` also rendering a room shot under `[gpu.first_person]`,
-    `proof-video` adding `room.apng`, and a clippy step for the shim on
-    `macos-26`; `replay` reading each scenario's `map` from
-    `scenarios.toml`, with the room's three scenarios and their streams.
+    `render-graph`, `sprites` and `mouse-look` (`xtask/src/ci_harness.rs`
+    names each one's test files); `native`'s `poses`, `look`,
+    `frame-record`, `scene-rules`, `window-room` and `dist`
+    (`ci_native_fps.rs`), with `gpu-budgets` also rendering a room shot
+    under `[gpu.first_person]` and checking its `pass_times` and
+    `transient_textures`, `proof-video` adding `room.apng`, and
+    `clippy-shim` on `macos-26`; `lint`'s `palette`
+    (`crates/game-testbed-client/palettes/room.gpl` equals its script's
+    output); `summary`'s `bench-duration` and
+    `mutants-duration` (`[ci] bench_job_minutes`, `mutants_job_minutes`);
+    `replay` reading each scenario's `map` from `scenarios.toml`, with
+    the room's three scenarios and their streams. The native job turns
+    Mesa's shader cache off job-wide (`MESA_SHADER_CACHE_DISABLE`), as
+    the selftest job does, and uploads `frame-candidates-<runner>`,
+    `scene-rules-<runner>` and, from `ubuntu-24.04`, `proof-video` (both
+    videos, kept out of `report-native-<runner>`); the summary downloads
+    only the `hashes-*` and `report-*` artifacts.
   - **New selftest cases:** `unsafe-outside-shim` (`arch-check` scans
-    every Rust file for an allowed `unsafe_code` outside the shim's file),
-    `gcmouse-outside-shim` (`deny.toml`'s wrapper ban), `docs-stale-path`,
-    `mutant-missed`, and the scene rules' and planted render bugs' cases.
+    every Rust file of every workspace crate, `[E-ARCH-UNSAFE]`: the name
+    `unsafe_code` only inside `deny(…)` or `forbid(…)`, and no `$` a
+    macro could fill with a lint (in an attribute naming `allow`, `warn`
+    or `expect`, or one that is itself a macro variable), except the
+    leading `#![allow(unsafe_code)]` of the one file
+    `architecture.toml`'s `unsafe_file` names, which declares no module
+    or macro; no `include`, by any name; every `#[path]` naming a
+    workspace crate's Rust file without a backslash, never that one, and
+    none inside an inline module; thirteen plants, each matched to its
+    own finding), `gcmouse-outside-shim` (`[floor]` and
+    `deny.toml`'s wrapper ban), `docs-stale-path`, `mutant-missed`,
+    `rule-1` to `rule-3` and `render-bug-1` to `render-bug-12`.
   - `docs/rungs/current.txt` becomes `2` in the same commit, so the
     native-steps test reads rung 2's checks only once its steps exist.
 - The probe (`eng-cli`, linked by every game) runs `run`, `dump-world`,
@@ -1157,10 +1177,15 @@ and `gpu`. `ticks_requested` is `null` for a `play` without `--ticks`.
   the first). `play` adds `surface_format`, the format its surface got
   (`Bgra8UnormSrgb`, or `Bgra8Unorm` drawn through an sRGB view). For
   `shot` and `video` it is an object even when a budget stopped the run
-  before the first frame (`frames` 0). G5 adds criterion 21's keys beside
-  them: per-pass GPU times (`null` without timestamps) and the pool's
-  transient texture count; `per_frame`, `tier` and the capability names
-  stay as `shot_video.rs` pins them.
+  before the first frame (`frames` 0). `shot` and `video` also write
+  criterion 21's keys, from their last frame, the only one timed
+  (`Targets::time_passes`; a video's last frame is at the last multiple
+  of `--every`): `pass_times`, each pass that ran in order with its
+  `nanoseconds` (`null` for a pass the GPU left untimed; the list is
+  `null` without timestamp queries, and when a budget stopped the run
+  before that frame), and `transient_textures`, the targets' pool size;
+  `per_frame`, `tier` and the capability names stay as `shot_video.rs`
+  pins them.
 - Stability follows the stamp's rule: keys may be added within a version,
   as `gpu` and the `[gpu]` limits were in rung 1b, and readers look keys up
   by name. Renaming, removing or changing a key bumps `report_version`.

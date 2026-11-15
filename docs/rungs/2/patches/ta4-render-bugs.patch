@@ -240,6 +240,34 @@ index 0000000000000000000000000000000000000000..c5a7af42ccbaaf35f9458c451782d0c9
 +     let index = cell.r + 32u * cell.g + 1024u * cell.b;
 +     let texel = vec2<u32>(index % 64u, (index % 4096u) / 64u);
 +     let layer = frame.switches.y + index / 4096u;
+diff --git a/xtask/selftest/render-bugs/known-misses.toml b/xtask/selftest/render-bugs/known-misses.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..5b390986bfbc99f782fb49f2732a337a580f4adf
+--- /dev/null
++++ b/xtask/selftest/render-bugs/known-misses.toml
+@@ -0,0 +1,22 @@
++# The planted render bugs no general check catches, as the owner accepts
++# them (rung 2, plan addition A4; criterion `check-misses`: "every planted
++# bug fails a check that is not hard-coded to one scene, or is a known miss
++# the owner accepted"). PROTECTED: the owner's alone, like the rest of
++# xtask/.
++#
++# xtask's `selftest_render_bugs.rs` names each known miss and why it is one.
++# Until this file accepts it, its `render-bug-<n>` case fails, "awaiting the
++# owner's acceptance"; once accepted it passes, its console line reading
++# "ok (known miss)", and the room's own check must still catch it.
++#
++# An entry, one per accepted bug:
++#
++#   [[accepted]]
++#   patch = "03-texture-tag-linear.patch"   # the bug, as its patch is named
++#   reason = "..."                           # why the owner accepts the miss
++#   accepted = "YYYY-MM-DD"                  # the day
++#   accepted_by = "..."                      # who
++#
++# An entry for a bug that a general check catches, or that is not there,
++# fails every case. None is accepted yet: the owner decides at G5.
++version = 1
 diff --git a/xtask/src/main.rs b/xtask/src/main.rs
 index 0dc409da5819a062d86d8e76aea06b2e41f0ee2b..e9afcf4b9e7ae605c52b3f89c59b90da9c926c57 100644
 --- a/xtask/src/main.rs
@@ -253,22 +281,27 @@ index 0dc409da5819a062d86d8e76aea06b2e41f0ee2b..e9afcf4b9e7ae605c52b3f89c59b90da
  mod size;
  mod stamp;
 diff --git a/xtask/src/selftest.rs b/xtask/src/selftest.rs
-index 32aa2b97e9b13cc019471a7b1e901cd385f60699..a92e637439a795633347b660abbb4c3799623a9c 100644
+index 32aa2b97e9b13cc019471a7b1e901cd385f60699..2d042a546db5edacae4e297d9d96221ea9568033 100644
 --- a/xtask/src/selftest.rs
 +++ b/xtask/src/selftest.rs
-@@ -6,7 +6,9 @@
+@@ -6,7 +6,10 @@
  //! too), it empties and rewrites `target/golden-candidates/`. A case that
  //! needs what this machine lacks (cargo-deny, the pinned lavapipe) says it
  //! could not run: a failure only on CI or with `ENG_REQUIRE_GPU=1`, as for
 -//! GPU tests, and never a pass (`selftest_verdict.rs`).
 +//! GPU tests, and never a pass (`selftest_verdict.rs`). `render-bug-1` to
 +//! `render-bug-12` each plant a render bug in a copy and run the checks
-+//! that should catch it, GPU tests among them (`selftest_render.rs`).
++//! that should catch it, GPU tests among them, building into a target
++//! directory of their own (`selftest_render.rs`).
  
  use std::fs;
  use std::io::Write;
-@@ -22,7 +24,7 @@ mod verdict;
- pub use verdict::NOT_RUN;
+@@ -19,10 +22,10 @@ use crate::util::{self, Steps};
+ 
+ #[path = "selftest_verdict.rs"]
+ mod verdict;
+-pub use verdict::NOT_RUN;
++pub use verdict::{KNOWN_MISS, NOT_RUN};
  use verdict::{judged, last_line, outcome, status, strict};
  
 -pub const CASES: [&str; 22] = [
@@ -276,7 +309,7 @@ index 32aa2b97e9b13cc019471a7b1e901cd385f60699..a92e637439a795633347b660abbb4c37
      "float-sin",
      "float-min",
      "allow-escape",
-@@ -46,6 +48,20 @@ pub const CASES: [&str; 22] = [
+@@ -46,6 +49,20 @@ pub const CASES: [&str; 22] = [
      "rwh-outside-seam",
      "core-depends-on-gpu",
      "golden-edit",
@@ -297,7 +330,7 @@ index 32aa2b97e9b13cc019471a7b1e901cd385f60699..a92e637439a795633347b660abbb4c37
  ];
  
  /// The cases `cargo xtask selftest [CASE]` names: all with no argument.
-@@ -222,6 +238,9 @@ fn run_case(root: &Path, case: &str) -> Result<String, String> {
+@@ -222,6 +239,9 @@ fn run_case(root: &Path, case: &str) -> Result<String, String> {
              |ws| add_dependency(ws, "eng-sim", "eng-gpu"),
          ),
          "golden-edit" => crate::selftest_golden::run(root),
@@ -309,49 +342,63 @@ index 32aa2b97e9b13cc019471a7b1e901cd385f60699..a92e637439a795633347b660abbb4c37
              let input = serde_json::json!({
 diff --git a/xtask/src/selftest_render.rs b/xtask/src/selftest_render.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..26a8e3b47f048a2ebb143a479bcb2b17a337db6c
+index 0000000000000000000000000000000000000000..c461a201d06092918a6b5e604959a715292a53f7
 --- /dev/null
 +++ b/xtask/src/selftest_render.rs
-@@ -0,0 +1,461 @@
+@@ -0,0 +1,470 @@
 +//! `cargo xtask selftest render-bug-<n>` (rung 2, addition A4, criterion
 +//! `check-misses`): twelve planted render bugs, small mistakes a builder
 +//! could make anywhere from the room's extraction to the palette, written by
 +//! an agent that did not build the renderer. Each is a patch in
-+//! `xtask/selftest/render-bugs/`, and exists nowhere else.
++//! `xtask/selftest/render-bugs/`, and exists nowhere else; [`BUGS`]
++//! (`selftest_render_bugs.rs`) lists them with the checks that catch them.
 +//!
 +//! A case copies the workspace to `target/selftest/render-bug-<n>/`,
-+//! applies its bug there, and runs the bug's general checks in turn until
-+//! one fails: tests whose verdict comes from a CPU model or a rule that
-+//! holds for every scene, so they would catch the bug in a scene nobody
-+//! prepared, not tests that know facts of the testbed's room (where an
-+//! object is, which shot it is in, a golden). [`BUGS`] names them, from the
-+//! bug-by-check run in `docs/rungs/2/PROGRESS.md` (TA4). The case passes
-+//! when one of them fails as a test, and fails when all of them pass, or
-+//! when the bug no longer applies or builds: refresh its patch with the
-+//! code it plants into.
++//! plants its bug there and runs the bug's checks in turn until one
++//! catches it: general checks, whose verdict comes from a CPU model or a
++//! rule that holds for every scene, not tests that know facts of the
++//! testbed's room. A check catches the bug only if it fails as a test with
++//! the message it is listed with (`expect`), and not on an adapter, shader
++//! or graph error; then, with the bug taken out again, the same check must
++//! pass (the control run). The case fails when no check catches its bug,
++//! when a check fails for another reason, or when the bug no longer
++//! applies: refresh its patch with the code it plants into (quick's xtask
++//! tests say so first).
 +//!
-+//! A bug no general check catches is a **known miss**, listed with the
-+//! reason, which the owner accepts by applying this file: its case runs the
-+//! room's own checks that catch it instead, so that a miss is at least
-+//! caught where the room is, and says it is a known miss.
++//! **Known misses.** A bug no general check catches is a known miss: its
++//! case runs the room's own check instead, and passes only once the owner
++//! accepts the miss in `xtask/selftest/render-bugs/known-misses.toml`
++//! (protected, the owner's). Until then it fails, awaiting the owner's
++//! acceptance; once accepted, its console line reads "ok (known miss)".
 +//!
-+//! The checks pass on the tree itself (the `test` and `native` jobs run
-+//! them), so a check that fails here fails for the bug. GPU checks run with
-+//! `ENG_REQUIRE_GPU=1`; a case whose check finds no adapter could not run
-+//! ([`NOT_RUN`]), a failure only in a strict run. Builds go to
-+//! `target/selftest/target`, as the clippy cases' do, which the cases
-+//! share: see `mark_planted` for what keeps one case's bug out of the
-+//! next one's build.
++//! GPU checks run with `ENG_REQUIRE_GPU=1` and Mesa's shader cache off; a
++//! case whose check finds no adapter could not run ([`NOT_RUN`]), a failure
++//! only in a strict run. The cases build into their own target directory,
++//! `target/selftest/render-target`, so no other case's copies can stand in
++//! for theirs, and theirs for no other's.
 +
 +use std::fs;
 +use std::path::Path;
 +use std::time::SystemTime;
 +
-+use crate::selftest::NOT_RUN;
++use serde::Deserialize;
++
++use crate::selftest::{KNOWN_MISS, NOT_RUN};
 +use crate::util;
 +
 +#[path = "selftest_render_apply.rs"]
 +mod patch_file;
++#[path = "selftest_render_bugs.rs"]
++mod table;
++pub(crate) use table::BUGS;
++
++/// Where the cases build.
++const TARGET_DIR: &str = "target/selftest/render-target";
++/// The owner's acceptances of known misses.
++const KNOWN_MISSES: &str = "xtask/selftest/render-bugs/known-misses.toml";
++/// Errors that stop a check before it judges anything: the check did not
++/// run, whatever its test says.
++const NOT_A_VERDICT: [&str; 3] = ["[E-GPU]", "[E-SHADER]", "[E-GRAPH]"];
 +
 +/// Where a check's test lives.
 +#[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -362,14 +409,63 @@ index 0000000000000000000000000000000000000000..26a8e3b47f048a2ebb143a479bcb2b17
 +    Test(&'static str),
 +}
 +
-+/// One test that catches a bug: run as `cargo test -p <package> <target>
-+/// -- --exact <test>`.
++/// What a check looks at: the code's own results, or what a frame shows.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum Kind {
++    /// A unit test of the code the bug is in (CPU only).
++    Unit,
++    /// A check of what is drawn: rendered images, depth, `info` or records.
++    Seeing,
++}
++
++/// One test that catches a bug: `cargo test -p <package> <target> --
++/// --exact <test>`, failing with `expect` in its message.
 +#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 +pub(crate) struct Check {
++    pub kind: Kind,
 +    pub package: &'static str,
 +    pub target: Target,
 +    /// The test's full name, as `--exact` matches it.
 +    pub test: &'static str,
++    /// A piece of its failure message on this bug.
++    pub expect: &'static str,
++    /// What brings the check, when it is not on `main` yet.
++    pub needs: Option<&'static str>,
++}
++
++impl Check {
++    pub(crate) const fn lib(
++        kind: Kind,
++        package: &'static str,
++        test: &'static str,
++        expect: &'static str,
++    ) -> Self {
++        Self {
++            kind,
++            package,
++            target: Target::Lib,
++            test,
++            expect,
++            needs: None,
++        }
++    }
++
++    pub(crate) const fn test(
++        kind: Kind,
++        package: &'static str,
++        file: &'static str,
++        test: &'static str,
++        expect: &'static str,
++    ) -> Self {
++        Self {
++            kind,
++            package,
++            target: Target::Test(file),
++            test,
++            expect,
++            needs: None,
++        }
++    }
 +}
 +
 +/// A planted bug and what catches it.
@@ -386,199 +482,6 @@ index 0000000000000000000000000000000000000000..26a8e3b47f048a2ebb143a479bcb2b17
 +    pub known_miss: Option<&'static str>,
 +}
 +
-+const fn lib(package: &'static str, test: &'static str) -> Check {
-+    Check {
-+        package,
-+        target: Target::Lib,
-+        test,
-+    }
-+}
-+
-+const fn test(package: &'static str, file: &'static str, test: &'static str) -> Check {
-+    Check {
-+        package,
-+        target: Target::Test(file),
-+        test,
-+    }
-+}
-+
-+const CLIENT: &str = "game-testbed-client";
-+const RENDER: &str = "eng-render";
-+
-+/// The bugs, in the pipeline's order, `render-bug-<n>` at `n - 1`.
-+pub(crate) const BUGS: [Bug; 12] = [
-+    Bug {
-+        patch: "01-thing-skipped.patch",
-+        what: "the room's extraction drops its first thing (the marker)",
-+        checks: &[lib(
-+            CLIENT,
-+            "room::tests::each_thing_is_a_sprite_in_the_region_its_feet_stand_in",
-+        )],
-+        known_miss: Some(
-+            "what a scene should hold is the scene's own fact: only the room's tests, \
-+             its pinned counters and its goldens know the marker is there",
-+        ),
-+    },
-+    Bug {
-+        patch: "02-slab-sides-inward.patch",
-+        what: "slab sides face into the slab: the pillar is see-through from outside",
-+        checks: &[lib(
-+            CLIENT,
-+            "room::geometry::tests::no_two_faces_facing_the_same_way_overlap_in_one_plane",
-+        )],
-+        known_miss: None,
-+    },
-+    Bug {
-+        patch: "03-texture-tag-linear.patch",
-+        what: "the room's surface textures, sRGB codes, are tagged linear",
-+        checks: &[lib(
-+            CLIENT,
-+            "room::tests::the_world_has_the_surfaces_then_each_things_frames_and_the_palette",
-+        )],
-+        known_miss: Some(
-+            "a texture's encoding is its data's fact: the light model reads the albedo \
-+             the GPU decoded, so only the room's pinned tags and its goldens see it",
-+        ),
-+    },
-+    Bug {
-+        patch: "04-offset-rounded-first.patch",
-+        what: "a record's offset from the eye is rounded to f32 before the subtraction",
-+        checks: &[
-+            lib("eng-gpu", "scene::tests::the_offset_is_taken_in_f64"),
-+            test(
-+                RENDER,
-+                "first_person",
-+                "the_room_a_billion_meters_out_renders_as_it_does_at_the_origin",
-+            ),
-+        ],
-+        known_miss: None,
-+    },
-+    Bug {
-+        patch: "05-sprite-sector-off-by-one.patch",
-+        what: "a sprite's rotation sectors start at its facing instead of centring on it",
-+        checks: &[
-+            test(
-+                RENDER,
-+                "sprite_rotation",
-+                "a_boundary_goes_to_the_counter_clockwise_sector",
-+            ),
-+            test(RENDER, "sprite_rotation", "the_rule_matches_the_geometry"),
-+        ],
-+        known_miss: None,
-+    },
-+    Bug {
-+        patch: "06-mirror-ignored.patch",
-+        what: "a five-rotation sheet's frames 5 to 7 are drawn unmirrored",
-+        checks: &[
-+            lib(
-+                RENDER,
-+                "first_person::sprites::tests::each_sprite_takes_two_records_its_place_and_its_shape",
-+            ),
-+            test(
-+                RENDER,
-+                "sprites",
-+                "a_five_rotation_sheet_shows_rotations_5_to_7_mirrored",
-+            ),
-+        ],
-+        known_miss: None,
-+    },
-+    Bug {
-+        patch: "07-sprites-no-depth-write.patch",
-+        what: "sprites write no depth: light, fog and later sprites see what is behind them",
-+        checks: &[
-+            test(
-+                RENDER,
-+                "sprites",
-+                "the_hall_renders_its_sprites_as_the_cpu_casts_them",
-+            ),
-+            test(
-+                RENDER,
-+                "sprites_look",
-+                "light_and_fog_reach_a_sprite_by_its_region_without_contrast",
-+            ),
-+        ],
-+        known_miss: None,
-+    },
-+    Bug {
-+        patch: "08-sprite-info-swap.patch",
-+        what: "a sprite's info word holds its class where its region goes, and back",
-+        checks: &[
-+            test(
-+                RENDER,
-+                "sprites",
-+                "the_hall_renders_its_sprites_as_the_cpu_casts_them",
-+            ),
-+            test(
-+                RENDER,
-+                "sprites_look",
-+                "light_and_fog_reach_a_sprite_by_its_region_without_contrast",
-+            ),
-+        ],
-+        known_miss: None,
-+    },
-+    Bug {
-+        patch: "09-region-light-transposed.patch",
-+        what: "the light pass reads region r's light at r % 4, r / 4: regions 1 to 3 lit full",
-+        checks: &[
-+            test(
-+                RENDER,
-+                "light_model",
-+                "the_light_model_is_the_cpus_on_every_unambiguous_pixel",
-+            ),
-+            test(
-+                RENDER,
-+                "first_person",
-+                "a_known_room_renders_with_depth_info_and_sky_as_the_cpu_computes_them",
-+            ),
-+        ],
-+        known_miss: None,
-+    },
-+    Bug {
-+        patch: "10-fog-ahead-not-along-ray.patch",
-+        what: "fog takes the distance ahead, not along the pixel's ray: too thin off centre",
-+        checks: &[
-+            test(
-+                RENDER,
-+                "light_model",
-+                "fog_is_the_cpus_mix_toward_each_regions_colour",
-+            ),
-+            test(
-+                RENDER,
-+                "look_fog_tone",
-+                "fog_moves_monotonically_toward_its_colour_with_depth_along_probe_rows",
-+            ),
-+        ],
-+        known_miss: None,
-+    },
-+    Bug {
-+        patch: "11-tone-start-compression.patch",
-+        what: "the tone curve's compression starts at 0.8 + F90, not 0.8 - F90",
-+        checks: &[
-+            test(
-+                RENDER,
-+                "look_fog_tone",
-+                "the_tone_curve_is_within_one_level_of_the_cpu_reference_on_sky_ramps",
-+            ),
-+            test(
-+                RENDER,
-+                "sprites",
-+                "each_of_the_eight_rotations_shows_from_its_own_view",
-+            ),
-+        ],
-+        known_miss: None,
-+    },
-+    Bug {
-+        patch: "12-palette-cell-rounded.patch",
-+        what: "the palette pass rounds each code to the nearest table cell",
-+        checks: &[test(
-+            RENDER,
-+            "look_checks",
-+            "with_the_palette_on_every_pixel_is_the_palette_colour_the_cpu_table_gives",
-+        )],
-+        known_miss: None,
-+    },
-+];
-+
 +/// The bug of case `render-bug-<n>`, if `case` is one.
 +pub(crate) fn bug(case: &str) -> Option<(usize, &'static Bug)> {
 +    let n: usize = case.strip_prefix("render-bug-")?.parse().ok()?;
@@ -589,21 +492,20 @@ index 0000000000000000000000000000000000000000..26a8e3b47f048a2ebb143a479bcb2b17
 +/// Runs case `render-bug-<n>` in `ws`, a fresh copy of the workspace.
 +pub(crate) fn run(root: &Path, ws: &Path, case: &str) -> Result<String, String> {
 +    let (n, bug) = bug(case).ok_or_else(|| format!("unknown case {case}"))?;
++    let acceptance = match bug.known_miss {
++        Some(_) => accepted(root, bug.patch)?,
++        None => None,
++    };
 +    keep_times(root, ws)?;
 +    mark_planted(root, ws)?;
-+    apply(root, ws, bug.patch)?;
++    let planted = apply(root, ws, bug.patch)?;
++    let fail = |what: String| format!("render bug {n} ({}): {what}", bug.patch);
 +    let mut passed = Vec::new();
 +    for check in bug.checks {
-+        let (succeeded, output) = run_check(root, ws, check)?;
-+        match verdict(succeeded, &output, check) {
++        match verdict(&run_check(root, ws, check)?, check) {
 +            Verdict::Caught(why) => {
-+                let check = name(check);
-+                return Ok(match bug.known_miss {
-+                    None => format!("caught by a general check: {check} ({why})"),
-+                    Some(miss) => format!(
-+                        "a known miss ({miss}), caught by the room's check: {check} ({why})"
-+                    ),
-+                });
++                control(root, ws, &planted, check).map_err(fail)?;
++                return caught(bug, check, &why, acceptance.as_ref()).map_err(fail);
 +            }
 +            Verdict::Passed => passed.push(name(check)),
 +            Verdict::NoAdapter(why) => {
@@ -613,20 +515,56 @@ index 0000000000000000000000000000000000000000..26a8e3b47f048a2ebb143a479bcb2b17
 +                ));
 +            }
 +            Verdict::DidNotRun(why) => {
-+                return Err(format!(
-+                    "render bug {n} ({}): {} did not run: {why}",
-+                    bug.patch,
-+                    name(check)
-+                ));
++                let needs = check
++                    .needs
++                    .map_or(String::new(), |n| format!(" (the check comes with {n})"));
++                return Err(fail(format!("{} did not run{needs}: {why}", name(check))));
 +            }
 +        }
 +    }
-+    Err(format!(
-+        "render bug {n} ({}: {}) passed {}",
-+        bug.patch,
-+        bug.what,
-+        passed.join(", ")
-+    ))
++    Err(fail(format!("{} passed {}", bug.what, passed.join(", "))))
++}
++
++/// What a case that caught its bug says, or why it still fails: a known
++/// miss passes only once the owner has accepted it.
++fn caught(
++    bug: &Bug,
++    check: &Check,
++    why: &str,
++    acceptance: Option<&Accepted>,
++) -> Result<String, String> {
++    let kind = match check.kind {
++        Kind::Unit => "unit test",
++        Kind::Seeing => "seeing check",
++    };
++    let check = name(check);
++    match (bug.known_miss, acceptance) {
++        (None, _) => Ok(format!("caught by a general {kind}: {check} ({why})")),
++        (Some(_), Some(a)) => Ok(format!(
++            "{KNOWN_MISS} accepted by {} on {} ({}); the room's {kind} {check} catches it ({why})",
++            a.accepted_by, a.accepted, a.reason
++        )),
++        (Some(miss), None) => Err(format!(
++            "awaiting the owner's acceptance of a known miss in {KNOWN_MISSES}: {miss}; \
++             meanwhile the room's {kind} {check} catches it ({why})"
++        )),
++    }
++}
++
++/// The control run: with the bug taken out of `ws` again, `check` must
++/// pass, or its failure was not the bug's.
++fn control(root: &Path, ws: &Path, planted: &[String], check: &Check) -> Result<(), String> {
++    for path in planted {
++        let original = fs::read(root.join(path)).map_err(|e| format!("{path}: {e}"))?;
++        fs::write(ws.join(path), original).map_err(|e| format!("{path}: {e}"))?;
++    }
++    match verdict(&run_check(root, ws, check)?, check) {
++        Verdict::Passed => Ok(()),
++        other => Err(format!(
++            "{} fails without the bug too, so its failure was not the bug's: {other:?}",
++            name(check)
++        )),
++    }
 +}
 +
 +/// A check's name as the bug-by-check table gives it.
@@ -635,6 +573,78 @@ index 0000000000000000000000000000000000000000..26a8e3b47f048a2ebb143a479bcb2b17
 +        Target::Lib => format!("{} (lib) {}", check.package, check.test),
 +        Target::Test(file) => format!("{} tests/{file}.rs {}", check.package, check.test),
 +    }
++}
++
++/// The owner's `known-misses.toml`: which known misses they accepted.
++#[derive(Debug, Deserialize)]
++#[serde(deny_unknown_fields)]
++struct KnownMisses {
++    version: u32,
++    #[serde(default)]
++    accepted: Vec<Accepted>,
++}
++
++/// One known miss the owner accepted.
++#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub(crate) struct Accepted {
++    /// The bug's patch, as [`BUGS`] names it.
++    pub patch: String,
++    /// Why it is acceptable, in the owner's words.
++    pub reason: String,
++    /// The day, `YYYY-MM-DD`.
++    pub accepted: String,
++    pub accepted_by: String,
++}
++
++/// The owner's acceptances, read strictly: each names a known miss of
++/// [`BUGS`] once, with a reason, a date and who accepted it.
++pub(crate) fn acceptances(text: &str) -> Result<Vec<Accepted>, String> {
++    let file: KnownMisses = toml::from_str(text).map_err(|e| format!("{KNOWN_MISSES}: {e}"))?;
++    if file.version != 1 {
++        return Err(format!("{KNOWN_MISSES}: version {}, not 1", file.version));
++    }
++    let mut seen = Vec::new();
++    for a in &file.accepted {
++        let bug = BUGS.iter().find(|b| b.patch == a.patch);
++        let problem = match bug {
++            None => Some("names no planted bug".to_string()),
++            Some(b) if b.known_miss.is_none() => {
++                Some("is caught by a general check, so it is no known miss".into())
++            }
++            Some(_) if seen.contains(&a.patch) => Some("is accepted twice".into()),
++            Some(_) if a.reason.trim().is_empty() || a.accepted_by.trim().is_empty() => {
++                Some("needs a reason and who accepted it".into())
++            }
++            Some(_) if !is_date(&a.accepted) => Some(format!(
++                "has `accepted = {:?}`, not a date YYYY-MM-DD",
++                a.accepted
++            )),
++            Some(_) => None,
++        };
++        if let Some(problem) = problem {
++            return Err(format!("{KNOWN_MISSES}: {} {problem}", a.patch));
++        }
++        seen.push(a.patch.clone());
++    }
++    Ok(file.accepted)
++}
++
++fn is_date(text: &str) -> bool {
++    let b = text.as_bytes();
++    b.len() == 10
++        && b[4] == b'-'
++        && b[7] == b'-'
++        && b.iter()
++            .enumerate()
++            .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
++}
++
++/// The owner's acceptance of known miss `patch`, if there is one.
++fn accepted(root: &Path, patch: &str) -> Result<Option<Accepted>, String> {
++    let text =
++        fs::read_to_string(root.join(KNOWN_MISSES)).map_err(|e| format!("{KNOWN_MISSES}: {e}"))?;
++    Ok(acceptances(&text)?.into_iter().find(|a| a.patch == patch))
 +}
 +
 +/// The text of `xtask/selftest/render-bugs/<patch>`.
@@ -664,11 +674,11 @@ index 0000000000000000000000000000000000000000..26a8e3b47f048a2ebb143a479bcb2b17
 +
 +/// Marks, in the copy `ws`, every file that any bug plants into as changed
 +/// now. Cargo knows a workspace member by its path inside the workspace,
-+/// not by where the copy is, so in the shared target directory an earlier
-+/// case's build of a crate, its bug in it, would otherwise pass for fresh
-+/// wherever the copy has the tree's older times ([`keep_times`]). Only
-+/// these files are ever planted into, so their crates are the only ones an
-+/// earlier case can have built differently.
++/// not by where the copy is, so in the cases' shared target directory an
++/// earlier case's build of a crate, its bug in it, would otherwise pass for
++/// fresh wherever the copy has the tree's older times ([`keep_times`]).
++/// Only these files are ever planted into, so their crates are the only
++/// ones an earlier case can have built differently.
 +fn mark_planted(root: &Path, ws: &Path) -> Result<(), String> {
 +    let now = SystemTime::now();
 +    for bug in &BUGS {
@@ -686,10 +696,10 @@ index 0000000000000000000000000000000000000000..26a8e3b47f048a2ebb143a479bcb2b17
 +}
 +
 +/// Plants `xtask/selftest/render-bugs/<patch>` in the copy `ws`
-+/// (`selftest_render_apply.rs`).
-+fn apply(root: &Path, ws: &Path, patch: &str) -> Result<(), String> {
++/// (`selftest_render_apply.rs`); returns the files it changed.
++fn apply(root: &Path, ws: &Path, patch: &str) -> Result<Vec<String>, String> {
 +    let text = read_patch(root, patch)?;
-+    patch_file::apply(ws, &text).map(|_| ()).map_err(|e| {
++    patch_file::apply(ws, &text).map_err(|e| {
 +        format!("{patch} no longer applies (refresh it against the code it plants into): {e}")
 +    })
 +}
@@ -706,9 +716,12 @@ index 0000000000000000000000000000000000000000..26a8e3b47f048a2ebb143a479bcb2b17
 +        cmd.arg("--locked");
 +    }
 +    cmd.arg("--target-dir")
-+        .arg(root.join("target/selftest/target"))
++        .arg(root.join(TARGET_DIR))
 +        .args(["--", "--exact", check.test])
-+        .env("ENG_REQUIRE_GPU", "1");
++        .env("ENG_REQUIRE_GPU", "1")
++        // As TA1's frame-record shots run: no cache can stand in for a
++        // shader the bug changed.
++        .env("MESA_SHADER_CACHE_DISABLE", "true");
 +    let out = cmd
 +        .output()
 +        .map_err(|e| format!("cannot run cargo test: {e}"))?;
@@ -725,38 +738,67 @@ index 0000000000000000000000000000000000000000..26a8e3b47f048a2ebb143a479bcb2b17
 +/// What one check's run says about the bug.
 +#[derive(Debug, PartialEq, Eq)]
 +enum Verdict {
-+    /// The check failed as a test: the bug is caught. Its first lines.
++    /// The check failed as a test, with its bug's message: caught. Its
++    /// first lines.
 +    Caught(String),
 +    /// The check ran and passed.
 +    Passed,
 +    /// The check needs an adapter this machine lacks.
 +    NoAdapter(String),
-+    /// It did not run as a test: no build, or the test is gone.
++    /// It judged nothing: no build, no such test, an adapter, shader or
++    /// graph error, or a failure without its bug's message.
 +    DidNotRun(String),
 +}
 +
-+fn verdict(succeeded: bool, output: &str, check: &Check) -> Verdict {
++fn verdict((succeeded, output): &(bool, String), check: &Check) -> Verdict {
 +    let ran = format!("test {} ... ", check.test);
 +    let line = output.lines().find(|l| l.starts_with(&ran));
 +    match (succeeded, line) {
 +        (true, Some(l)) if l.ends_with("ok") => Verdict::Passed,
 +        (true, _) => Verdict::DidNotRun(format!("`{}` is not a test of its target", check.test)),
 +        (false, Some(l)) if l.ends_with("FAILED") => {
++            let section = section(output, check.test);
 +            if let Some(why) = output.lines().find(|l| l.contains("[E-NO-ADAPTER]")) {
 +                return Verdict::NoAdapter(why.trim().to_string());
 +            }
-+            Verdict::Caught(panic_message(output, check.test))
++            if let Some(tag) = NOT_A_VERDICT.iter().find(|t| section.contains(*t)) {
++                return Verdict::DidNotRun(format!(
++                    "it failed on {tag}, not on its bug: {}",
++                    panic_message(&section)
++                ));
++            }
++            if !section.contains(check.expect) {
++                return Verdict::DidNotRun(format!(
++                    "it failed, but without `{}`: {}",
++                    check.expect,
++                    panic_message(&section)
++                ));
++            }
++            Verdict::Caught(panic_message(&section))
 +        }
-+        (false, _) => Verdict::DidNotRun(util::tail(output, 15)),
++        (false, _) => match output.lines().find(|l| l.contains("no test target named")) {
++            Some(missing) => Verdict::DidNotRun(missing.trim().to_string()),
++            None => Verdict::DidNotRun(util::tail(output, 15)),
++        },
 +    }
 +}
 +
-+/// The panic message of `test` in a libtest output, one line.
-+fn panic_message(output: &str, test: &str) -> String {
++/// The output libtest gives `test` under `---- <test> stdout ----`.
++fn section(output: &str, test: &str) -> String {
 +    let header = format!("---- {test} stdout ----");
-+    let mut lines = output.lines().skip_while(|l| l.trim() != header).skip(1);
-+    let message: Vec<&str> = lines
-+        .by_ref()
++    output
++        .lines()
++        .skip_while(|l| l.trim() != header)
++        .skip(1)
++        .take_while(|l| !l.starts_with("---- ") && l.trim() != "failures:")
++        .collect::<Vec<_>>()
++        .join("\n")
++}
++
++/// A failure's message after its `panicked at` line, on one line.
++fn panic_message(section: &str) -> String {
++    let message: Vec<&str> = section
++        .lines()
 +        .skip_while(|l| !l.contains("panicked at"))
 +        .skip(1)
 +        .take_while(|l| !l.trim().is_empty() && !l.starts_with("note:"))
@@ -776,19 +818,20 @@ index 0000000000000000000000000000000000000000..26a8e3b47f048a2ebb143a479bcb2b17
 +mod tests;
 diff --git a/xtask/src/selftest_render_apply.rs b/xtask/src/selftest_render_apply.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..d01e57bbdb7a88d8891e05a082be205f18773a97
+index 0000000000000000000000000000000000000000..806f6830a15bebb6d3f83f1449afca8d95b86d4d
 --- /dev/null
 +++ b/xtask/src/selftest_render_apply.rs
-@@ -0,0 +1,218 @@
+@@ -0,0 +1,293 @@
 +//! How `selftest render-bug-<n>` plants its bug in the workspace copy: a
 +//! unified diff applied in xtask, not by `git apply`, which run inside the
 +//! copy would find the real tree's repository above it. Only what the bug
-+//! patches need: changes to files that exist, each hunk found by its exact
-+//! old lines (context and removed), wherever they now are in the file, and
-+//! only if they are there once.
++//! patches need: changes to files that exist in a crate's `src/`, never a
++//! protected one, each hunk found by its exact old lines (context and
++//! removed), wherever they now are in the file, and only if they are there
++//! once.
 +
 +use std::fs;
-+use std::path::Path;
++use std::path::{Component, Path};
 +
 +/// One file's changes: its path from the workspace root, and its hunks as
 +/// (old lines, new lines), each line with its newline.
@@ -799,8 +842,9 @@ index 0000000000000000000000000000000000000000..d01e57bbdb7a88d8891e05a082be205f
 +}
 +
 +/// The files and hunks of `patch`, a `git diff` of changes to existing
-+/// files. Anything else (a new or deleted file, a line with no newline at
-+/// the end of a file, a line that is not in a hunk's format) is refused.
++/// files in a crate's `src/` ([`check_path`]). Anything else (a new,
++/// deleted, renamed or binary file, a mode change, a line with no newline
++/// at the end of a file, a line that is not in a hunk's format) is refused.
 +pub(super) fn parse(patch: &str) -> Result<Vec<FilePatch>, String> {
 +    let mut files: Vec<FilePatch> = Vec::new();
 +    let mut lines = patch.split_inclusive('\n').peekable();
@@ -810,12 +854,16 @@ index 0000000000000000000000000000000000000000..d01e57bbdb7a88d8891e05a082be205f
 +            let Some(path) = path.strip_prefix("b/") else {
 +                return Err(format!("only changes to files that exist: +++ {path}"));
 +            };
++            check_path(path)?;
 +            files.push(FilePatch {
 +                path: path.to_string(),
 +                hunks: Vec::new(),
 +            });
-+        } else if line.starts_with("--- ") && line.trim_end() == "--- /dev/null" {
-+            return Err("only changes to files that exist: a new file".into());
++        } else if line.starts_with("diff --git a/")
++            || line.starts_with("index ")
++            || line.starts_with("--- a/")
++        {
++            // A file's header, which `+++ b/` completes.
 +        } else if let Some(header) = line.strip_prefix("@@ -") {
 +            let file = files
 +                .last_mut()
@@ -860,12 +908,39 @@ index 0000000000000000000000000000000000000000..d01e57bbdb7a88d8891e05a082be205f
 +                return Err(format!("{}: a hunk with no old lines", file.path));
 +            }
 +            file.hunks.push((old, new));
++        } else {
++            return Err(format!(
++                "not a line of a patch to a file that exists: {:?}",
++                line.trim_end()
++            ));
 +        }
 +    }
 +    if files.is_empty() || files.iter().any(|f| f.hunks.is_empty()) {
 +        return Err("the patch changes no file".into());
 +    }
 +    Ok(files)
++}
++
++/// Whether a bug may plant into `path`: a plain relative path (each part a
++/// name, no `..`, `.` or root) to a file in a crate's `src/`, and not a
++/// protected one (`protected.toml`).
++pub(super) fn check_path(path: &str) -> Result<(), String> {
++    let parts: Vec<Component> = Path::new(path).components().collect();
++    let plain = parts.iter().all(|c| matches!(c, Component::Normal(_)));
++    let names: Vec<&str> = path.split('/').collect();
++    let in_src = names.len() >= 4
++        && names[0] == "crates"
++        && names[2] == "src"
++        && names.iter().all(|n| !matches!(*n, "" | "." | ".."));
++    if !plain || !in_src || path.contains('\\') {
++        return Err(format!(
++            "{path}: a bug plants only into a crate's source, crates/<crate>/src/..."
++        ));
++    }
++    if crate::guard::protected()?.matches(path) {
++        return Err(format!("{path}: a protected path"));
++    }
++    Ok(())
 +}
 +
 +/// The old and new line counts of a hunk header after its `@@ -`:
@@ -918,16 +993,12 @@ index 0000000000000000000000000000000000000000..d01e57bbdb7a88d8891e05a082be205f
 +    // the copy as it was.
 +    let mut writes = Vec::new();
 +    for file in &files {
-+        if file
-+            .path
-+            .split('/')
-+            .any(|part| part == ".." || part.is_empty())
-+        {
-+            return Err(format!("{}: not a path inside the workspace", file.path));
-+        }
 +        let at = ws.join(&file.path);
 +        let text = fs::read_to_string(&at).map_err(|e| format!("{}: {e}", file.path))?;
 +        let patched = apply_hunks(&file.path, &text, &file.hunks)?;
++        if patched == text {
++            return Err(format!("{}: the patch leaves it as it was", file.path));
++        }
 +        writes.push((at, patched));
 +        changed.push(file.path.clone());
 +    }
@@ -939,7 +1010,7 @@ index 0000000000000000000000000000000000000000..d01e57bbdb7a88d8891e05a082be205f
 +
 +#[cfg(test)]
 +mod tests {
-+    use super::{apply_hunks, parse};
++    use super::{apply_hunks, check_path, parse};
 +
 +    const PATCH: &str = "\
 +diff --git a/crates/x/src/lib.rs b/crates/x/src/lib.rs
@@ -992,34 +1063,338 @@ index 0000000000000000000000000000000000000000..d01e57bbdb7a88d8891e05a082be205f
 +    #[test]
 +    fn only_changes_to_files_that_exist_are_taken() {
 +        let new_file = "--- /dev/null\n+++ b/crates/x/src/new.rs\n@@ -0,0 +1 @@\n+fn n() {}\n";
-+        assert!(parse(new_file).unwrap_err().contains("a new file"));
++        assert!(
++            parse(new_file)
++                .unwrap_err()
++                .contains("not a line of a patch")
++        );
 +        let no_newline = PATCH.replace("     c\n", "     c\n\\ No newline at end of file\n");
 +        assert!(parse(&no_newline).unwrap_err().contains("no newline"));
++        // Header lines `git diff` writes for anything but a plain change.
++        for header in [
++            "new file mode 100644",
++            "deleted file mode 100644",
++            "old mode 100644",
++        ] {
++            let odd = PATCH.replacen("index ", &format!("{header}\nindex "), 1);
++            assert!(
++                parse(&odd).unwrap_err().contains("not a line of a patch"),
++                "{header}"
++            );
++        }
 +        assert!(parse("just text\n").is_err());
 +    }
++
++    /// A bug plants only into a crate's own source, never a protected file.
++    #[test]
++    fn only_a_crates_source_takes_a_bug() {
++        assert_eq!(check_path("crates/eng-render/src/light.wgsl"), Ok(()));
++        assert_eq!(
++            check_path("crates/eng-render/src/first_person/sprites.rs"),
++            Ok(())
++        );
++        for outside in [
++            "crates/eng-render/tests/light_model.rs",
++            "crates/eng-render/Cargo.toml",
++            "xtask/src/selftest.rs",
++            "crates/eng-render/src/../../../xtask/src/main.rs",
++            "crates/./eng-render/src/lib.rs",
++            "/crates/eng-render/src/lib.rs",
++            "crates//src/lib.rs",
++            "crates/eng-render/src",
++        ] {
++            assert!(
++                check_path(outside).unwrap_err().contains("only into"),
++                "{outside}"
++            );
++        }
++        // A protected path in a crate's source (`protected.toml`).
++        let err = check_path("crates/eng-platform-api/src/conformance.rs").unwrap_err();
++        assert!(err.contains("a protected path"), "{err}");
++        let patch = PATCH.replace("crates/x/src/lib.rs", "crates/x/tests/golden.rs");
++        assert!(parse(&patch).unwrap_err().contains("only into"));
++    }
 +}
+diff --git a/xtask/src/selftest_render_bugs.rs b/xtask/src/selftest_render_bugs.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c71e7c9f4ee26cf029beae84c77a7fe9c250f46d
+--- /dev/null
++++ b/xtask/src/selftest_render_bugs.rs
+@@ -0,0 +1,246 @@
++//! The planted render bugs of `selftest render-bug-<n>` and the checks that
++//! catch them (rung 2, addition A4), from the bug-by-check run in
++//! `docs/rungs/2/PROGRESS.md` (TA4). Each check's `expect` is a piece of the
++//! message it fails with on its bug, so that a failure for another reason
++//! (a shader that no longer compiles, an adapter fault) is not taken for a
++//! catch.
++
++use super::{Bug, Check, Kind};
++
++const CLIENT: &str = "game-testbed-client";
++const RENDER: &str = "eng-render";
++const GPU: &str = "eng-gpu";
++
++/// TA2's scene rules (plan addition A2), which the owner applies with
++/// `docs/rungs/2/patches/ta2-scene-rules.patch` at G5.
++const TA2: &str = "TA2's scene rules (game-testbed's tests/scene_rules.rs and \
++                   scenes/room.rules.toml, docs/rungs/2/patches/ta2-scene-rules.patch)";
++
++/// The bugs, in the pipeline's order, `render-bug-<n>` at `n - 1`.
++pub(crate) const BUGS: [Bug; 12] = [
++    Bug {
++        patch: "01-thing-skipped.patch",
++        what: "the room's extraction drops its first thing (the marker)",
++        checks: &[Check {
++            needs: Some(TA2),
++            ..Check::test(
++                Kind::Seeing,
++                "game-testbed",
++                "scene_rules",
++                "every_first_person_shot_keeps_its_scenes_rules",
++                "rule-1 room-spawn marker",
++            )
++        }],
++        known_miss: None,
++    },
++    Bug {
++        patch: "02-slab-sides-inward.patch",
++        what: "slab sides face into the slab: the pillar is see-through from outside",
++        // A general rule, which catches this bug only through the room's
++        // layout: the ledge's flipped south side lies in the south wall's
++        // plane, facing the way the wall's inner face does.
++        checks: &[Check::lib(
++            Kind::Unit,
++            CLIENT,
++            "room::geometry::tests::no_two_faces_facing_the_same_way_overlap_in_one_plane",
++            "Quad { corners: [[8.0, 0.0, 0.0]",
++        )],
++        known_miss: None,
++    },
++    Bug {
++        patch: "03-texture-tag-linear.patch",
++        what: "the room's surface textures, sRGB codes, are tagged linear",
++        checks: &[Check::lib(
++            Kind::Unit,
++            CLIENT,
++            "room::tests::the_world_has_the_surfaces_then_each_things_frames_and_the_palette",
++            "left: (64, Linear)",
++        )],
++        // TA2's rule 1 fails on it too, but only through the room's mix of
++        // textures: the walls brighten, so the crate's light falls under
++        // 0.2 of the frame's. The owner may call that a catch instead.
++        known_miss: Some(
++            "a texture's encoding is its data's fact: the light model reads the albedo the \
++             GPU decoded, so no general check sees it in every scene; in the room only the \
++             pinned tags, the goldens and, indirectly, TA2's rule 1 do",
++        ),
++    },
++    Bug {
++        patch: "04-offset-rounded-first.patch",
++        what: "a record's offset from the eye is rounded to f32 before the subtraction",
++        checks: &[
++            Check::lib(
++                Kind::Unit,
++                GPU,
++                "scene::tests::the_offset_is_taken_in_f64",
++                "right: [0.25, 2.0, 3.5]",
++            ),
++            Check::test(
++                Kind::Seeing,
++                RENDER,
++                "first_person",
++                "the_room_a_billion_meters_out_renders_as_it_does_at_the_origin",
++                "the output differs",
++            ),
++        ],
++        known_miss: None,
++    },
++    Bug {
++        patch: "05-sprite-sector-off-by-one.patch",
++        what: "a sprite's rotation sectors start at its facing instead of centring on it",
++        checks: &[
++            Check::test(
++                Kind::Unit,
++                RENDER,
++                "sprite_rotation",
++                "a_boundary_goes_to_the_counter_clockwise_sector",
++                "failed: facing 0x0",
++            ),
++            Check::test(
++                Kind::Unit,
++                RENDER,
++                "sprite_rotation",
++                "the_rule_matches_the_geometry",
++                "Test failed: assertion failed",
++            ),
++        ],
++        known_miss: None,
++    },
++    Bug {
++        patch: "06-mirror-ignored.patch",
++        what: "a five-rotation sheet's frames 5 to 7 are drawn unmirrored",
++        checks: &[
++            Check::lib(
++                Kind::Unit,
++                RENDER,
++                "first_person::sprites::tests::each_sprite_takes_two_records_its_place_and_its_shape",
++                "right: ([-1.25, 2.0, 0.0], 7)",
++            ),
++            Check::test(
++                Kind::Seeing,
++                RENDER,
++                "sprites",
++                "a_five_rotation_sheet_shows_rotations_5_to_7_mirrored",
++                "differences from the CPU",
++            ),
++        ],
++        known_miss: None,
++    },
++    Bug {
++        patch: "07-sprites-no-depth-write.patch",
++        what: "sprites write no depth: light, fog and later sprites see what is behind them",
++        checks: &[
++            Check::test(
++                Kind::Seeing,
++                RENDER,
++                "sprites",
++                "the_hall_renders_its_sprites_as_the_cpu_casts_them",
++                "): depth ",
++            ),
++            Check::test(
++                Kind::Seeing,
++                RENDER,
++                "sprites_look",
++                "light_and_fog_reach_a_sprite_by_its_region_without_contrast",
++                "pixels differ, first:",
++            ),
++        ],
++        known_miss: None,
++    },
++    Bug {
++        patch: "08-sprite-info-swap.patch",
++        what: "a sprite's info word holds its class where its region goes, and back",
++        checks: &[
++            Check::test(
++                Kind::Seeing,
++                RENDER,
++                "sprites",
++                "the_hall_renders_its_sprites_as_the_cpu_casts_them",
++                "the CPU says Info { region: 0, class: Sprite",
++            ),
++            Check::test(
++                Kind::Seeing,
++                RENDER,
++                "sprites_look",
++                "light_and_fog_reach_a_sprite_by_its_region_without_contrast",
++                "pixels differ, first:",
++            ),
++        ],
++        known_miss: None,
++    },
++    Bug {
++        patch: "09-region-light-transposed.patch",
++        what: "the light pass reads region r's light at r % 4, r / 4: regions 1 to 3 lit full",
++        checks: &[
++            Check::test(
++                Kind::Seeing,
++                RENDER,
++                "light_model",
++                "the_light_model_is_the_cpus_on_every_unambiguous_pixel",
++                "(albedo, lit and the output each count)",
++            ),
++            Check::test(
++                Kind::Seeing,
++                RENDER,
++                "first_person",
++                "a_known_room_renders_with_depth_info_and_sky_as_the_cpu_computes_them",
++                "differences from the CPU over",
++            ),
++        ],
++        known_miss: None,
++    },
++    Bug {
++        patch: "10-fog-ahead-not-along-ray.patch",
++        what: "fog takes the distance ahead, not along the pixel's ray: too thin off centre",
++        checks: &[
++            Check::test(
++                Kind::Seeing,
++                RENDER,
++                "light_model",
++                "fog_is_the_cpus_mix_toward_each_regions_colour",
++                "pixels differ, first:",
++            ),
++            Check::test(
++                Kind::Seeing,
++                RENDER,
++                "look_fog_tone",
++                "fog_moves_monotonically_toward_its_colour_with_depth_along_probe_rows",
++                "the fog's share falls from",
++            ),
++        ],
++        known_miss: None,
++    },
++    Bug {
++        patch: "11-tone-start-compression.patch",
++        what: "the tone curve's compression starts at 0.8 + F90, not 0.8 - F90",
++        checks: &[
++            Check::test(
++                Kind::Seeing,
++                RENDER,
++                "look_fog_tone",
++                "the_tone_curve_is_within_one_level_of_the_cpu_reference_on_sky_ramps",
++                "the CPU says",
++            ),
++            Check::test(
++                Kind::Seeing,
++                RENDER,
++                "sprites",
++                "each_of_the_eight_rotations_shows_from_its_own_view",
++                "differences from the CPU",
++            ),
++        ],
++        known_miss: None,
++    },
++    Bug {
++        patch: "12-palette-cell-rounded.patch",
++        what: "the palette pass rounds each code to the nearest table cell",
++        checks: &[Check::test(
++            Kind::Seeing,
++            RENDER,
++            "look_checks",
++            "with_the_palette_on_every_pixel_is_the_palette_colour_the_cpu_table_gives",
++            "toned [",
++        )],
++        known_miss: None,
++    },
++];
 diff --git a/xtask/src/selftest_render_tests.rs b/xtask/src/selftest_render_tests.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..c77d3b32441217e809ef373530c1dbd4c3bda1a2
+index 0000000000000000000000000000000000000000..457a0690af5c1cfc10f2300b666b1bff4d4586b6
 --- /dev/null
 +++ b/xtask/src/selftest_render_tests.rs
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,318 @@
 +use std::collections::BTreeSet;
 +use std::fs;
 +use std::time::{Duration, SystemTime};
 +
-+use super::{BUGS, Check, Target, Verdict, bug, keep_times, patch_file, verdict};
-+use crate::selftest::CASES;
++use super::{
++    Accepted, BUGS, Check, KNOWN_MISSES, Kind, Verdict, acceptances, bug, caught, keep_times,
++    patch_file, verdict,
++};
++use crate::selftest::{CASES, KNOWN_MISS};
 +use crate::util;
 +
-+const CHECK: Check = Check {
-+    package: "eng-render",
-+    target: Target::Test("light_model"),
-+    test: "the_light_model_is_the_cpus_on_every_unambiguous_pixel",
-+};
++const CHECK: Check = Check::test(
++    Kind::Seeing,
++    "eng-render",
++    "light_model",
++    "the_light_model_is_the_cpus_on_every_unambiguous_pixel",
++    "(albedo, lit and the output each count)",
++);
 +
 +/// Every `render-bug-<n>` case has its bug, and every bug its case, its
-+/// patch and at least one check; every patch in the directory is a bug's.
++/// patch, checks with what they fail with, and a known miss its reason;
++/// every file in the directory is a bug's patch or the owner's list.
 +#[test]
 +fn each_case_has_its_bug_its_patch_and_its_checks() {
 +    let cases: Vec<&str> = CASES
@@ -1039,8 +1414,9 @@ index 0000000000000000000000000000000000000000..c77d3b32441217e809ef373530c1dbd4
 +        .unwrap()
 +        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
 +        .collect();
-+    let named: BTreeSet<String> = BUGS.iter().map(|b| b.patch.to_string()).collect();
-+    assert_eq!(on_disk, named, "the patches in {}", dir.display());
++    let mut named: BTreeSet<String> = BUGS.iter().map(|b| b.patch.to_string()).collect();
++    named.insert("known-misses.toml".into());
++    assert_eq!(on_disk, named, "the files in {}", dir.display());
 +    for (i, bug) in BUGS.iter().enumerate() {
 +        assert!(
 +            bug.patch.starts_with(&format!("{:02}-", i + 1)),
@@ -1048,14 +1424,117 @@ index 0000000000000000000000000000000000000000..c77d3b32441217e809ef373530c1dbd4
 +            bug.patch
 +        );
 +        assert!(!bug.checks.is_empty(), "{}", bug.patch);
-+        let text = fs::read_to_string(dir.join(bug.patch)).unwrap();
-+        let files = patch_file::parse(&text).unwrap_or_else(|e| panic!("{}: {e}", bug.patch));
 +        assert!(
-+            files.iter().all(|f| f.path.starts_with("crates/")),
-+            "{}: a bug is planted in the crates only",
++            bug.checks.iter().all(|c| !c.expect.is_empty()),
++            "{}",
++            bug.patch
++        );
++        assert!(
++            bug.known_miss.is_none_or(|why| !why.is_empty()),
++            "{}",
 +            bug.patch
 +        );
 +    }
++}
++
++/// Each bug still plants into the tree as it is: applied in memory, its
++/// hunks find their lines once and change the file. A change to the code a
++/// bug plants into fails here, in quick, before the case does on CI.
++#[test]
++fn every_bug_still_plants_into_the_tree() {
++    let root = util::root().unwrap();
++    for bug in &BUGS {
++        let text =
++            fs::read_to_string(root.join("xtask/selftest/render-bugs").join(bug.patch)).unwrap();
++        let files = patch_file::parse(&text).unwrap_or_else(|e| panic!("{}: {e}", bug.patch));
++        for file in files {
++            let original = fs::read_to_string(root.join(&file.path))
++                .unwrap_or_else(|e| panic!("{}: {}: {e}", bug.patch, file.path));
++            let planted = patch_file::apply_hunks(&file.path, &original, &file.hunks)
++                .unwrap_or_else(|e| panic!("{} no longer applies; refresh it: {e}", bug.patch));
++            assert_ne!(planted, original, "{}: {}", bug.patch, file.path);
++        }
++    }
++}
++
++/// The owner's list as shipped reads strictly.
++#[test]
++fn the_owners_list_of_known_misses_reads() {
++    let root = util::root().unwrap();
++    let text = fs::read_to_string(root.join(KNOWN_MISSES)).unwrap();
++    acceptances(&text).unwrap();
++}
++
++const ENTRY: &str = r#"
++[[accepted]]
++patch = "03-texture-tag-linear.patch"
++reason = "goldens see it"
++accepted = "2026-11-20"
++accepted_by = "the owner"
++"#;
++
++#[test]
++fn an_acceptance_names_a_known_miss_once_with_its_reason_date_and_owner() {
++    assert_eq!(acceptances("version = 1\n"), Ok(Vec::new()));
++    let one = acceptances(&format!("version = 1\n{ENTRY}")).unwrap();
++    assert_eq!(one.len(), 1);
++    assert_eq!(one[0].patch, "03-texture-tag-linear.patch");
++    let refused = |text: String, why: &str| {
++        let err = acceptances(&text).unwrap_err();
++        assert!(err.contains(why), "{err}");
++    };
++    refused(format!("version = 1\n{ENTRY}{ENTRY}"), "accepted twice");
++    refused(
++        format!(
++            "version = 1\n{}",
++            ENTRY.replace("03-texture-tag-linear", "12-palette-cell-rounded")
++        ),
++        "no known miss",
++    );
++    refused(
++        format!(
++            "version = 1\n{}",
++            ENTRY.replace("03-texture-tag-linear", "13-none")
++        ),
++        "names no planted bug",
++    );
++    refused(
++        format!(
++            "version = 1\n{}",
++            ENTRY.replace("2026-11-20", "20 November")
++        ),
++        "not a date",
++    );
++    refused(
++        format!("version = 1\n{}", ENTRY.replace("goldens see it", " ")),
++        "needs a reason",
++    );
++    refused(format!("version = 1\n{ENTRY}extra = 1\n"), "unknown field");
++    refused(format!("version = 2\n{ENTRY}"), "version 2");
++}
++
++/// A general catch passes; a known miss passes only once the owner
++/// accepted it, and then says so on its console line.
++#[test]
++fn a_known_miss_waits_for_the_owner() {
++    let general = &BUGS[11];
++    let ok = caught(general, &general.checks[0], "why", None).unwrap();
++    assert!(ok.starts_with("caught by a general seeing check: eng-render tests/look_checks.rs"));
++    let miss = BUGS.iter().find(|b| b.known_miss.is_some()).unwrap();
++    let waiting = caught(miss, &miss.checks[0], "left: (64, Linear)", None).unwrap_err();
++    assert!(
++        waiting.starts_with("awaiting the owner's acceptance of a known miss"),
++        "{waiting}"
++    );
++    let accepted = Accepted {
++        patch: miss.patch.into(),
++        reason: "goldens see it".into(),
++        accepted: "2026-11-20".into(),
++        accepted_by: "the owner".into(),
++    };
++    let ok = caught(miss, &miss.checks[0], "left: (64, Linear)", Some(&accepted)).unwrap();
++    assert!(ok.starts_with(KNOWN_MISS), "{ok}");
++    assert!(ok.contains("accepted by the owner on 2026-11-20"), "{ok}");
 +}
 +
 +const CAUGHT: &str = "\
@@ -1067,7 +1546,8 @@ index 0000000000000000000000000000000000000000..c77d3b32441217e809ef373530c1dbd4
 +---- the_light_model_is_the_cpus_on_every_unambiguous_pixel stdout ----
 +
 +thread 'the_light_model_is_the_cpus_on_every_unambiguous_pixel' panicked at crates/eng-render/tests/light_model.rs:180:9:
-+(12, 40) region 1: lit 9.1 nits, the CPU's 4.6
++banding true: 4914 differences over 52728 pixels (albedo, lit and the output each count), first:
++(167, 179) face 10: lit [1.8184, 39.0625, 1.8184], the CPU [0.2274, 4.8854, 0.2274] at step 18
 +note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 +
 +
@@ -1077,36 +1557,66 @@ index 0000000000000000000000000000000000000000..c77d3b32441217e809ef373530c1dbd4
 +test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out
 +";
 +
-+#[test]
-+fn a_check_that_fails_as_a_test_catches_the_bug() {
-+    assert_eq!(
-+        verdict(false, CAUGHT, &CHECK),
-+        Verdict::Caught("(12, 40) region 1: lit 9.1 nits, the CPU's 4.6".into())
-+    );
-+    let passed = "test the_light_model_is_the_cpus_on_every_unambiguous_pixel ... ok\n\
-+        test result: ok. 1 passed; 0 failed";
-+    assert_eq!(verdict(true, passed, &CHECK), Verdict::Passed);
++const PANIC: &str = "banding true: 4914 differences over 52728 pixels (albedo, lit and the output each count), first:";
++
++fn run(succeeded: bool, output: &str) -> Verdict {
++    verdict(&(succeeded, output.to_string()), &CHECK)
 +}
 +
 +#[test]
-+fn no_adapter_no_build_or_no_such_test_is_not_a_catch() {
++fn a_check_that_fails_with_its_bugs_message_catches_it() {
++    match run(false, CAUGHT) {
++        Verdict::Caught(why) => assert!(why.starts_with("banding true: 4914 differences"), "{why}"),
++        other => panic!("{other:?}"),
++    }
++    let passed = "test the_light_model_is_the_cpus_on_every_unambiguous_pixel ... ok\n\
++        test result: ok. 1 passed; 0 failed";
++    assert_eq!(run(true, passed), Verdict::Passed);
++}
++
++/// A failure for another reason is no catch: an adapter, shader or graph
++/// error, or a message without the bug's.
++#[test]
++fn a_failure_for_another_reason_is_not_a_catch() {
++    for tag in ["[E-GPU]", "[E-SHADER]", "[E-GRAPH]"] {
++        // Even with the bug's message beside it.
++        let output = CAUGHT.replace(PANIC, &format!("{tag} creating the pipeline: {PANIC}"));
++        match run(false, &output) {
++            Verdict::DidNotRun(why) => assert!(why.contains(tag), "{why}"),
++            other => panic!("{tag}: {other:?}"),
++        }
++    }
++    let other = CAUGHT.replace(PANIC, "assertion `left == right` failed");
++    match run(false, &other) {
++        Verdict::DidNotRun(why) => assert!(why.contains("but without"), "{why}"),
++        other => panic!("{other:?}"),
++    }
 +    let no_adapter = CAUGHT.replace(
-+        "(12, 40) region 1: lit 9.1 nits, the CPU's 4.6",
++        PANIC,
 +        "ENG_REQUIRE_GPU=1: [E-NO-ADAPTER] no GPU adapter matches ENG_GPU_ADAPTER=none",
 +    );
 +    assert!(matches!(
-+        verdict(false, &no_adapter, &CHECK),
++        run(false, &no_adapter),
 +        Verdict::NoAdapter(why) if why.contains("[E-NO-ADAPTER]")
 +    ));
 +    let no_build = "error[E0425]: cannot find value `width` in this scope\n\
 +        error: could not compile `eng-render` (lib) due to 1 previous error";
 +    assert!(matches!(
-+        verdict(false, no_build, &CHECK),
++        run(false, no_build),
 +        Verdict::DidNotRun(why) if why.contains("could not compile")
 +    ));
++    // A check whose test file is not there yet (`needs`).
++    let missing = "error: no test target named `scene_rules` in `game-testbed` package\n\n\
++        help: available test targets:\n    crash_json\n    exit_codes\n";
++    assert_eq!(
++        run(false, missing),
++        Verdict::DidNotRun(
++            "error: no test target named `scene_rules` in `game-testbed` package".into()
++        )
++    );
 +    // `--exact` with a name that is no test runs nothing, and passes.
 +    let none = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored";
-+    assert!(matches!(verdict(true, none, &CHECK), Verdict::DidNotRun(_)));
++    assert!(matches!(run(true, none), Verdict::DidNotRun(_)));
 +}
 +
 +/// A bug's patch applies to the copy and changes only what it names.
@@ -1141,11 +1651,20 @@ index 0000000000000000000000000000000000000000..c77d3b32441217e809ef373530c1dbd4
 +    // Applied twice, its old lines are gone: refused, and nothing written.
 +    let again = patch_file::apply(&ws, patch).unwrap_err();
 +    assert_eq!(again, "crates/x/src/lib.rs: hunk 1 no longer matches");
++    // A hunk whose new lines are its old ones changes nothing: refused.
++    let same = patch.replace("+    let c = b - 1;", "+    let c = b + 1;");
++    fs::write(
++        &file,
++        "fn a() {\n    let b = 1;\n    let c = b + 1;\n    c\n}\n",
++    )
++    .unwrap();
++    let err = patch_file::apply(&ws, &same).unwrap_err();
++    assert!(err.contains("leaves it as it was"), "{err}");
 +    let outside = patch.replace("crates/x/", "../x/");
 +    assert!(
 +        patch_file::apply(&ws, &outside)
 +            .unwrap_err()
-+            .contains("not a path inside")
++            .contains("only into")
 +    );
 +    let _ = fs::remove_dir_all(&ws);
 +}
@@ -1172,3 +1691,45 @@ index 0000000000000000000000000000000000000000..c77d3b32441217e809ef373530c1dbd4
 +    assert_eq!(copied.modified().unwrap(), then);
 +    let _ = fs::remove_dir_all(&base);
 +}
+diff --git a/xtask/src/selftest_verdict.rs b/xtask/src/selftest_verdict.rs
+index 4e56017e011388e8c8a1b2a2b81c53a2093995f6..49897403966375eb76ac6ed4f56de228eeb6c9f0 100644
+--- a/xtask/src/selftest_verdict.rs
++++ b/xtask/src/selftest_verdict.rs
+@@ -13,6 +13,9 @@ use crate::util::{self, Done};
+ pub const NOT_RUN: &str = "[E-SELFTEST-NOT-RUN]";
+ /// The same outside a strict run: a warning, and still not a pass.
+ const NOT_RUN_HERE: &str = "[W-SELFTEST-NOT-RUN]";
++/// Starts the message of a case that passed as a known miss the owner
++/// accepted (`selftest_render.rs`): its line says so.
++pub const KNOWN_MISS: &str = "[known miss]";
+ 
+ /// Whether a case that cannot run fails the run: on CI (`CI` set to
+ /// anything, even empty) or with `ENG_REQUIRE_GPU=1`.
+@@ -52,6 +55,7 @@ pub(super) fn outcome(result: Result<String, String>, strict: bool) -> Result<St
+ /// The word a case's line shows.
+ pub(super) fn status(result: &Result<String, String>) -> &'static str {
+     match result {
++        Ok(detail) if detail.starts_with(KNOWN_MISS) => "ok (known miss)",
+         Ok(_) => "ok",
+         Err(detail) if detail.starts_with(NOT_RUN_HERE) => "not run",
+         Err(_) => "FAILED",
+@@ -109,7 +113,9 @@ pub(super) fn last_line(outcomes: &[Outcome], strict: bool) -> Result<String, St
+ 
+ #[cfg(test)]
+ mod tests {
+-    use super::{NOT_RUN, NOT_RUN_HERE, judged, last_line, outcome, status, strict_from};
++    use super::{
++        KNOWN_MISS, NOT_RUN, NOT_RUN_HERE, judged, last_line, outcome, status, strict_from,
++    };
+     use crate::util::Done;
+ 
+     /// In a job, a case not run here is pending (it fails no job and passes
+@@ -160,6 +166,8 @@ mod tests {
+         assert_eq!(outcome(miss(), false), miss());
+         assert_eq!(status(&outcome(miss(), false)), "FAILED");
+         assert_eq!(status(&outcome(Ok("rejected".into()), false)), "ok");
++        let accepted = format!("{KNOWN_MISS} accepted by the owner");
++        assert_eq!(status(&Ok(accepted)), "ok (known miss)");
+     }
+ 
+     fn case(name: &str, result: Result<&str, &str>) -> (String, Result<String, String>) {

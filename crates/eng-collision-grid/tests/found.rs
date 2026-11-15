@@ -1,17 +1,11 @@
 //! Traces found by searching against cargo-mutants' mutants of the sweep
-//! (rung 2, T19 follow-up): the grid's own proptests run with 128 times
-//! their cases (`PROPTEST_CASES=131072`, seed 1), and an aimed search of
-//! hull corners at slab and wall corners (up to 4 million cases). Each is the
-//! trace a shrunk failure stopped on, with the primitives near it: a rule of
-//! the crate docs, mostly about rounding at edges and corners, that the
-//! proptests reach only rarely at their usual size. Every case, and its
-//! mirror image, is checked with the conformance suite and for no
-//! pass-through (as `tests/contract.rs` checks), from a free start; those an
-//! oracle search found are also checked against the brute-force oracle
-//! (`tests/oracle.rs`). Case 3's mirror image broke the contact rule, in the
-//! grid and the oracle alike, until a still axis entered through its nearer
-//! face (rung 2, T19b follow-up). Two open breaks of the contact rule, (A)
-//! and (B), are checked for what still holds and that they break it (`OPEN`).
+//! (rung 2, T19 follow-up): the grid's proptests at `PROPTEST_CASES=131072`
+//! (seed 1), and an aimed search of hull corners at slab and wall corners
+//! (up to 4 million cases). Each is the trace a shrunk failure stopped on,
+//! with the primitives near it (mostly rounding at edges and corners). Each
+//! case and its mirror is checked with the conformance suite and for no
+//! pass-through, from a free start; oracle-found ones against the oracle
+//! too. The open breaks (A) and (B): what holds, and that they still break.
 
 #[path = "oracle/brute.rs"]
 mod brute;
@@ -153,19 +147,14 @@ fn the_found_traces_keep_the_rules() {
     }
 }
 
-/// The two open breaks of ADR-0024's contact rule in step 4 of the crate
-/// docs, (A) and (B) of `docs/rungs/2/patches/t19b-mutants-exclusions.md`,
-/// each with its mirror image: a hull beside a slab's edge off the axes. The
-/// conformance suite fails both, (A) with "one ulp further on is still free"
-/// (held on the top, short of the boundary) and (B) with "the rest of the
-/// motion does not hit" (stopped with the edge's normal, short of it).
-/// Whether to fix the grid or narrow the rule is the owner's (ADR-0024,
-/// Amendment 2). What holds, and is checked here: the stop is free, the
-/// trace hits, and nothing is passed through. (A)'s end is inside the slab,
-/// so any trace must stop; (B)'s is free, so a fix may make (B) a graze
-/// instead, and change this test. That each still breaks the rule, with the
-/// message named above, is checked too, so a fix (or a change in the break)
-/// fails here rather than leaving this comment and the exclusions doc stale.
+/// The open breaks (A) and (B) of ADR-0024's contact rule (step 4; see
+/// `docs/rungs/2/patches/t19b-mutants-exclusions.md`), with mirrors: a hull
+/// beside a slab's edge off the axes. Conformance fails (A) with "one ulp
+/// further on is still free" and (B) with "the rest of the motion does not
+/// hit"; fixing the grid or narrowing the rule is the owner's (Amendment 2).
+/// Checked: the stop is free, the trace hits ((B)'s end is free, so a fix
+/// may make it a graze), nothing is passed through, and each still breaks
+/// the rule, so a fix fails here instead of leaving the docs stale.
 #[test]
 fn the_open_contact_breaks_stop_free_and_pass_through_nothing() {
     for (i, case, mirror) in OPEN
